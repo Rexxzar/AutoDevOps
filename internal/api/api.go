@@ -10,17 +10,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Rexxzar/autodevops/internal/auth"
+	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
 )
 
 type Server struct {
-	db   *pgxpool.Pool
-	auth *auth.Auth
-	hub  *sse.Hub
+	db    *pgxpool.Pool
+	auth  *auth.Auth
+	hub   *sse.Hub
+	vault *secrets.Vault
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -37,6 +39,9 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub) http.Handler {
 		r.Get("/deployments", s.handleListDeployments)
 		r.Get("/clusters", s.handleListClusters)
 		r.Get("/cloud/accounts", s.handleListCloudAccounts)
+		r.Post("/secrets", s.handlePutSecret)
+		r.Get("/secrets/{name}", s.handleGetSecret)
+		r.Delete("/secrets/{name}", s.handleDeleteSecret)
 	})
 
 	return r

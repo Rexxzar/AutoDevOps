@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/Rexxzar/autodevops/internal/auth"
 )
 
@@ -68,4 +69,43 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListCloudAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, []any{})
+}
+
+func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" || req.Value == "" {
+		writeError(w, http.StatusBadRequest, "name and value required")
+		return
+	}
+	if err := s.vault.Put(r.Context(), req.Name, []byte(req.Value)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store secret")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name})
+}
+
+func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	value, err := s.vault.Get(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "secret not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": name, "value": string(value)})
+}
+
+func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if err := s.vault.Delete(r.Context(), name); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete secret")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/api"
 	"github.com/Rexxzar/autodevops/internal/auth"
 	"github.com/Rexxzar/autodevops/internal/db"
+	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/Rexxzar/autodevops/pkg/config"
 )
@@ -22,6 +23,10 @@ func main() {
 
 	if cfg.JWTSecret == "" {
 		slog.Error("JWT_SECRET is required")
+		os.Exit(1)
+	}
+	if cfg.MasterKey == "" {
+		slog.Error("MASTER_KEY is required")
 		os.Exit(1)
 	}
 
@@ -52,7 +57,14 @@ func main() {
 
 	a := auth.New(cfg.JWTSecret)
 	hub := sse.NewHub()
-	handler := api.NewServer(pool, a, hub)
+
+	vault, err := secrets.New(cfg.MasterKey, pool)
+	if err != nil {
+		slog.Error("init vault", "error", err)
+		os.Exit(1)
+	}
+
+	handler := api.NewServer(pool, a, hub, vault)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),
