@@ -1,0 +1,153 @@
+openapi: "3.0.3"
+info:
+  title: AutoDevOps API
+  version: "0.1.0"
+  description: Unified control-plane for automated, self-healing, multi-cloud infrastructure.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      example:
+        error: invalid credentials
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /auth/login:
+    post:
+      summary: Authenticate and receive a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Signed JWT valid for 24 hours
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Missing or malformed body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /events:
+    get:
+      summary: Server-Sent Events stream
+      description: |
+        Long-lived SSE connection. Emits real-time events for deployments,
+        pod health changes, terraform runs, and compliance findings.
+        Each event has `event: <type>` and `data: <json payload>`.
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          description: Missing or invalid JWT
+
+  /deployments:
+    get:
+      summary: List all deployments
+      responses:
+        "200":
+          description: Array of deployments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        "401":
+          description: Unauthorized
+
+  /clusters:
+    get:
+      summary: List registered Kubernetes clusters
+      responses:
+        "200":
+          description: Array of clusters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        "401":
+          description: Unauthorized
+
+  /cloud/accounts:
+    get:
+      summary: List registered cloud accounts
+      responses:
+        "200":
+          description: Array of cloud accounts (AWS / Azure)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        "401":
+          description: Unauthorized

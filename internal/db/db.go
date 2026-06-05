@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -29,5 +30,23 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	if err := goose.UpContext(ctx, sqlDB, dir); err != nil {
 		return fmt.Errorf("db: migrate: %w", err)
 	}
+	return nil
+}
+
+func EnsureAdminUser(ctx context.Context, pool *pgxpool.Pool, email, passwordHash string) error {
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM users").Scan(&count); err != nil {
+		return fmt.Errorf("db: count users: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1, $2)",
+		email, passwordHash,
+	); err != nil {
+		return fmt.Errorf("db: seed admin user: %w", err)
+	}
+	slog.Info("admin user seeded", "email", email)
 	return nil
 }
