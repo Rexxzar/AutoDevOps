@@ -1,0 +1,32 @@
+# Binaries
+/autodevops
+/autodev
+*.exe
+
+# Go build cache
+/vendor/
+
+# Environment
+.env
+.env.local
+
+# Terraform state (never commit)
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend build
+/web/dist/
+/web/node_modules/
+
+# local tool settings
+.claude/
