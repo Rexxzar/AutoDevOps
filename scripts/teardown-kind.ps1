@@ -1,4 +1,4 @@
-$REGISTRY_NAME = "autodevops-registry"
+﻿$REGISTRY_NAME = "autodevops-registry"
 $CLUSTER_NAME  = "autodevops"
 
 Write-Host "Deleting kind cluster '$CLUSTER_NAME'..."
