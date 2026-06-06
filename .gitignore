@@ -28,5 +28,5 @@ Thumbs.db
 /web/dist/
 /web/node_modules/
 
-# local tool settings
+# Local development context (not for version control)
 .claude/
