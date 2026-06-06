@@ -83,8 +83,8 @@ func TestClassify_succeeded(t *testing.T) {
 		Status:     corev1.PodStatus{Phase: corev1.PodSucceeded},
 	}
 	h := classify(pod)
-	if h.Status != StatusHealthy {
-		t.Fatalf("expected healthy (succeeded), got %s", h.Status)
+	if h.Status != StatusSucceeded {
+		t.Fatalf("expected succeeded, got %s", h.Status)
 	}
 }
 

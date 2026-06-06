@@ -26,6 +26,7 @@ const (
 	StatusUnhealthy   PodStatus = "unhealthy"
 	StatusPending     PodStatus = "pending"
 	StatusTerminating PodStatus = "terminating"
+	StatusSucceeded   PodStatus = "succeeded"
 	StatusUnknown     PodStatus = "unknown"
 )
 
@@ -41,7 +42,8 @@ type PodHealth struct {
 
 // Controller connects to a K8s cluster and runs the pod health Watch loop.
 type Controller struct {
-	clientset *kubernetes.Clientset
+	clientset kubernetes.Interface
+	healer    *healer
 	serverURL string
 	clusterID string
 	pool      *pgxpool.Pool
@@ -71,6 +73,7 @@ func New(kubeconfigPath, clusterID string, pool *pgxpool.Pool, hub *sse.Hub) (*C
 	}
 	return &Controller{
 		clientset: clientset,
+		healer:    newHealer(clientset, hub),
 		serverURL: cfg.Host,
 		clusterID: clusterID,
 		pool:      pool,
@@ -126,6 +129,7 @@ func (c *Controller) handlePod(ctx context.Context, pod *corev1.Pod) {
 		slog.Error("k8s: upsert pod health", "pod", pod.Name, "error", err)
 	}
 	c.hub.Publish(sse.Event{Type: "pod.health", Payload: h})
+	c.healer.handle(ctx, h)
 }
 
 func (c *Controller) upsertPodHealth(ctx context.Context, h PodHealth) error {
@@ -197,7 +201,7 @@ func classify(pod *corev1.Pod) PodHealth {
 	case corev1.PodPending:
 		h.Status = StatusPending
 	case corev1.PodSucceeded:
-		h.Status = StatusHealthy
+		h.Status = StatusSucceeded
 	case corev1.PodFailed:
 		h.Status = StatusUnhealthy
 		h.Reason = pod.Status.Message
