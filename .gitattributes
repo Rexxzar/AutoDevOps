@@ -1,0 +1,14 @@
+# Force LF for scripts executed on Linux/macOS
+*.sh    text eol=lf
+
+# Force LF for YAML and source files
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.go    text eol=lf
+*.md    text eol=lf
+*.sql   text eol=lf
+*.json  text eol=lf
+
+# Windows scripts keep CRLF
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
