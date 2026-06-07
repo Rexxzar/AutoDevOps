@@ -43,6 +43,71 @@ var goldenCases = []struct {
 			},
 		},
 	},
+	{
+		name: "aws-stack-rds",
+		id:   AWSStackID,
+		params: AWSStackParams{
+			Name:    "demo",
+			Region:  "us-east-1",
+			VPCCIDR: "10.0.0.0/16",
+			RDS:     &exampleRDSParams,
+		},
+	},
+	{
+		name: "aws-stack-ecs",
+		id:   AWSStackID,
+		params: AWSStackParams{
+			Name:    "demo",
+			Region:  "us-east-1",
+			VPCCIDR: "10.0.0.0/16",
+			ECS:     &exampleECSParams,
+		},
+	},
+	{
+		name: "aws-stack-full",
+		id:   AWSStackID,
+		params: AWSStackParams{
+			Name:    "demo",
+			Region:  "us-east-1",
+			VPCCIDR: "10.0.0.0/16",
+			EC2: &EC2Params{
+				InstanceType:     "t3.micro",
+				SubnetCIDR:       "10.0.1.0/24",
+				AvailabilityZone: "us-east-1a",
+			},
+			RDS: &exampleRDSParams,
+			ECS: &exampleECSParams,
+		},
+	},
+}
+
+// exampleRDSParams and exampleECSParams are shared example values, reused
+// across the standalone and "full" golden cases — their subnet CIDRs are
+// chosen to not overlap each other or the EC2 example's 10.0.1.0/24, since
+// aws-stack-full renders all three into the same VPC.
+var exampleRDSParams = RDSParams{
+	Engine:           "postgres",
+	EngineVersion:    "16.4",
+	InstanceClass:    "db.t3.micro",
+	AllocatedStorage: 20,
+	Username:         "appadmin",
+	Port:             5432,
+	Subnets: []AWSSubnet{
+		{CIDR: "10.0.2.0/24", AvailabilityZone: "us-east-1a"},
+		{CIDR: "10.0.3.0/24", AvailabilityZone: "us-east-1b"},
+	},
+}
+
+var exampleECSParams = ECSParams{
+	ContainerImage: "public.ecr.aws/nginx/nginx:1.27",
+	ContainerPort:  80,
+	CPU:            256,
+	Memory:         512,
+	DesiredCount:   1,
+	Subnets: []AWSSubnet{
+		{CIDR: "10.0.4.0/24", AvailabilityZone: "us-east-1a"},
+		{CIDR: "10.0.5.0/24", AvailabilityZone: "us-east-1b"},
+	},
 }
 
 func goldenPath(name string) string {

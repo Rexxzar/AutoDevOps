@@ -78,3 +78,293 @@ resource "aws_instance" "main" {
   }
 }
 {{- end }}
+{{- if .RDS }}
+{{ range $i, $s := .RDS.Subnets }}
+resource "aws_subnet" "rds_{{ $i }}" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "{{ $s.CIDR }}"
+  availability_zone = "{{ $s.AvailabilityZone }}"
+
+  tags = {
+    Name = "{{ $.Name }}-rds-{{ $i }}"
+  }
+}
+{{ end }}
+resource "aws_db_subnet_group" "rds" {
+  name       = "{{ .Name }}-rds"
+  subnet_ids = [{{ range $i, $s := .RDS.Subnets }}aws_subnet.rds_{{ $i }}.id, {{ end }}]
+
+  tags = {
+    Name = "{{ .Name }}-rds"
+  }
+}
+
+resource "aws_security_group" "rds" {
+  name        = "{{ .Name }}-rds"
+  description = "Allow database access from within the VPC for {{ .Name }}"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "Database"
+    from_port   = {{ .RDS.Port }}
+    to_port     = {{ .RDS.Port }}
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "{{ .Name }}-rds"
+  }
+}
+
+resource "aws_db_instance" "main" {
+  identifier                  = "{{ .Name }}-db"
+  engine                      = "{{ .RDS.Engine }}"
+  engine_version              = "{{ .RDS.EngineVersion }}"
+  instance_class              = "{{ .RDS.InstanceClass }}"
+  allocated_storage           = {{ .RDS.AllocatedStorage }}
+  username                    = "{{ .RDS.Username }}"
+  manage_master_user_password = true
+  port                        = {{ .RDS.Port }}
+  db_subnet_group_name        = aws_db_subnet_group.rds.name
+  vpc_security_group_ids      = [aws_security_group.rds.id]
+  skip_final_snapshot         = true
+
+  tags = {
+    Name = "{{ .Name }}-db"
+  }
+}
+{{- end }}
+{{- if .ECS }}
+{{ range $i, $s := .ECS.Subnets }}
+resource "aws_subnet" "ecs_{{ $i }}" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "{{ $s.CIDR }}"
+  availability_zone       = "{{ $s.AvailabilityZone }}"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "{{ $.Name }}-ecs-{{ $i }}"
+  }
+}
+{{ end }}
+resource "aws_internet_gateway" "ecs" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "{{ .Name }}-ecs"
+  }
+}
+
+resource "aws_route_table" "ecs" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.ecs.id
+  }
+
+  tags = {
+    Name = "{{ .Name }}-ecs"
+  }
+}
+{{ range $i, $s := .ECS.Subnets }}
+resource "aws_route_table_association" "ecs_{{ $i }}" {
+  subnet_id      = aws_subnet.ecs_{{ $i }}.id
+  route_table_id = aws_route_table.ecs.id
+}
+{{ end }}
+resource "aws_security_group" "alb" {
+  name        = "{{ .Name }}-alb"
+  description = "Allow inbound HTTP to the {{ .Name }} load balancer"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "{{ .Name }}-alb"
+  }
+}
+
+resource "aws_security_group" "ecs_task" {
+  name        = "{{ .Name }}-ecs-task"
+  description = "Allow inbound traffic from the load balancer to {{ .Name }} tasks"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "From ALB"
+    from_port       = {{ .ECS.ContainerPort }}
+    to_port         = {{ .ECS.ContainerPort }}
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "{{ .Name }}-ecs-task"
+  }
+}
+
+resource "aws_lb" "main" {
+  name               = "{{ .Name }}-alb"
+  load_balancer_type = "application"
+  internal           = false
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = [{{ range $i, $s := .ECS.Subnets }}aws_subnet.ecs_{{ $i }}.id, {{ end }}]
+
+  tags = {
+    Name = "{{ .Name }}-alb"
+  }
+}
+
+resource "aws_lb_target_group" "main" {
+  name        = "{{ .Name }}-tg"
+  port        = {{ .ECS.ContainerPort }}
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  health_check {
+    path = "/"
+  }
+
+  tags = {
+    Name = "{{ .Name }}-tg"
+  }
+}
+
+resource "aws_lb_listener" "main" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.main.arn
+  }
+}
+
+resource "aws_ecs_cluster" "main" {
+  name = "{{ .Name }}"
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "ecs" {
+  name              = "/ecs/{{ .Name }}"
+  retention_in_days = 7
+}
+
+resource "aws_iam_role" "ecs_execution" {
+  name = "{{ .Name }}-ecs-execution"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action    = "sts:AssumeRole"
+        Effect    = "Allow"
+        Principal = { Service = "ecs-tasks.amazonaws.com" }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "{{ .Name }}-ecs-execution"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution" {
+  role       = aws_iam_role.ecs_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_ecs_task_definition" "main" {
+  family                   = "{{ .Name }}"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "{{ .ECS.CPU }}"
+  memory                   = "{{ .ECS.Memory }}"
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "{{ .Name }}"
+      image     = "{{ .ECS.ContainerImage }}"
+      essential = true
+      portMappings = [
+        {
+          containerPort = {{ .ECS.ContainerPort }}
+          protocol      = "tcp"
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+          "awslogs-region"        = "{{ .Region }}"
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+
+resource "aws_ecs_service" "main" {
+  name            = "{{ .Name }}"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.main.arn
+  desired_count   = {{ .ECS.DesiredCount }}
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = [{{ range $i, $s := .ECS.Subnets }}aws_subnet.ecs_{{ $i }}.id, {{ end }}]
+    security_groups  = [aws_security_group.ecs_task.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.main.arn
+    container_name   = "{{ .Name }}"
+    container_port   = {{ .ECS.ContainerPort }}
+  }
+
+  depends_on = [aws_lb_listener.main]
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+{{- end }}
