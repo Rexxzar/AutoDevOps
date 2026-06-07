@@ -29,6 +29,20 @@ var goldenCases = []struct {
 			VPCCIDR: "10.0.0.0/16",
 		},
 	},
+	{
+		name: "aws-stack-ec2",
+		id:   AWSStackID,
+		params: AWSStackParams{
+			Name:    "demo",
+			Region:  "us-east-1",
+			VPCCIDR: "10.0.0.0/16",
+			EC2: &EC2Params{
+				InstanceType:     "t3.micro",
+				SubnetCIDR:       "10.0.1.0/24",
+				AvailabilityZone: "us-east-1a",
+			},
+		},
+	},
 }
 
 func goldenPath(name string) string {
