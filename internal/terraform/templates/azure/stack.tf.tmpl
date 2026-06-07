@@ -1,0 +1,197 @@
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+}
+
+resource "azurerm_resource_group" "main" {
+  name     = "{{ .Name }}-rg"
+  location = "{{ .Location }}"
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+
+resource "azurerm_virtual_network" "main" {
+  name                = "{{ .Name }}-vnet"
+  address_space       = ["{{ .VNetCIDR }}"]
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+{{- if .VM }}
+
+resource "azurerm_subnet" "vm" {
+  name                 = "{{ .Name }}-vm"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = ["{{ .VM.SubnetCIDR }}"]
+}
+
+resource "azurerm_network_security_group" "vm" {
+  name                = "{{ .Name }}-vm"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+
+  security_rule {
+    name                       = "SSH"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  tags = {
+    Name = "{{ .Name }}-vm"
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "vm" {
+  subnet_id                 = azurerm_subnet.vm.id
+  network_security_group_id = azurerm_network_security_group.vm.id
+}
+
+resource "azurerm_public_ip" "vm" {
+  name                = "{{ .Name }}-vm"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+
+  tags = {
+    Name = "{{ .Name }}-vm"
+  }
+}
+
+resource "azurerm_network_interface" "vm" {
+  name                = "{{ .Name }}-vm"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.vm.id
+    private_ip_address_allocation = "Dynamic"
+    public_ip_address_id          = azurerm_public_ip.vm.id
+  }
+
+  tags = {
+    Name = "{{ .Name }}-vm"
+  }
+}
+
+resource "azurerm_linux_virtual_machine" "main" {
+  name                  = "{{ .Name }}"
+  location              = azurerm_resource_group.main.location
+  resource_group_name   = azurerm_resource_group.main.name
+  size                  = "{{ .VM.Size }}"
+  admin_username        = "{{ .VM.AdminUsername }}"
+  network_interface_ids = [azurerm_network_interface.vm.id]
+
+  disable_password_authentication = true
+
+  admin_ssh_key {
+    username   = "{{ .VM.AdminUsername }}"
+    public_key = "{{ .VM.SSHPublicKey }}"
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts-gen2"
+    version   = "latest"
+  }
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+{{- end }}
+{{- if .DB }}
+
+data "azurerm_client_config" "current" {}
+
+resource "azurerm_postgresql_flexible_server" "main" {
+  name                = "{{ .Name }}-db"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  version             = "{{ .DB.Version }}"
+  sku_name            = "{{ .DB.SKU }}"
+  storage_mb          = {{ .DB.StorageMB }}
+
+  public_network_access_enabled = true
+
+  authentication {
+    active_directory_auth_enabled = true
+    password_auth_enabled         = false
+    tenant_id                     = data.azurerm_client_config.current.tenant_id
+  }
+
+  tags = {
+    Name = "{{ .Name }}-db"
+  }
+}
+
+resource "azurerm_postgresql_flexible_server_active_directory_administrator" "main" {
+  server_name         = azurerm_postgresql_flexible_server.main.name
+  resource_group_name = azurerm_resource_group.main.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  object_id           = "{{ .DB.AADAdminObjectID }}"
+  principal_name      = "{{ .DB.AADAdminPrincipalName }}"
+  principal_type      = "{{ .DB.AADAdminPrincipalType }}"
+}
+
+resource "azurerm_postgresql_flexible_server_firewall_rule" "azure_services" {
+  name             = "AllowAzureServices"
+  server_id        = azurerm_postgresql_flexible_server.main.id
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "0.0.0.0"
+}
+{{- end }}
+{{- if .ACI }}
+
+resource "azurerm_container_group" "main" {
+  name                = "{{ .Name }}-aci"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  os_type             = "Linux"
+  ip_address_type     = "Public"
+  dns_name_label      = "{{ .Name }}"
+
+  container {
+    name   = "{{ .Name }}"
+    image  = "{{ .ACI.ContainerImage }}"
+    cpu    = {{ .ACI.CPU }}
+    memory = {{ .ACI.MemoryGB }}
+
+    ports {
+      port     = {{ .ACI.ContainerPort }}
+      protocol = "TCP"
+    }
+  }
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+{{- end }}

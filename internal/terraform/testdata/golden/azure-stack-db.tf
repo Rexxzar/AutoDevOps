@@ -1,0 +1,71 @@
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+}
+
+resource "azurerm_resource_group" "main" {
+  name     = "demo-rg"
+  location = "uksouth"
+
+  tags = {
+    Name = "demo"
+  }
+}
+
+resource "azurerm_virtual_network" "main" {
+  name                = "demo-vnet"
+  address_space       = ["10.0.0.0/16"]
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+
+  tags = {
+    Name = "demo"
+  }
+}
+
+data "azurerm_client_config" "current" {}
+
+resource "azurerm_postgresql_flexible_server" "main" {
+  name                = "demo-db"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  version             = "16"
+  sku_name            = "B_Standard_B1ms"
+  storage_mb          = 32768
+
+  public_network_access_enabled = true
+
+  authentication {
+    active_directory_auth_enabled = true
+    password_auth_enabled         = false
+    tenant_id                     = data.azurerm_client_config.current.tenant_id
+  }
+
+  tags = {
+    Name = "demo-db"
+  }
+}
+
+resource "azurerm_postgresql_flexible_server_active_directory_administrator" "main" {
+  server_name         = azurerm_postgresql_flexible_server.main.name
+  resource_group_name = azurerm_resource_group.main.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  object_id           = "00000000-0000-0000-0000-000000000000"
+  principal_name      = "alice@example.com"
+  principal_type      = "User"
+}
+
+resource "azurerm_postgresql_flexible_server_firewall_rule" "azure_services" {
+  name             = "AllowAzureServices"
+  server_id        = azurerm_postgresql_flexible_server.main.id
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "0.0.0.0"
+}

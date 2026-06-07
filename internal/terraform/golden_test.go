@@ -79,6 +79,92 @@ var goldenCases = []struct {
 			ECS: &exampleECSParams,
 		},
 	},
+	{
+		name: "azure-stack",
+		id:   AzureStackID,
+		params: AzureStackParams{
+			Name:     "demo",
+			Location: "uksouth",
+			VNetCIDR: "10.0.0.0/16",
+		},
+	},
+	{
+		name: "azure-stack-vm",
+		id:   AzureStackID,
+		params: AzureStackParams{
+			Name:     "demo",
+			Location: "uksouth",
+			VNetCIDR: "10.0.0.0/16",
+			VM:       &exampleAzureVMParams,
+		},
+	},
+	{
+		name: "azure-stack-db",
+		id:   AzureStackID,
+		params: AzureStackParams{
+			Name:     "demo",
+			Location: "uksouth",
+			VNetCIDR: "10.0.0.0/16",
+			DB:       &exampleAzureDBParams,
+		},
+	},
+	{
+		name: "azure-stack-aci",
+		id:   AzureStackID,
+		params: AzureStackParams{
+			Name:     "demo",
+			Location: "uksouth",
+			VNetCIDR: "10.0.0.0/16",
+			ACI:      &exampleAzureACIParams,
+		},
+	},
+	{
+		name: "azure-stack-full",
+		id:   AzureStackID,
+		params: AzureStackParams{
+			Name:     "demo",
+			Location: "uksouth",
+			VNetCIDR: "10.0.0.0/16",
+			VM:       &exampleAzureVMParams,
+			DB:       &exampleAzureDBParams,
+			ACI:      &exampleAzureACIParams,
+		},
+	},
+}
+
+// exampleAzureVMParams is the shared example value for the Azure VM golden
+// cases. SSHPublicKey must be a *syntactically valid* SSH public key —
+// `terraform validate` actually parses admin_ssh_key.public_key as a key
+// object, so a placeholder string fails gated validation. This is a freshly
+// generated, single-use throwaway keypair (private half discarded); public
+// keys aren't secrets, so checking it in is fine.
+var exampleAzureVMParams = AzureVMParams{
+	Size:          "Standard_B1s",
+	SubnetCIDR:    "10.0.1.0/24",
+	AdminUsername: "azureuser",
+	SSHPublicKey:  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILWSPQrVP9waYpuXgeULzDf6qni7GWmZISD6J2Sy8Qkb demo@example.com",
+}
+
+// exampleAzureDBParams and exampleAzureACIParams are shared example values
+// for the Azure DB/ACI golden cases. The AAD admin object ID is a
+// syntactically-valid-looking but fake GUID — terraform validate doesn't
+// resolve it against a real tenant (that only happens at plan/apply), so a
+// placeholder is fine here, unlike the VM's SSH key which IS parsed at
+// validate time.
+var exampleAzureDBParams = AzureDBParams{
+	Version:               "16",
+	SKU:                   "B_Standard_B1ms",
+	StorageMB:             32768,
+	AADAdminObjectID:      "00000000-0000-0000-0000-000000000000",
+	AADAdminPrincipalName: "alice@example.com",
+	AADAdminPrincipalType: "User",
+}
+
+var exampleAzureACIParams = AzureACIParams{
+	ContainerImage: "mcr.microsoft.com/azuredocs/aci-helloworld:latest",
+	ContainerPort:  80,
+	CPU:            1,
+	MemoryGB:       1.5,
 }
 
 // exampleRDSParams and exampleECSParams are shared example values, reused
