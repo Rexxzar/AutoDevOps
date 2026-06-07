@@ -14,6 +14,8 @@
 *.tfstate
 *.tfstate.backup
 .terraform/
+.terraform.lock.hcl
+internal/terraform/testdata/.terraform-plugin-cache/
 
 # Editor
 .idea/

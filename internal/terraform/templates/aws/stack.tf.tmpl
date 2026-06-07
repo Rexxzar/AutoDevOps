@@ -1,0 +1,22 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "{{ .Region }}"
+}
+
+resource "aws_vpc" "main" {
+  cidr_block           = "{{ .VPCCIDR }}"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
