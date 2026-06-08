@@ -11,6 +11,7 @@ type Config struct {
 	AdminPassword  string
 	KubeconfigPath string
 	ClusterName    string
+	DataDir        string
 }
 
 func Load() *Config {
@@ -23,6 +24,7 @@ func Load() *Config {
 		AdminPassword:  env("ADMIN_PASSWORD", "autodevops"),
 		KubeconfigPath: env("KUBECONFIG", ""),
 		ClusterName:    env("K8S_CLUSTER_NAME", "autodevops"),
+		DataDir:        env("DATA_DIR", "./data"),
 	}
 }
 

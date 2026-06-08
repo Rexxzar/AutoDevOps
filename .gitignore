@@ -6,6 +6,10 @@
 # Go build cache
 /vendor/
 
+# Local runtime data — downloaded terraform binary, per-deployment workspaces
+# and state files (DataDir, default ./data — see pkg/config)
+/data/
+
 # Environment
 .env
 .env.local

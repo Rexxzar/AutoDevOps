@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/k8s"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
+	"github.com/Rexxzar/autodevops/internal/terraform"
 	"github.com/Rexxzar/autodevops/pkg/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -67,6 +69,7 @@ func main() {
 	}
 
 	startK8sController(ctx, cfg, pool, hub)
+	ensureTerraformBinary(ctx, cfg)
 
 	handler := api.NewServer(pool, a, hub, vault)
 
@@ -121,6 +124,26 @@ func startK8sController(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 			slog.Error("k8s: controller exited", "error", err)
 		}
 	}()
+}
+
+// ensureTerraformBinary resolves a terraform binary at startup, silently
+// auto-installing a pinned version into DataDir if no matching one is found
+// on PATH (see terraform.EnsureBinary) — the locked "detect on PATH or
+// download a pinned version into a user-writable dir at engine startup"
+// approach for terraform's static binary (contrast Docker's privileged-daemon
+// detect-only path in T14b; see the design notes: Dev Notes). Logs a warning and
+// degrades gracefully on failure: provisioning stays unavailable rather than
+// blocking startup. The resolved path is what the deploy orchestrator (T12)
+// passes to terraform.NewRunner once a "create deployment" flow exists to
+// drive it — see internal/terraform/runner.go.
+func ensureTerraformBinary(ctx context.Context, cfg *config.Config) {
+	installDir := filepath.Join(cfg.DataDir, "terraform", "bin")
+	execPath, err := terraform.EnsureBinary(ctx, installDir)
+	if err != nil {
+		slog.Warn("terraform: binary unavailable, provisioning disabled", "error", err)
+		return
+	}
+	slog.Info("terraform: binary resolved", "path", execPath)
 }
 
 // upsertCluster inserts or updates the cluster record and returns its UUID.
