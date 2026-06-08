@@ -10,19 +10,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Rexxzar/autodevops/internal/auth"
+	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
 )
 
 type Server struct {
-	db    *pgxpool.Pool
-	auth  *auth.Auth
-	hub   *sse.Hub
-	vault *secrets.Vault
+	db     *pgxpool.Pool
+	auth   *auth.Auth
+	hub    *sse.Hub
+	vault  *secrets.Vault
+	deploy *deploy.Orchestrator
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub, vault: vault}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -33,10 +35,16 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 	r.Get("/healthz", s.handleHealth)
 	r.Post("/auth/login", s.handleLogin)
 
+	// GitHub can't present a JWT — security here is the per-deployment HMAC
+	// webhook secret instead (see handleGitHubWebhook), so this route stays
+	// outside the authenticated group.
+	r.Post("/webhooks/github/{id}", s.handleGitHubWebhook)
+
 	r.Group(func(r chi.Router) {
 		r.Use(a.Middleware)
 		r.Get("/events", hub.Handler())
 		r.Get("/deployments", s.handleListDeployments)
+		r.Post("/deployments", s.handleCreateDeployment)
 		r.Get("/clusters", s.handleListClusters)
 		r.Get("/cloud/accounts", s.handleListCloudAccounts)
 		r.Post("/cloud/accounts", s.handleCreateCloudAccount)

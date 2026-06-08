@@ -15,6 +15,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/auth"
 	"github.com/Rexxzar/autodevops/internal/cloud"
 	"github.com/Rexxzar/autodevops/internal/db"
+	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/k8s"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
@@ -73,7 +74,10 @@ func main() {
 	ensureTerraformBinary(ctx, cfg)
 	startCloudPoller(ctx, cfg, pool, hub, vault)
 
-	handler := api.NewServer(pool, a, hub, vault)
+	reposDir := filepath.Join(cfg.DataDir, "repos")
+	orchestrator := deploy.New(pool, hub, vault, reposDir)
+
+	handler := api.NewServer(pool, a, hub, vault, orchestrator)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),
@@ -135,9 +139,9 @@ func startK8sController(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 // approach for terraform's static binary (contrast Docker's privileged-daemon
 // detect-only path in T14b; see the design notes: Dev Notes). Logs a warning and
 // degrades gracefully on failure: provisioning stays unavailable rather than
-// blocking startup. The resolved path is what the deploy orchestrator (T12)
-// passes to terraform.NewRunner once a "create deployment" flow exists to
-// drive it — see internal/terraform/runner.go.
+// blocking startup. The resolved path is what T14's k8s-manifest deploy step
+// will eventually pass to terraform.NewRunner via deploy.Orchestrator (T12) —
+// see internal/terraform/runner.go.
 func ensureTerraformBinary(ctx context.Context, cfg *config.Config) {
 	installDir := filepath.Join(cfg.DataDir, "terraform", "bin")
 	execPath, err := terraform.EnsureBinary(ctx, installDir)
