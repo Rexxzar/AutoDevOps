@@ -71,6 +71,50 @@ func (s *Server) handleListCloudAccounts(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, []any{})
 }
 
+// handleCreateCloudAccount registers a cloud account for the T11 poller to
+// query. Credentials are stored encrypted in the vault under a derived secret
+// name, and cloud_accounts.credentials_secret_id is resolved to that secret's
+// UUID in the same INSERT — mirroring handlePutSecret's "encrypt before it
+// touches the database" rule.
+func (s *Server) handleCreateCloudAccount(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider    string          `json:"provider"`
+		Name        string          `json:"name"`
+		Credentials json.RawMessage `json:"credentials"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Provider != "aws" && req.Provider != "azure" {
+		writeError(w, http.StatusBadRequest, `provider must be "aws" or "azure"`)
+		return
+	}
+	if req.Name == "" || len(req.Credentials) == 0 {
+		writeError(w, http.StatusBadRequest, "name and credentials required")
+		return
+	}
+
+	secretName := "cloud-account:" + req.Name
+	if err := s.vault.Put(r.Context(), secretName, req.Credentials); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store credentials")
+		return
+	}
+
+	var accountID string
+	err := s.db.QueryRow(r.Context(), `
+		INSERT INTO cloud_accounts (provider, name, credentials_secret_id)
+		SELECT $1, $2, id FROM secrets WHERE name = $3
+		RETURNING id::text
+	`, req.Provider, req.Name, secretName).Scan(&accountID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create cloud account")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"id": accountID, "provider": req.Provider, "name": req.Name})
+}
+
 func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name  string `json:"name"`

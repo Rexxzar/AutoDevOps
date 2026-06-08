@@ -66,6 +66,23 @@ func (v *Vault) Get(ctx context.Context, name string) ([]byte, error) {
 	return plaintext, nil
 }
 
+// GetByID looks up and decrypts a secret by its UUID rather than its name —
+// for callers that only hold a foreign-key reference (e.g. cloud_accounts.credentials_secret_id).
+func (v *Vault) GetByID(ctx context.Context, id string) ([]byte, error) {
+	var ciphertext, nonce []byte
+	err := v.db.QueryRow(ctx,
+		"SELECT ciphertext, nonce FROM secrets WHERE id = $1", id,
+	).Scan(&ciphertext, &nonce)
+	if err != nil {
+		return nil, fmt.Errorf("secrets: get by id %q: %w", id, err)
+	}
+	plaintext, err := decrypt(v.key, ciphertext, nonce)
+	if err != nil {
+		return nil, fmt.Errorf("secrets: get by id %q: %w", id, err)
+	}
+	return plaintext, nil
+}
+
 func (v *Vault) Delete(ctx context.Context, name string) error {
 	if _, err := v.db.Exec(ctx, "DELETE FROM secrets WHERE name = $1", name); err != nil {
 		return fmt.Errorf("secrets: delete %q: %w", name, err)

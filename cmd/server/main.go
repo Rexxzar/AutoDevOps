@@ -13,6 +13,7 @@ import (
 
 	"github.com/Rexxzar/autodevops/internal/api"
 	"github.com/Rexxzar/autodevops/internal/auth"
+	"github.com/Rexxzar/autodevops/internal/cloud"
 	"github.com/Rexxzar/autodevops/internal/db"
 	"github.com/Rexxzar/autodevops/internal/k8s"
 	"github.com/Rexxzar/autodevops/internal/secrets"
@@ -70,6 +71,7 @@ func main() {
 
 	startK8sController(ctx, cfg, pool, hub)
 	ensureTerraformBinary(ctx, cfg)
+	startCloudPoller(ctx, cfg, pool, hub, vault)
 
 	handler := api.NewServer(pool, a, hub, vault)
 
@@ -144,6 +146,20 @@ func ensureTerraformBinary(ctx context.Context, cfg *config.Config) {
 		return
 	}
 	slog.Info("terraform: binary resolved", "path", execPath)
+}
+
+// startCloudPoller launches the AWS/Azure resource poller. Unlike
+// startK8sController there is no precondition to check — the poller handles
+// "zero cloud accounts registered" by simply upserting nothing each tick — so
+// it always starts; bad credentials for one account are logged and skipped
+// without affecting others (see cloud.Poller.Run).
+func startCloudPoller(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault) {
+	poller := cloud.NewPoller(pool, hub, vault, cfg.CloudPollInterval)
+	go func() {
+		if err := poller.Run(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("cloud: poller exited", "error", err)
+		}
+	}()
 }
 
 // upsertCluster inserts or updates the cluster record and returns its UUID.
