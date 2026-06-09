@@ -120,6 +120,14 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, deploymentID string) err
 		return fmt.Errorf("deploy: fetch image_ref: %w", err)
 	}
 
+	if o.complianceGate != nil {
+		if err := o.complianceGate.RunAll(ctx, deploymentID, repoPath, imageRef); err != nil {
+			dep, _ := o.persistStatus(ctx, deploymentID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: %w", err)
+		}
+	}
+
 	switch {
 	case targetType == "k8s" && o.kubeDeployer != nil:
 		namespace := namespaceName(name)

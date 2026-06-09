@@ -14,6 +14,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/api"
 	"github.com/Rexxzar/autodevops/internal/auth"
 	"github.com/Rexxzar/autodevops/internal/cloud"
+	"github.com/Rexxzar/autodevops/internal/compliance"
 	"github.com/Rexxzar/autodevops/internal/db"
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/docker"
@@ -88,7 +89,8 @@ func main() {
 		dockerDeployer = dockerMgr
 	}
 
-	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, kubeDeployer, dockerDeployer)
+	complianceScanner := compliance.New(pool, hub, cfg.ComplianceThreshold)
+	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, kubeDeployer, dockerDeployer, complianceScanner)
 
 	handler := api.NewServer(pool, a, hub, vault, orchestrator)
 

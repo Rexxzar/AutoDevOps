@@ -29,6 +29,13 @@ type DockerDeployer interface {
 	DockerDeploy(ctx context.Context, name, imageRef string) error
 }
 
+// ComplianceGate runs all scanners against deployment artefacts and returns
+// a non-nil error if any finding meets or exceeds the configured threshold.
+// Implemented by internal/compliance.Scanner and injected at construction time.
+type ComplianceGate interface {
+	RunAll(ctx context.Context, deploymentID, repoPath, imageRef string) error
+}
+
 // Orchestrator drives the Git-to-deploy flow for registered deployments.
 type Orchestrator struct {
 	pool           *pgxpool.Pool
@@ -38,16 +45,17 @@ type Orchestrator struct {
 	builderImage   string       // e.g. "paketobuildpacks/builder-jammy-full:latest"
 	registryPush   string       // registry host:port pack pushes to, e.g. "localhost:5001"
 	registryPull   string       // registry host:port k8s manifests use, e.g. "registry.local:5000"
-	kubeDeployer   KubeDeployer // nil when k8s controller is not available
-	dockerDeployer DockerDeployer // nil when Docker daemon is not available
+	kubeDeployer    KubeDeployer   // nil when k8s controller is not available
+	dockerDeployer  DockerDeployer // nil when Docker daemon is not available
+	complianceGate  ComplianceGate // nil disables compliance scanning
 }
 
 // New builds an Orchestrator. workDir is the base directory under which each
 // deployment gets its own clone workspace (workDir/<deploymentID>).
 // builderImage, registryPush, and registryPull drive the Paketo build step.
-// kube and docker may be nil — the corresponding deploy step is skipped when
-// the target type doesn't match or the controller/daemon is not reachable.
-func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builderImage, registryPush, registryPull string, kube KubeDeployer, docker DockerDeployer) *Orchestrator {
+// kube, docker, and gate may be nil — the corresponding step is skipped when
+// nil (deploy step skipped if target type doesn't match; compliance skipped entirely).
+func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builderImage, registryPush, registryPull string, kube KubeDeployer, docker DockerDeployer, gate ComplianceGate) *Orchestrator {
 	return &Orchestrator{
 		pool:           pool,
 		hub:            hub,
@@ -58,6 +66,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builde
 		registryPull:   registryPull,
 		kubeDeployer:   kube,
 		dockerDeployer: docker,
+		complianceGate: gate,
 	}
 }
 

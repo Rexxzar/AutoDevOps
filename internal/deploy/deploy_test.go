@@ -30,6 +30,7 @@ func testOrchestrator(pool *pgxpool.Pool, vault *secrets.Vault, hub *sse.Hub, wo
 		"registry.local:5000",
 		nil, // no KubeDeployer
 		nil, // no DockerDeployer
+		nil, // no ComplianceGate
 	)
 }
 

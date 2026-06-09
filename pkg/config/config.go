@@ -22,6 +22,8 @@ type Config struct {
 	RegistryPull string // host:port k8s manifests reference (in-cluster), e.g. registry.local:5000
 	// K8s manifests (T14)
 	IngressDomain string // base domain for generated Ingress hostnames, e.g. autodevops.local
+	// Compliance gate (T16)
+	ComplianceThreshold string // minimum severity that blocks deploy: critical|high|medium|low|info
 }
 
 func Load() *Config {
@@ -39,7 +41,8 @@ func Load() *Config {
 		BuilderImage:      env("BUILDER_IMAGE", "paketobuildpacks/builder-jammy-full:latest"),
 		RegistryPush:      env("REGISTRY_PUSH", "localhost:5001"),
 		RegistryPull:      env("REGISTRY_PULL", "registry.local:5000"),
-		IngressDomain:     env("INGRESS_DOMAIN", "autodevops.local"),
+		IngressDomain:       env("INGRESS_DOMAIN", "autodevops.local"),
+		ComplianceThreshold: env("COMPLIANCE_THRESHOLD", "high"),
 	}
 }
 
