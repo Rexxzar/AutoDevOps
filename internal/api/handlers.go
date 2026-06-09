@@ -417,6 +417,155 @@ func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleListComplianceFindings(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), `
+		SELECT cf.id::text, cf.deployment_id::text, d.name,
+		       cf.scanner, cf.severity, cf.rule_id, cf.message,
+		       COALESCE(cf.file_path, ''), COALESCE(cf.line_number, 0),
+		       cf.created_at
+		FROM compliance_findings cf
+		JOIN deployments d ON d.id = cf.deployment_id
+		ORDER BY cf.created_at DESC
+		LIMIT 500
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list findings")
+		return
+	}
+	defer rows.Close()
+
+	type row struct {
+		ID             string    `json:"id"`
+		DeploymentID   string    `json:"deployment_id"`
+		DeploymentName string    `json:"deployment_name"`
+		Scanner        string    `json:"scanner"`
+		Severity       string    `json:"severity"`
+		RuleID         string    `json:"rule_id"`
+		Message        string    `json:"message"`
+		FilePath       string    `json:"file_path,omitempty"`
+		LineNumber     int       `json:"line_number,omitempty"`
+		CreatedAt      time.Time `json:"created_at"`
+	}
+	var results []row
+	for rows.Next() {
+		var f row
+		if err := rows.Scan(&f.ID, &f.DeploymentID, &f.DeploymentName,
+			&f.Scanner, &f.Severity, &f.RuleID, &f.Message,
+			&f.FilePath, &f.LineNumber, &f.CreatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan finding")
+			return
+		}
+		results = append(results, f)
+	}
+	if results == nil {
+		results = []row{}
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+func (s *Server) handleListCloudResources(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), `
+		SELECT cr.id::text, ca.provider, ca.name,
+		       cr.resource_type, cr.resource_id, cr.region,
+		       COALESCE(cr.name, ''), cr.state::text, cr.polled_at
+		FROM cloud_resources cr
+		JOIN cloud_accounts ca ON ca.id = cr.cloud_account_id
+		ORDER BY cr.polled_at DESC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list cloud resources")
+		return
+	}
+	defer rows.Close()
+
+	type row struct {
+		ID           string    `json:"id"`
+		Provider     string    `json:"provider"`
+		AccountName  string    `json:"account_name"`
+		ResourceType string    `json:"resource_type"`
+		ResourceID   string    `json:"resource_id"`
+		Region       string    `json:"region"`
+		Name         string    `json:"name,omitempty"`
+		State        string    `json:"state"`
+		PolledAt     time.Time `json:"polled_at"`
+	}
+	var results []row
+	for rows.Next() {
+		var cr row
+		if err := rows.Scan(&cr.ID, &cr.Provider, &cr.AccountName,
+			&cr.ResourceType, &cr.ResourceID, &cr.Region,
+			&cr.Name, &cr.State, &cr.PolledAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan resource")
+			return
+		}
+		results = append(results, cr)
+	}
+	if results == nil {
+		results = []row{}
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name     string `json:"name"`
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" || req.Endpoint == "" {
+		writeError(w, http.StatusBadRequest, "name and endpoint required")
+		return
+	}
+
+	var id string
+	err := s.db.QueryRow(r.Context(), `
+		INSERT INTO k8s_clusters (name, endpoint, status)
+		VALUES ($1, $2, 'unknown')
+		ON CONFLICT (name) DO UPDATE SET endpoint = EXCLUDED.endpoint
+		RETURNING id::text
+	`, req.Name, req.Endpoint).Scan(&id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create cluster")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": req.Name, "endpoint": req.Endpoint})
+}
+
+func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	tag, err := s.db.Exec(r.Context(),
+		`UPDATE deployments SET status = 'destroyed', updated_at = NOW() WHERE id = $1`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to destroy deployment")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "deployment not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleTriggerDeployment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var exists bool
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM deployments WHERE id = $1)`, id,
+	).Scan(&exists); err != nil || !exists {
+		writeError(w, http.StatusNotFound, "deployment not found")
+		return
+	}
+	go func() {
+		if err := s.deploy.ProcessPush(context.Background(), id); err != nil {
+			slog.Error("deploy: manual trigger", "deployment_id", id, "error", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "deployment_id": id})
+}
+
 // handleGetDeploymentWorkflow generates and returns a GitHub Actions workflow
 // YAML for the given deployment. The file is ready to commit verbatim to
 // .github/workflows/autodevops.yml — credentials are never embedded, only

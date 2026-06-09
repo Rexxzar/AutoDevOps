@@ -4,6 +4,9 @@ import { Topbar } from '@/components/layout/topbar'
 import { DeploymentsPage } from '@/pages/deployments'
 import { ClustersPage } from '@/pages/clusters'
 import { OverviewPage } from '@/pages/overview'
+import { ResourcesPage } from '@/pages/resources'
+import { CompliancePage } from '@/pages/compliance'
+import { SettingsPage } from '@/pages/settings'
 import { PlaceholderPage } from '@/pages/placeholder'
 import { LoginPage } from '@/pages/login'
 import { useAuth } from '@/lib/auth'
@@ -25,24 +28,8 @@ function DashboardLayout() {
             <Route path="/" element={<OverviewPage />} />
             <Route path="/deployments" element={<DeploymentsPage />} />
             <Route path="/clusters" element={<ClustersPage />} />
-            <Route
-              path="/resources"
-              element={
-                <PlaceholderPage
-                  title="Cloud Resources"
-                  description="Live AWS + Azure inventory polled via cloud SDKs, with a Terraform 'use existing resource' picker."
-                />
-              }
-            />
-            <Route
-              path="/compliance"
-              element={
-                <PlaceholderPage
-                  title="Compliance"
-                  description="Hadolint, Trivy, tfsec and GitLeaks findings with severity-threshold gating."
-                />
-              }
-            />
+            <Route path="/resources" element={<ResourcesPage />} />
+            <Route path="/compliance" element={<CompliancePage />} />
             <Route
               path="/secrets"
               element={
@@ -52,15 +39,7 @@ function DashboardLayout() {
                 />
               }
             />
-            <Route
-              path="/settings"
-              element={
-                <PlaceholderPage
-                  title="Settings"
-                  description="Control plane configuration, JWT auth, and cluster registration."
-                />
-              }
-            />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
       </div>
