@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/Rexxzar/autodevops/internal/auth"
+	"github.com/Rexxzar/autodevops/internal/cicd"
 	"github.com/Rexxzar/autodevops/internal/deploy"
 )
 
@@ -414,4 +415,29 @@ func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetDeploymentWorkflow generates and returns a GitHub Actions workflow
+// YAML for the given deployment. The file is ready to commit verbatim to
+// .github/workflows/autodevops.yml — credentials are never embedded, only
+// referenced as repository secrets (AUTODEVOPS_WEBHOOK_SECRET, AUTODEVOPS_URL).
+func (s *Server) handleGetDeploymentWorkflow(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var params cicd.WorkflowParams
+	params.DeploymentID = id
+	err := s.db.QueryRow(r.Context(), `
+		SELECT name, branch, COALESCE(framework, 'unknown')
+		FROM deployments WHERE id = $1
+	`, id).Scan(&params.Name, &params.Branch, &params.Framework)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "deployment not found")
+		return
+	}
+
+	yaml := cicd.Workflow(params)
+	w.Header().Set("Content-Type", "text/x-yaml; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="autodevops.yml"`)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(yaml))
 }

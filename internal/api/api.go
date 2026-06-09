@@ -45,6 +45,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Get("/events", hub.Handler())
 		r.Get("/deployments", s.handleListDeployments)
 		r.Post("/deployments", s.handleCreateDeployment)
+		r.Get("/deployments/{id}/workflow", s.handleGetDeploymentWorkflow)
 		r.Get("/clusters", s.handleListClusters)
 		r.Get("/cloud/accounts", s.handleListCloudAccounts)
 		r.Post("/cloud/accounts", s.handleCreateCloudAccount)
