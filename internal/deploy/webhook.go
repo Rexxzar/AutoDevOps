@@ -39,23 +39,39 @@ func VerifyWebhookSignature(payload []byte, signatureHeader string, secret []byt
 	return hmac.Equal(want, got)
 }
 
+// namespaceName derives the deterministic K8s namespace for a deployment:
+// "autodevops-<name>" with underscores→hyphens and lower-cased, capped at 63
+// characters to satisfy the DNS label format. Mirrors the same function in
+// internal/k8s/manifests.go — kept in sync manually (the two packages cannot
+// share it without violating the import boundary rules).
+func namespaceName(deploymentName string) string {
+	ns := "autodevops-" + strings.ToLower(strings.ReplaceAll(deploymentName, "_", "-"))
+	if len(ns) > 63 {
+		ns = ns[:63]
+	}
+	return ns
+}
+
 // ProcessPush is the orchestration entrypoint for a verified GitHub push
 // delivery, run in a goroutine by the webhook handler — GitHub times out
 // webhook responses after ~10s, so cloning must never block the HTTP response.
 // Pipeline: look up deployment → decrypt git creds → converge clone workspace →
 // detect framework → persist (framework + status=building) → build OCI image via
-// Paketo (→ status=deploying on success, status=failed on build error).
+// Paketo (→ status=deploying on success, status=failed on build error) →
+// for k8s target type: apply K8s manifests via KubeDeployer (→ status=running
+// on success, status=failed on deploy error).
 func (o *Orchestrator) ProcessPush(ctx context.Context, deploymentID string) error {
 	var (
 		name             string
 		repoURL          string
 		branch           string
+		targetType       string
 		gitCredsSecretID *string
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT name, repo_url, branch, git_credentials_secret_id::text
+		SELECT name, repo_url, branch, target_type, git_credentials_secret_id::text
 		FROM deployments WHERE id = $1
-	`, deploymentID).Scan(&name, &repoURL, &branch, &gitCredsSecretID)
+	`, deploymentID).Scan(&name, &repoURL, &branch, &targetType, &gitCredsSecretID)
 	if err != nil {
 		return fmt.Errorf("deploy: look up deployment %s: %w", deploymentID, err)
 	}
@@ -91,7 +107,35 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, deploymentID string) err
 	}
 	o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 
-	return o.buildImage(ctx, deploymentID, name, repoPath)
+	if err := o.buildImage(ctx, deploymentID, name, repoPath); err != nil {
+		return err // buildImage already persisted status=failed and published SSE
+	}
+
+	// K8s deploy step — only for k8s target type when a controller is wired in.
+	if targetType == "k8s" && o.kubeDeployer != nil {
+		namespace := namespaceName(name)
+
+		var imageRef string
+		if err := o.pool.QueryRow(ctx,
+			"SELECT COALESCE(image_ref,'') FROM deployments WHERE id = $1", deploymentID,
+		).Scan(&imageRef); err != nil {
+			return fmt.Errorf("deploy: fetch image_ref for k8s deploy: %w", err)
+		}
+
+		if err := o.kubeDeployer.KubeDeploy(ctx, name, namespace, imageRef); err != nil {
+			dep, _ := o.persistStatus(ctx, deploymentID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: k8s deploy %s: %w", name, err)
+		}
+
+		dep, err := o.persistRunning(ctx, deploymentID, namespace)
+		if err != nil {
+			return err
+		}
+		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+	}
+
+	return nil
 }
 
 // persistFramework updates the framework column and transitions status to
@@ -104,10 +148,10 @@ func (o *Orchestrator) persistFramework(ctx context.Context, deploymentID, frame
 		SET framework = $1, status = 'building', updated_at = now()
 		WHERE id = $2
 		RETURNING id::text, name, repo_url, branch, framework,
-		          COALESCE(image_ref, ''), target_type, status, updated_at
+		          COALESCE(image_ref, ''), COALESCE(namespace, ''), target_type, status, updated_at
 	`, framework, deploymentID).Scan(
 		&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
-		&d.ImageRef, &d.TargetType, &d.Status, &d.UpdatedAt,
+		&d.ImageRef, &d.Namespace, &d.TargetType, &d.Status, &d.UpdatedAt,
 	)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("deploy: persist framework for %s: %w", deploymentID, err)
@@ -124,10 +168,10 @@ func (o *Orchestrator) persistStatus(ctx context.Context, deploymentID, status s
 		SET status = $1, updated_at = now()
 		WHERE id = $2
 		RETURNING id::text, name, repo_url, branch, framework,
-		          COALESCE(image_ref, ''), target_type, status, updated_at
+		          COALESCE(image_ref, ''), COALESCE(namespace, ''), target_type, status, updated_at
 	`, status, deploymentID).Scan(
 		&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
-		&d.ImageRef, &d.TargetType, &d.Status, &d.UpdatedAt,
+		&d.ImageRef, &d.Namespace, &d.TargetType, &d.Status, &d.UpdatedAt,
 	)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("deploy: persist status %q for %s: %w", status, deploymentID, err)
@@ -144,13 +188,33 @@ func (o *Orchestrator) persistImageRef(ctx context.Context, deploymentID, imageR
 		SET image_ref = $1, status = 'deploying', updated_at = now()
 		WHERE id = $2
 		RETURNING id::text, name, repo_url, branch, framework,
-		          COALESCE(image_ref, ''), target_type, status, updated_at
+		          COALESCE(image_ref, ''), COALESCE(namespace, ''), target_type, status, updated_at
 	`, imageRef, deploymentID).Scan(
 		&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
-		&d.ImageRef, &d.TargetType, &d.Status, &d.UpdatedAt,
+		&d.ImageRef, &d.Namespace, &d.TargetType, &d.Status, &d.UpdatedAt,
 	)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("deploy: persist image_ref for %s: %w", deploymentID, err)
+	}
+	return d, nil
+}
+
+// persistRunning sets namespace + status=running after K8s manifests are
+// applied and at least one pod is Available.
+func (o *Orchestrator) persistRunning(ctx context.Context, deploymentID, namespace string) (Deployment, error) {
+	var d Deployment
+	err := o.pool.QueryRow(ctx, `
+		UPDATE deployments
+		SET namespace = $1, status = 'running', updated_at = now()
+		WHERE id = $2
+		RETURNING id::text, name, repo_url, branch, framework,
+		          COALESCE(image_ref, ''), COALESCE(namespace, ''), target_type, status, updated_at
+	`, namespace, deploymentID).Scan(
+		&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
+		&d.ImageRef, &d.Namespace, &d.TargetType, &d.Status, &d.UpdatedAt,
+	)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("deploy: persist running for %s: %w", deploymentID, err)
 	}
 	return d, nil
 }

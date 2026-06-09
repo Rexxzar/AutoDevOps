@@ -70,12 +70,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	startK8sController(ctx, cfg, pool, hub)
+	k8sCtrl := startK8sController(ctx, cfg, pool, hub)
 	ensureTerraformBinary(ctx, cfg)
 	startCloudPoller(ctx, cfg, pool, hub, vault)
 
 	reposDir := filepath.Join(cfg.DataDir, "repos")
-	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull)
+	var kubeDeployer deploy.KubeDeployer
+	if k8sCtrl != nil {
+		kubeDeployer = k8sCtrl
+	}
+	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, kubeDeployer)
 
 	handler := api.NewServer(pool, a, hub, vault, orchestrator)
 
@@ -104,25 +108,26 @@ func main() {
 	}
 }
 
-// startK8sController registers the local cluster in the DB and starts the Watch loop.
-// Logs a warning and returns without error if no kubeconfig is available.
-func startK8sController(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, hub *sse.Hub) {
+// startK8sController registers the local cluster in the DB and starts the Watch
+// loop. Returns the controller so callers can use it as a KubeDeployer for T14.
+// Returns nil and logs a warning if no kubeconfig is available.
+func startK8sController(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, hub *sse.Hub) *k8s.Controller {
 	serverURL, err := k8s.ServerURL(cfg.KubeconfigPath)
 	if err != nil {
 		slog.Warn("k8s: no kubeconfig found, self-healing controller disabled", "error", err)
-		return
+		return nil
 	}
 
 	clusterID, err := upsertCluster(ctx, pool, cfg.ClusterName, serverURL)
 	if err != nil {
 		slog.Error("k8s: register cluster", "error", err)
-		return
+		return nil
 	}
 
-	ctrl, err := k8s.New(cfg.KubeconfigPath, clusterID, pool, hub)
+	ctrl, err := k8s.New(cfg.KubeconfigPath, clusterID, pool, hub, cfg.IngressDomain)
 	if err != nil {
 		slog.Error("k8s: init controller", "error", err)
-		return
+		return nil
 	}
 
 	go func() {
@@ -130,6 +135,8 @@ func startK8sController(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 			slog.Error("k8s: controller exited", "error", err)
 		}
 	}()
+
+	return ctrl
 }
 
 // ensureTerraformBinary resolves a terraform binary at startup, silently

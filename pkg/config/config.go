@@ -20,6 +20,8 @@ type Config struct {
 	BuilderImage string // CNB builder image, e.g. paketobuildpacks/builder-jammy-full:latest
 	RegistryPush string // host:port pack pushes to (host-accessible), e.g. localhost:5001
 	RegistryPull string // host:port k8s manifests reference (in-cluster), e.g. registry.local:5000
+	// K8s manifests (T14)
+	IngressDomain string // base domain for generated Ingress hostnames, e.g. autodevops.local
 }
 
 func Load() *Config {
@@ -37,6 +39,7 @@ func Load() *Config {
 		BuilderImage:      env("BUILDER_IMAGE", "paketobuildpacks/builder-jammy-full:latest"),
 		RegistryPush:      env("REGISTRY_PUSH", "localhost:5001"),
 		RegistryPull:      env("REGISTRY_PULL", "registry.local:5000"),
+		IngressDomain:     env("INGRESS_DOMAIN", "autodevops.local"),
 	}
 }
 

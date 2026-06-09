@@ -11,6 +11,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/jackc/pgx/v5/pgxpool"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -42,12 +43,14 @@ type PodHealth struct {
 
 // Controller connects to a K8s cluster and runs the pod health Watch loop.
 type Controller struct {
-	clientset kubernetes.Interface
-	healer    *healer
-	serverURL string
-	clusterID string
-	pool      *pgxpool.Pool
-	hub       *sse.Hub
+	clientset     kubernetes.Interface
+	dynClient     dynamic.Interface
+	healer        *healer
+	serverURL     string
+	clusterID     string
+	ingressDomain string
+	pool          *pgxpool.Pool
+	hub           *sse.Hub
 }
 
 // ServerURL returns the K8s API server URL from the kubeconfig, without
@@ -61,8 +64,9 @@ func ServerURL(kubeconfigPath string) (string, error) {
 }
 
 // New builds a Controller. Falls back to in-cluster config when kubeconfigPath
-// is empty and the binary is running inside a pod.
-func New(kubeconfigPath, clusterID string, pool *pgxpool.Pool, hub *sse.Hub) (*Controller, error) {
+// is empty and the binary is running inside a pod. ingressDomain is the base
+// DNS domain used when generating Ingress hostnames (e.g. "autodevops.local").
+func New(kubeconfigPath, clusterID string, pool *pgxpool.Pool, hub *sse.Hub, ingressDomain string) (*Controller, error) {
 	cfg, err := buildConfig(kubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("k8s: build config: %w", err)
@@ -71,13 +75,19 @@ func New(kubeconfigPath, clusterID string, pool *pgxpool.Pool, hub *sse.Hub) (*C
 	if err != nil {
 		return nil, fmt.Errorf("k8s: new clientset: %w", err)
 	}
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("k8s: new dynamic client: %w", err)
+	}
 	return &Controller{
-		clientset: clientset,
-		healer:    newHealer(clientset, hub),
-		serverURL: cfg.Host,
-		clusterID: clusterID,
-		pool:      pool,
-		hub:       hub,
+		clientset:     clientset,
+		dynClient:     dynClient,
+		healer:        newHealer(clientset, hub),
+		serverURL:     cfg.Host,
+		clusterID:     clusterID,
+		ingressDomain: ingressDomain,
+		pool:          pool,
+		hub:           hub,
 	}, nil
 }
 

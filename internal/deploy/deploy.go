@@ -6,12 +6,21 @@
 package deploy
 
 import (
+	"context"
 	"time"
 
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// KubeDeployer applies K8s manifests for a completed image build. It is
+// implemented by internal/k8s.Controller and injected into Orchestrator at
+// construction time — keeping the import graph clean (deploy must not import
+// k8s directly per the project package boundary rules).
+type KubeDeployer interface {
+	KubeDeploy(ctx context.Context, name, namespace, imageRef string) error
+}
 
 // Orchestrator drives the Git-to-deploy flow for registered deployments.
 type Orchestrator struct {
@@ -22,12 +31,15 @@ type Orchestrator struct {
 	builderImage string // e.g. "paketobuildpacks/builder-jammy-full:latest"
 	registryPush string // registry host:port pack pushes to, e.g. "localhost:5001"
 	registryPull string // registry host:port k8s manifests use, e.g. "registry.local:5000"
+	kubeDeployer KubeDeployer // nil when k8s controller is not available
 }
 
 // New builds an Orchestrator. workDir is the base directory under which each
 // deployment gets its own clone workspace (workDir/<deploymentID>).
 // builderImage, registryPush, and registryPull drive the T13 Paketo build step.
-func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builderImage, registryPush, registryPull string) *Orchestrator {
+// kube may be nil — the k8s deploy step is skipped for non-k8s target types or
+// when no cluster is reachable.
+func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builderImage, registryPush, registryPull string, kube KubeDeployer) *Orchestrator {
 	return &Orchestrator{
 		pool:         pool,
 		hub:          hub,
@@ -36,6 +48,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builde
 		builderImage: builderImage,
 		registryPush: registryPush,
 		registryPull: registryPull,
+		kubeDeployer: kube,
 	}
 }
 
@@ -58,7 +71,8 @@ type Deployment struct {
 	RepoURL    string    `json:"repo_url"`
 	Branch     string    `json:"branch"`
 	Framework  string    `json:"framework,omitempty"`
-	ImageRef   string    `json:"image_ref,omitempty"` // populated by T13 after successful build
+	ImageRef   string    `json:"image_ref,omitempty"`  // populated by T13 after successful build
+	Namespace  string    `json:"namespace,omitempty"`  // populated by T14 after K8s manifests are applied
 	TargetType string    `json:"target_type"`
 	Status     string    `json:"status"`
 	UpdatedAt  time.Time `json:"updated_at"`

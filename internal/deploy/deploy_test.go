@@ -21,12 +21,14 @@ import (
 )
 
 // testOrchestrator builds an Orchestrator with realistic-but-inert registry
-// settings — the fast tests never actually build an image.
+// settings and no KubeDeployer — the fast tests never actually build an image
+// or apply K8s manifests.
 func testOrchestrator(pool *pgxpool.Pool, vault *secrets.Vault, hub *sse.Hub, workDir string) *Orchestrator {
 	return New(pool, hub, vault, workDir,
 		"paketobuildpacks/builder-jammy-full:latest",
 		"localhost:5001",
 		"registry.local:5000",
+		nil, // no KubeDeployer — k8s deploy step skipped in tests
 	)
 }
 
