@@ -56,12 +56,24 @@ func headSHA12(repoPath string) (string, error) {
 
 // buildImage calls Paketo Buildpacks (pack Go library) to build + push the OCI
 // image from the source at repoPath. On success it persists image_ref and
-// transitions status to "deploying". On build failure it transitions to "failed".
-// Both outcomes are published as "deploy.status" SSE events.
+// transitions status to "deploying". On any failure (Docker unavailable, no
+// buildpack detected, push error) it transitions to "failed". Both outcomes are
+// published as "deploy.status" SSE events.
 //
 // The pack client is initialised per call — cheap (just an HTTP client to the
 // Docker daemon) and safe across daemon restarts between deployments.
-func (o *Orchestrator) buildImage(ctx context.Context, deploymentID, deploymentName, repoPath string) error {
+func (o *Orchestrator) buildImage(ctx context.Context, deploymentID, deploymentName, repoPath string) (retErr error) {
+	// On any error path, persist "failed" so status never stays stuck at "building".
+	defer func() {
+		if retErr != nil {
+			if dep, err := o.persistStatus(ctx, deploymentID, "failed"); err != nil {
+				slog.Error("deploy: persist failed status", "deployment_id", deploymentID, "error", err)
+			} else {
+				o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			}
+		}
+	}()
+
 	sha12, err := headSHA12(repoPath)
 	if err != nil {
 		return err
@@ -80,27 +92,21 @@ func (o *Orchestrator) buildImage(ctx context.Context, deploymentID, deploymentN
 		return fmt.Errorf("deploy: init pack client: %w", err)
 	}
 
-	buildErr := packClient.Build(ctx, packclient.BuildOptions{
+	if err := packClient.Build(ctx, packclient.BuildOptions{
 		Image:      pushRef,
 		Builder:    o.builderImage,
 		AppPath:    repoPath,
 		Publish:    true,
 		PullPolicy: image.PullIfNotPresent,
-	})
-	if buildErr != nil {
-		// Record failure in DB + SSE; return error so ProcessPush can log it.
-		if dep, pErr := o.persistStatus(ctx, deploymentID, "failed"); pErr != nil {
-			slog.Error("deploy: persist failed status", "deployment_id", deploymentID, "error", pErr)
-		} else {
-			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
-		}
-		return fmt.Errorf("deploy: pack build %s: %w", pushRef, buildErr)
+	}); err != nil {
+		return fmt.Errorf("deploy: pack build %s: %w", pushRef, err)
 	}
 
 	dep, err := o.persistImageRef(ctx, deploymentID, pullRef)
 	if err != nil {
 		return err
 	}
+	// Success: clear deferred "failed" path by publishing the deploying event here.
 	o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 	slog.Info("deploy: image built and pushed",
 		"deployment_id", deploymentID,
