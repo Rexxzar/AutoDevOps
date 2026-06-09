@@ -57,9 +57,10 @@ func namespaceName(deploymentName string) string {
 // webhook responses after ~10s, so cloning must never block the HTTP response.
 // Pipeline: look up deployment → decrypt git creds → converge clone workspace →
 // detect framework → persist (framework + status=building) → build OCI image via
-// Paketo (→ status=deploying on success, status=failed on build error) →
-// for k8s target type: apply K8s manifests via KubeDeployer (→ status=running
-// on success, status=failed on deploy error).
+// Paketo (→ status=deploying) → deploy to the target:
+//   - target_type="k8s":        KubeDeployer  → status=running|failed
+//   - target_type="container":  DockerDeployer → status=running|failed
+//   - other / no deployer wired: stays at status=deploying
 func (o *Orchestrator) ProcessPush(ctx context.Context, deploymentID string) error {
 	var (
 		name             string
@@ -111,24 +112,35 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, deploymentID string) err
 		return err // buildImage already persisted status=failed and published SSE
 	}
 
-	// K8s deploy step — only for k8s target type when a controller is wired in.
-	if targetType == "k8s" && o.kubeDeployer != nil {
+	// Fetch the image_ref that buildImage persisted — both deploy branches need it.
+	var imageRef string
+	if err := o.pool.QueryRow(ctx,
+		"SELECT COALESCE(image_ref,'') FROM deployments WHERE id = $1", deploymentID,
+	).Scan(&imageRef); err != nil {
+		return fmt.Errorf("deploy: fetch image_ref: %w", err)
+	}
+
+	switch {
+	case targetType == "k8s" && o.kubeDeployer != nil:
 		namespace := namespaceName(name)
-
-		var imageRef string
-		if err := o.pool.QueryRow(ctx,
-			"SELECT COALESCE(image_ref,'') FROM deployments WHERE id = $1", deploymentID,
-		).Scan(&imageRef); err != nil {
-			return fmt.Errorf("deploy: fetch image_ref for k8s deploy: %w", err)
-		}
-
 		if err := o.kubeDeployer.KubeDeploy(ctx, name, namespace, imageRef); err != nil {
 			dep, _ := o.persistStatus(ctx, deploymentID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			return fmt.Errorf("deploy: k8s deploy %s: %w", name, err)
 		}
-
 		dep, err := o.persistRunning(ctx, deploymentID, namespace)
+		if err != nil {
+			return err
+		}
+		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+
+	case targetType == "container" && o.dockerDeployer != nil:
+		if err := o.dockerDeployer.DockerDeploy(ctx, name, imageRef); err != nil {
+			dep, _ := o.persistStatus(ctx, deploymentID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: docker deploy %s: %w", name, err)
+		}
+		dep, err := o.persistStatus(ctx, deploymentID, "running")
 		if err != nil {
 			return err
 		}

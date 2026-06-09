@@ -16,6 +16,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/cloud"
 	"github.com/Rexxzar/autodevops/internal/db"
 	"github.com/Rexxzar/autodevops/internal/deploy"
+	"github.com/Rexxzar/autodevops/internal/docker"
 	"github.com/Rexxzar/autodevops/internal/k8s"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
@@ -75,11 +76,19 @@ func main() {
 	startCloudPoller(ctx, cfg, pool, hub, vault)
 
 	reposDir := filepath.Join(cfg.DataDir, "repos")
+
 	var kubeDeployer deploy.KubeDeployer
 	if k8sCtrl != nil {
 		kubeDeployer = k8sCtrl
 	}
-	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, kubeDeployer)
+
+	dockerMgr := startDockerManager(ctx, cfg, pool, hub, reposDir)
+	var dockerDeployer deploy.DockerDeployer
+	if dockerMgr != nil {
+		dockerDeployer = dockerMgr
+	}
+
+	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, kubeDeployer, dockerDeployer)
 
 	handler := api.NewServer(pool, a, hub, vault, orchestrator)
 
@@ -171,6 +180,26 @@ func startCloudPoller(ctx context.Context, cfg *config.Config, pool *pgxpool.Poo
 			slog.Error("cloud: poller exited", "error", err)
 		}
 	}()
+}
+
+// startDockerManager builds the Docker Manager and starts its health-poll loop.
+// Returns nil and logs a warning if the Docker client cannot be initialised —
+// the daemon ping happens later at DockerDeploy time, surfacing ErrDockerNotFound
+// with guided install instructions rather than blocking server startup.
+func startDockerManager(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, hub *sse.Hub, reposDir string) *docker.Manager {
+	composeDir := filepath.Join(cfg.DataDir, "compose")
+	mgr, err := docker.New(pool, hub, composeDir, cfg.RegistryPush, cfg.RegistryPull)
+	if err != nil {
+		slog.Warn("docker: manager init failed, container target disabled", "error", err)
+		return nil
+	}
+	go func() {
+		if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("docker: manager exited", "error", err)
+		}
+	}()
+	_ = reposDir
+	return mgr
 }
 
 // upsertCluster inserts or updates the cluster record and returns its UUID.

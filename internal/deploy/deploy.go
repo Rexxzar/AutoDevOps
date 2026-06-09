@@ -22,33 +22,42 @@ type KubeDeployer interface {
 	KubeDeploy(ctx context.Context, name, namespace, imageRef string) error
 }
 
+// DockerDeployer deploys a built image as a Docker container. It is
+// implemented by internal/docker.Manager and injected into Orchestrator at
+// construction time — same import-boundary reason as KubeDeployer.
+type DockerDeployer interface {
+	DockerDeploy(ctx context.Context, name, imageRef string) error
+}
+
 // Orchestrator drives the Git-to-deploy flow for registered deployments.
 type Orchestrator struct {
-	pool         *pgxpool.Pool
-	hub          *sse.Hub
-	vault        *secrets.Vault
-	workDir      string
-	builderImage string // e.g. "paketobuildpacks/builder-jammy-full:latest"
-	registryPush string // registry host:port pack pushes to, e.g. "localhost:5001"
-	registryPull string // registry host:port k8s manifests use, e.g. "registry.local:5000"
-	kubeDeployer KubeDeployer // nil when k8s controller is not available
+	pool           *pgxpool.Pool
+	hub            *sse.Hub
+	vault          *secrets.Vault
+	workDir        string
+	builderImage   string       // e.g. "paketobuildpacks/builder-jammy-full:latest"
+	registryPush   string       // registry host:port pack pushes to, e.g. "localhost:5001"
+	registryPull   string       // registry host:port k8s manifests use, e.g. "registry.local:5000"
+	kubeDeployer   KubeDeployer // nil when k8s controller is not available
+	dockerDeployer DockerDeployer // nil when Docker daemon is not available
 }
 
 // New builds an Orchestrator. workDir is the base directory under which each
 // deployment gets its own clone workspace (workDir/<deploymentID>).
-// builderImage, registryPush, and registryPull drive the T13 Paketo build step.
-// kube may be nil — the k8s deploy step is skipped for non-k8s target types or
-// when no cluster is reachable.
-func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builderImage, registryPush, registryPull string, kube KubeDeployer) *Orchestrator {
+// builderImage, registryPush, and registryPull drive the Paketo build step.
+// kube and docker may be nil — the corresponding deploy step is skipped when
+// the target type doesn't match or the controller/daemon is not reachable.
+func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builderImage, registryPush, registryPull string, kube KubeDeployer, docker DockerDeployer) *Orchestrator {
 	return &Orchestrator{
-		pool:         pool,
-		hub:          hub,
-		vault:        vault,
-		workDir:      workDir,
-		builderImage: builderImage,
-		registryPush: registryPush,
-		registryPull: registryPull,
-		kubeDeployer: kube,
+		pool:           pool,
+		hub:            hub,
+		vault:          vault,
+		workDir:        workDir,
+		builderImage:   builderImage,
+		registryPush:   registryPush,
+		registryPull:   registryPull,
+		kubeDeployer:   kube,
+		dockerDeployer: docker,
 	}
 }
 
