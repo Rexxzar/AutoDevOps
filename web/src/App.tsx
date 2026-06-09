@@ -9,6 +9,7 @@ import { CompliancePage } from '@/pages/compliance'
 import { SettingsPage } from '@/pages/settings'
 import { PlaceholderPage } from '@/pages/placeholder'
 import { LoginPage } from '@/pages/login'
+import { NewDeploymentPage } from '@/pages/new-deployment'
 import { useAuth } from '@/lib/auth'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -51,6 +52,14 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/new-deployment"
+        element={
+          <RequireAuth>
+            <NewDeploymentPage />
+          </RequireAuth>
+        }
+      />
       <Route
         path="/*"
         element={

@@ -13,18 +13,21 @@ import (
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
+	"github.com/Rexxzar/autodevops/internal/terraform"
 )
 
 type Server struct {
-	db     *pgxpool.Pool
-	auth   *auth.Auth
-	hub    *sse.Hub
-	vault  *secrets.Vault
-	deploy *deploy.Orchestrator
+	db       *pgxpool.Pool
+	auth     *auth.Auth
+	hub      *sse.Hub
+	vault    *secrets.Vault
+	deploy   *deploy.Orchestrator
+	tfRunner *terraform.Runner
+	publicIP string
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, publicIP string) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, publicIP: publicIP}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -34,6 +37,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 
 	r.Get("/healthz", s.handleHealth)
 	r.Post("/auth/login", s.handleLogin)
+	r.Get("/dns/check", s.handleDNSCheck)
 
 	// GitHub can't present a JWT — security here is the per-deployment HMAC
 	// webhook secret instead (see handleGitHubWebhook), so this route stays
@@ -54,6 +58,8 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Get("/cloud/resources", s.handleListCloudResources)
 		r.Get("/compliance/findings", s.handleListComplianceFindings)
 		r.Post("/clusters", s.handleCreateCluster)
+		r.Get("/terraform/runs", s.handleListTerraformRuns)
+		r.Post("/terraform/runs", s.handleCreateTerraformRun)
 		r.Post("/secrets", s.handlePutSecret)
 		r.Get("/secrets/{name}", s.handleGetSecret)
 		r.Delete("/secrets/{name}", s.handleDeleteSecret)

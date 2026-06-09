@@ -73,7 +73,7 @@ func main() {
 	}
 
 	k8sCtrl := startK8sController(ctx, cfg, pool, hub)
-	ensureTerraformBinary(ctx, cfg)
+	tfExecPath := ensureTerraformBinary(ctx, cfg)
 	startCloudPoller(ctx, cfg, pool, hub, vault)
 
 	reposDir := filepath.Join(cfg.DataDir, "repos")
@@ -92,7 +92,12 @@ func main() {
 	complianceScanner := compliance.New(pool, hub, cfg.ComplianceThreshold)
 	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, kubeDeployer, dockerDeployer, complianceScanner)
 
-	handler := api.NewServer(pool, a, hub, vault, orchestrator)
+	var tfRunner *terraform.Runner
+	if tfExecPath != "" {
+		tfRunner = terraform.NewRunner(tfExecPath, filepath.Join(cfg.DataDir, "terraform", "workspaces"), pool, hub)
+	}
+
+	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, cfg.PublicIP)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),
@@ -160,14 +165,15 @@ func startK8sController(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 // blocking startup. The resolved path is what T14's k8s-manifest deploy step
 // will eventually pass to terraform.NewRunner via deploy.Orchestrator (T12) —
 // see internal/terraform/runner.go.
-func ensureTerraformBinary(ctx context.Context, cfg *config.Config) {
+func ensureTerraformBinary(ctx context.Context, cfg *config.Config) string {
 	installDir := filepath.Join(cfg.DataDir, "terraform", "bin")
 	execPath, err := terraform.EnsureBinary(ctx, installDir)
 	if err != nil {
 		slog.Warn("terraform: binary unavailable, provisioning disabled", "error", err)
-		return
+		return ""
 	}
 	slog.Info("terraform: binary resolved", "path", execPath)
+	return execPath
 }
 
 // startCloudPoller launches the AWS/Azure resource poller. Unlike

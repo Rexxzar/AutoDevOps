@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -28,6 +30,55 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleDNSCheck(w http.ResponseWriter, r *http.Request) {
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		writeError(w, http.StatusBadRequest, "domain query param required")
+		return
+	}
+
+	// Resolve the domain
+	addrs, err := net.LookupHost(domain)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"domain":    domain,
+			"ok":        false,
+			"server_ip": s.serverIP(r),
+			"error":     "domain does not resolve — check the name is correct",
+		})
+		return
+	}
+
+	serverIP := s.serverIP(r)
+	ok := false
+	for _, a := range addrs {
+		if a == serverIP {
+			ok = true
+			break
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"domain":       domain,
+		"resolved_ips": addrs,
+		"server_ip":    serverIP,
+		"ok":           ok,
+	})
+}
+
+// serverIP returns the public IP to tell users to point their DNS at.
+// Priority: PUBLIC_IP env var → X-Forwarded-For → remote addr.
+func (s *Server) serverIP(r *http.Request) string {
+	if s.publicIP != "" {
+		return s.publicIP
+	}
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		return fwd
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return host
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -532,6 +583,178 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": req.Name, "endpoint": req.Endpoint})
+}
+
+func (s *Server) handleListTerraformRuns(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), `
+		SELECT id::text, COALESCE(deployment_id::text,''), COALESCE(cloud_account_id::text,''),
+		       template, action, status, COALESCE(plan_output,''), created_at
+		FROM terraform_runs ORDER BY created_at DESC LIMIT 100
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list terraform runs")
+		return
+	}
+	defer rows.Close()
+	type row struct {
+		ID             string    `json:"id"`
+		DeploymentID   string    `json:"deployment_id,omitempty"`
+		CloudAccountID string    `json:"cloud_account_id,omitempty"`
+		Template       string    `json:"template"`
+		Action         string    `json:"action"`
+		Status         string    `json:"status"`
+		PlanOutput     string    `json:"plan_output,omitempty"`
+		CreatedAt      time.Time `json:"created_at"`
+	}
+	var results []row
+	for rows.Next() {
+		var rr row
+		if err := rows.Scan(&rr.ID, &rr.DeploymentID, &rr.CloudAccountID,
+			&rr.Template, &rr.Action, &rr.Status, &rr.PlanOutput, &rr.CreatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan run")
+			return
+		}
+		results = append(results, rr)
+	}
+	if results == nil {
+		results = []row{}
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+func (s *Server) handleCreateTerraformRun(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name           string            `json:"name"`
+		Provider       string            `json:"provider"`
+		CloudAccountID string            `json:"cloud_account_id"`
+		Region         string            `json:"region"`
+		ResourceType   string            `json:"resource_type"`
+		ResourceOpts   map[string]string `json:"resource_opts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" || req.Provider == "" || req.CloudAccountID == "" || req.Region == "" || req.ResourceType == "" {
+		writeError(w, http.StatusBadRequest, "name, provider, cloud_account_id, region, resource_type required")
+		return
+	}
+	if s.tfRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "terraform binary unavailable — check server logs")
+		return
+	}
+
+	config, err := buildTerraformConfig(req.Provider, req.ResourceType, req.Name, req.Region, req.ResourceOpts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Insert placeholder deployment so the run has a deployment_id foreign key.
+	var deploymentID string
+	_ = s.db.QueryRow(r.Context(), `
+		INSERT INTO deployments (name, repo_url, branch, target_type, status)
+		VALUES ($1, 'terraform:'||$1, 'main', 'cloud', 'pending')
+		ON CONFLICT (name) DO UPDATE SET updated_at = NOW()
+		RETURNING id::text
+	`, req.Name).Scan(&deploymentID)
+
+	go func() {
+		ctx := context.Background()
+		if _, err := s.tfRunner.Plan(ctx, deploymentID, req.CloudAccountID, req.Provider+"-stack", config); err != nil {
+			slog.Error("terraform: plan failed", "name", req.Name, "error", err)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":      "plan_initiated",
+		"name":        req.Name,
+		"provider":    req.Provider,
+		"description": "Terraform plan running — watch the SSE stream for terraform.run events",
+	})
+}
+
+func strOpt(opts map[string]string, key, def string) string {
+	if v, ok := opts[key]; ok && v != "" {
+		return v
+	}
+	return def
+}
+
+func buildTerraformConfig(provider, resourceType, name, region string, opts map[string]string) ([]byte, error) {
+	if opts == nil {
+		opts = map[string]string{}
+	}
+	switch provider {
+	case "aws":
+		params := map[string]interface{}{
+			"Name":    name,
+			"Region":  region,
+			"VPCCIDR": "10.0.0.0/16",
+		}
+		switch resourceType {
+		case "ecs":
+			params["ECS"] = map[string]interface{}{
+				"Image":         strOpt(opts, "image", "nginx:latest"),
+				"CPU":           strOpt(opts, "cpu", "256"),
+				"Memory":        strOpt(opts, "memory", "512"),
+				"ContainerPort": strOpt(opts, "port", "80"),
+				"DesiredCount":  strOpt(opts, "desired_count", "1"),
+			}
+		case "vm":
+			ami := strOpt(opts, "ami", "ami-0c101f26f147fa7fd")
+			ec2 := map[string]interface{}{
+				"InstanceType": strOpt(opts, "instance_type", "t3.micro"),
+				"AMI":          ami,
+			}
+			if kn := strOpt(opts, "key_name", ""); kn != "" {
+				ec2["KeyName"] = kn
+			}
+			params["EC2"] = ec2
+		case "rds":
+			params["RDS"] = map[string]interface{}{
+				"Engine":        strOpt(opts, "engine", "postgres"),
+				"InstanceClass": strOpt(opts, "instance_class", "db.t3.micro"),
+				"DBName":        strOpt(opts, "db_name", name),
+				"Username":      strOpt(opts, "username", "admin"),
+			}
+		}
+		raw, _ := json.Marshal(params)
+		return raw, nil
+	case "azure":
+		params := map[string]interface{}{
+			"Name":       name,
+			"Location":   region,
+			"VNetCIDR":   "10.0.0.0/16",
+			"SubnetCIDR": "10.0.1.0/24",
+		}
+		switch resourceType {
+		case "aci":
+			params["ACI"] = map[string]interface{}{
+				"Image":    strOpt(opts, "image", "nginx:latest"),
+				"CPU":      strOpt(opts, "cpu", "1"),
+				"MemoryGB": strOpt(opts, "memory_gb", "1.5"),
+				"Port":     strOpt(opts, "port", "80"),
+				"OSType":   strOpt(opts, "os_type", "Linux"),
+			}
+		case "vm":
+			params["VM"] = map[string]interface{}{
+				"Size":          strOpt(opts, "size", "Standard_B1s"),
+				"AdminUsername": strOpt(opts, "admin_username", "azureuser"),
+				"ImageSKU":      strOpt(opts, "image_sku", "Ubuntu2204"),
+			}
+		case "db":
+			params["DB"] = map[string]interface{}{
+				"Engine":     strOpt(opts, "engine", "postgres"),
+				"SKU":        strOpt(opts, "sku", "B_Gen5_1"),
+				"DBName":     strOpt(opts, "db_name", name),
+				"AdminLogin": strOpt(opts, "admin_login", "adminuser"),
+			}
+		}
+		raw, _ := json.Marshal(params)
+		return raw, nil
+	}
+	return nil, fmt.Errorf("unknown provider %q", provider)
 }
 
 func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request) {

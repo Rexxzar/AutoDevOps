@@ -24,6 +24,8 @@ type Config struct {
 	IngressDomain string // base domain for generated Ingress hostnames, e.g. autodevops.local
 	// Compliance gate (T16)
 	ComplianceThreshold string // minimum severity that blocks deploy: critical|high|medium|low|info
+	// DNS / TLS
+	PublicIP string // server's public IP shown to users when DNS doesn't point here yet
 }
 
 func Load() *Config {
@@ -43,6 +45,7 @@ func Load() *Config {
 		RegistryPull:      env("REGISTRY_PULL", "registry.local:5000"),
 		IngressDomain:       env("INGRESS_DOMAIN", "autodevops.local"),
 		ComplianceThreshold: env("COMPLIANCE_THRESHOLD", "high"),
+		PublicIP:            env("PUBLIC_IP", ""),
 	}
 }
 

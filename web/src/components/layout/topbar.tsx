@@ -1,5 +1,6 @@
 import { Search, Sun, Moon, Bell, Plus, ChevronDown, LogOut } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { useTheme } from '@/lib/theme'
 import { useAuth } from '@/lib/auth'
@@ -10,6 +11,7 @@ interface Finding { severity: string }
 export function Topbar() {
   const { theme, toggleTheme } = useTheme()
   const { logout, token } = useAuth()
+  const navigate = useNavigate()
 
   const { data: findings = [] } = useQuery({
     queryKey: ['compliance-findings-badge'],
@@ -42,21 +44,12 @@ export function Topbar() {
       </div>
 
       <div className="ml-auto flex items-center gap-1.5">
-        <Button size="sm" className="gap-1.5">
+        <Button size="sm" className="gap-1.5" onClick={() => navigate('/new-deployment')}>
           <Plus className="size-4" />
           <span className="hidden sm:inline">New deployment</span>
         </Button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={toggleTheme}
-          aria-label="Toggle theme"
-        >
-          {theme === 'dark' ? (
-            <Sun className="size-4" />
-          ) : (
-            <Moon className="size-4" />
-          )}
+        <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label="Toggle theme">
+          {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
         </Button>
         <Button variant="ghost" size="icon-sm" aria-label="Notifications" className="relative">
           <Bell className="size-4" />
@@ -66,12 +59,7 @@ export function Topbar() {
               : <span className="absolute right-1 top-1 size-2 rounded-full bg-critical" />
           )}
         </Button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={logout}
-          aria-label="Sign out"
-        >
+        <Button variant="ghost" size="icon-sm" onClick={logout} aria-label="Sign out">
           <LogOut className="size-4" />
         </Button>
       </div>
