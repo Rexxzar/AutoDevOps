@@ -214,7 +214,8 @@ func classify(pod *corev1.Pod) PodHealth {
 
 func isSystemNamespace(ns string) bool {
 	switch ns {
-	case "kube-system", "kube-public", "kube-node-lease", "ingress-nginx":
+	case "kube-system", "kube-public", "kube-node-lease",
+		"ingress-nginx", "local-path-storage", "cert-manager":
 		return true
 	}
 	return false

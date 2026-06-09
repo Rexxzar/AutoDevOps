@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/Rexxzar/autodevops/internal/auth"
@@ -66,7 +67,44 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []any{})
+	rows, err := s.db.Query(r.Context(), `
+		SELECT id::text, name, repo_url, branch,
+		       COALESCE(framework,''), target_type, status,
+		       COALESCE(image_ref,''), created_at, updated_at
+		FROM deployments ORDER BY created_at DESC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list deployments")
+		return
+	}
+	defer rows.Close()
+
+	type row struct {
+		ID         string    `json:"id"`
+		Name       string    `json:"name"`
+		RepoURL    string    `json:"repo_url"`
+		Branch     string    `json:"branch"`
+		Framework  string    `json:"framework,omitempty"`
+		TargetType string    `json:"target_type"`
+		Status     string    `json:"status"`
+		ImageRef   string    `json:"image_ref,omitempty"`
+		CreatedAt  time.Time `json:"created_at"`
+		UpdatedAt  time.Time `json:"updated_at"`
+	}
+	var results []row
+	for rows.Next() {
+		var d row
+		if err := rows.Scan(&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
+			&d.TargetType, &d.Status, &d.ImageRef, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan deployment")
+			return
+		}
+		results = append(results, d)
+	}
+	if results == nil {
+		results = []row{}
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 // handleCreateDeployment registers a deployment for the Git-to-deploy
@@ -231,11 +269,68 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []any{})
+	rows, err := s.db.Query(r.Context(), `
+		SELECT id::text, name, endpoint, status, created_at
+		FROM k8s_clusters ORDER BY created_at DESC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list clusters")
+		return
+	}
+	defer rows.Close()
+
+	type row struct {
+		ID        string    `json:"id"`
+		Name      string    `json:"name"`
+		Endpoint  string    `json:"endpoint"`
+		Status    string    `json:"status"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	var results []row
+	for rows.Next() {
+		var c row
+		if err := rows.Scan(&c.ID, &c.Name, &c.Endpoint, &c.Status, &c.CreatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan cluster")
+			return
+		}
+		results = append(results, c)
+	}
+	if results == nil {
+		results = []row{}
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 func (s *Server) handleListCloudAccounts(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []any{})
+	rows, err := s.db.Query(r.Context(), `
+		SELECT id::text, provider, name, created_at
+		FROM cloud_accounts ORDER BY created_at DESC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list cloud accounts")
+		return
+	}
+	defer rows.Close()
+
+	type row struct {
+		ID        string    `json:"id"`
+		Provider  string    `json:"provider"`
+		Name      string    `json:"name"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	var results []row
+	for rows.Next() {
+		var a row
+		if err := rows.Scan(&a.ID, &a.Provider, &a.Name, &a.CreatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan cloud account")
+			return
+		}
+		results = append(results, a)
+	}
+	if results == nil {
+		results = []row{}
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 // handleCreateCloudAccount registers a cloud account for the T11 poller to
