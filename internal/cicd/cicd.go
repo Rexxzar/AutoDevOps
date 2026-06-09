@@ -29,7 +29,7 @@ func Workflow(p WorkflowParams) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `# AutoDevOps — generated CI/CD workflow for "%s"
-# Commit this file to: .github/workflows/autodevops.yml
+# Commit this file to: .github/workflows/autodevops-%s.yml
 #
 # Add these secrets to your repository (Settings → Secrets → Actions):
 #   AUTODEVOPS_WEBHOOK_SECRET   your deployment webhook secret
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-`, p.Name, p.Branch, p.Branch)
+`, p.Name, p.Name, p.Branch, p.Branch)
 
 	b.WriteString(ciSteps(p.Framework))
 

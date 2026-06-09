@@ -437,7 +437,7 @@ func (s *Server) handleGetDeploymentWorkflow(w http.ResponseWriter, r *http.Requ
 
 	yaml := cicd.Workflow(params)
 	w.Header().Set("Content-Type", "text/x-yaml; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="autodevops.yml"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="autodevops-`+params.Name+`.yml"`)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(yaml))
 }
