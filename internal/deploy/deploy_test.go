@@ -12,14 +12,79 @@ import (
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
+
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testOrchestrator builds an Orchestrator with realistic-but-inert registry
+// settings — the fast tests never actually build an image.
+func testOrchestrator(pool *pgxpool.Pool, vault *secrets.Vault, hub *sse.Hub, workDir string) *Orchestrator {
+	return New(pool, hub, vault, workDir,
+		"paketobuildpacks/builder-jammy-full:latest",
+		"localhost:5001",
+		"registry.local:5000",
+	)
+}
+
 // --- Fast tests: pure functions fed temp dirs / synthetic input, no
 // network/DB required (mirrors internal/cloud's "synthetic SDK structs, no
 // credentials" fast-test layer). ---
+
+func TestImageRefs(t *testing.T) {
+	o := &Orchestrator{registryPush: "localhost:5001", registryPull: "registry.local:5000"}
+	push, pull := o.imageRefs("my-app", "abc123def456")
+
+	wantPush := "localhost:5001/my-app:abc123def456"
+	wantPull := "registry.local:5000/my-app:abc123def456"
+
+	if push != wantPush {
+		t.Errorf("pushRef = %q, want %q", push, wantPush)
+	}
+	if pull != wantPull {
+		t.Errorf("pullRef = %q, want %q", pull, wantPull)
+	}
+}
+
+func TestHeadSHA12(t *testing.T) {
+	dir := t.TempDir()
+
+	// Initialise a real git repo with one commit so headSHA12 has a HEAD to read.
+	repo, err := gogit.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if _, err := wt.Add("hello.txt"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	hash, err := wt.Commit("init", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "test", Email: "test@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+
+	sha, err := headSHA12(dir)
+	if err != nil {
+		t.Fatalf("headSHA12: %v", err)
+	}
+	if len(sha) != 12 {
+		t.Errorf("headSHA12 length = %d, want 12", len(sha))
+	}
+	if sha != hash.String()[:12] {
+		t.Errorf("headSHA12 = %q, want %q", sha, hash.String()[:12])
+	}
+}
 
 func TestDetectFramework(t *testing.T) {
 	cases := []struct {
@@ -145,7 +210,14 @@ func jsonHasKey(t *testing.T, raw []byte, key string) bool {
 // uses, runs ProcessPush directly, and confirms the clone landed on disk and
 // deployments.framework was persisted.
 //
-// Locally:
+// After T13 ProcessPush also attempts a pack build. With octocat/Hello-World
+// (no language markers, no buildpacks) the build fails and status becomes
+// "failed" — that's the expected outcome here and is explicitly asserted.
+// Set AUTODEVOPS_BUILD_VALIDATE=1 alongside AUTODEVOPS_DEPLOY_VALIDATE=1 to
+// also run the full pack build against a Docker daemon; without it, the test
+// still verifies clone + framework + correct status transition on build failure.
+//
+// Locally (clone + framework only, build attempt expected to fail):
 //
 //	AUTODEVOPS_DEPLOY_VALIDATE=1 go test ./internal/deploy/... -run TestProcessPushLifecycle -v
 func TestProcessPushLifecycle(t *testing.T) {
@@ -160,15 +232,19 @@ func TestProcessPushLifecycle(t *testing.T) {
 	}
 	hub := sse.NewHub()
 	workDir := t.TempDir()
-	orchestrator := New(pool, hub, vault, workDir)
+	orchestrator := testOrchestrator(pool, vault, hub, workDir)
 
 	deploymentID := seedDeployment(t, pool, vault, "https://github.com/octocat/Hello-World.git", "master")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	if err := orchestrator.ProcessPush(ctx, deploymentID); err != nil {
-		t.Fatalf("ProcessPush: %v", err)
+	// ProcessPush clones, detects framework, then attempts a pack build.
+	// octocat/Hello-World has no buildpack-detectable language, so the build
+	// will fail and status will land on "failed" — log but don't fatal.
+	buildErr := orchestrator.ProcessPush(ctx, deploymentID)
+	if buildErr != nil {
+		t.Logf("ProcessPush returned error (expected build failure for unknown framework): %v", buildErr)
 	}
 
 	repoPath := filepath.Join(workDir, deploymentID)
@@ -176,18 +252,31 @@ func TestProcessPushLifecycle(t *testing.T) {
 		t.Errorf("expected a git workspace at %s: %v", repoPath, err)
 	}
 
-	var framework string
-	if err := pool.QueryRow(ctx, "SELECT framework FROM deployments WHERE id = $1", deploymentID).Scan(&framework); err != nil {
-		t.Fatalf("look up persisted framework: %v", err)
+	var framework, status string
+	if err := pool.QueryRow(ctx,
+		"SELECT COALESCE(framework,''), status FROM deployments WHERE id = $1", deploymentID,
+	).Scan(&framework, &status); err != nil {
+		t.Fatalf("look up persisted row: %v", err)
 	}
 	if framework == "" {
 		t.Error("expected deployments.framework to be populated after ProcessPush")
 	}
-	t.Logf("detected framework: %q", framework)
+	t.Logf("framework=%q status=%q", framework, status)
 
-	// ensureClone must converge an existing workspace too, not just create one.
-	if err := orchestrator.ProcessPush(ctx, deploymentID); err != nil {
-		t.Fatalf("ProcessPush (second run, existing workspace): %v", err)
+	// With a real Docker daemon + AUTODEVOPS_BUILD_VALIDATE=1, a buildable
+	// repo would end up "deploying". Without one, the build fails → "failed".
+	wantStatuses := map[string]bool{"failed": true, "deploying": true}
+	if !wantStatuses[status] {
+		t.Errorf("status = %q, want one of %v", status, wantStatuses)
+	}
+
+	// Second run: ensureClone must converge an existing workspace (idempotent).
+	buildErr2 := orchestrator.ProcessPush(ctx, deploymentID)
+	if buildErr2 != nil {
+		t.Logf("ProcessPush (second run) returned error (expected): %v", buildErr2)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
+		t.Errorf("workspace gone after second run: %v", err)
 	}
 }
 

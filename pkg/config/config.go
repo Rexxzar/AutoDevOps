@@ -16,6 +16,10 @@ type Config struct {
 	ClusterName       string
 	DataDir           string
 	CloudPollInterval time.Duration
+	// Paketo Buildpacks (T13)
+	BuilderImage string // CNB builder image, e.g. paketobuildpacks/builder-jammy-full:latest
+	RegistryPush string // host:port pack pushes to (host-accessible), e.g. localhost:5001
+	RegistryPull string // host:port k8s manifests reference (in-cluster), e.g. registry.local:5000
 }
 
 func Load() *Config {
@@ -30,6 +34,9 @@ func Load() *Config {
 		ClusterName:       env("K8S_CLUSTER_NAME", "autodevops"),
 		DataDir:           env("DATA_DIR", "./data"),
 		CloudPollInterval: envDuration("CLOUD_POLL_INTERVAL", 60*time.Second),
+		BuilderImage:      env("BUILDER_IMAGE", "paketobuildpacks/builder-jammy-full:latest"),
+		RegistryPush:      env("REGISTRY_PUSH", "localhost:5001"),
+		RegistryPull:      env("REGISTRY_PULL", "registry.local:5000"),
 	}
 }
 

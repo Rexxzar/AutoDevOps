@@ -75,7 +75,7 @@ func main() {
 	startCloudPoller(ctx, cfg, pool, hub, vault)
 
 	reposDir := filepath.Join(cfg.DataDir, "repos")
-	orchestrator := deploy.New(pool, hub, vault, reposDir)
+	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull)
 
 	handler := api.NewServer(pool, a, hub, vault, orchestrator)
 

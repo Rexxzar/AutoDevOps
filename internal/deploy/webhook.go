@@ -42,21 +42,20 @@ func VerifyWebhookSignature(payload []byte, signatureHeader string, secret []byt
 // ProcessPush is the orchestration entrypoint for a verified GitHub push
 // delivery, run in a goroutine by the webhook handler — GitHub times out
 // webhook responses after ~10s, so cloning must never block the HTTP response.
-// It looks up the deployment itself (mirrors Poller.pollAccount's
-// self-contained "look up by ID, decrypt creds, do the work" shape): decrypts
-// any stored git credentials, converges the clone workspace to the target
-// branch, detects the framework, persists it, and publishes the updated row
-// as a single "deploy.status" SSE event.
+// Pipeline: look up deployment → decrypt git creds → converge clone workspace →
+// detect framework → persist (framework + status=building) → build OCI image via
+// Paketo (→ status=deploying on success, status=failed on build error).
 func (o *Orchestrator) ProcessPush(ctx context.Context, deploymentID string) error {
 	var (
+		name             string
 		repoURL          string
 		branch           string
 		gitCredsSecretID *string
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT repo_url, branch, git_credentials_secret_id::text
+		SELECT name, repo_url, branch, git_credentials_secret_id::text
 		FROM deployments WHERE id = $1
-	`, deploymentID).Scan(&repoURL, &branch, &gitCredsSecretID)
+	`, deploymentID).Scan(&name, &repoURL, &branch, &gitCredsSecretID)
 	if err != nil {
 		return fmt.Errorf("deploy: look up deployment %s: %w", deploymentID, err)
 	}
@@ -84,27 +83,74 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, deploymentID string) err
 		return fmt.Errorf("deploy: detect framework for %s: %w", repoPath, err)
 	}
 
+	// Persist framework + transition to building in a single UPDATE so the
+	// dashboard sees the framework and the building status simultaneously.
 	dep, err := o.persistFramework(ctx, deploymentID, framework)
 	if err != nil {
 		return err
 	}
-
 	o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
-	return nil
+
+	return o.buildImage(ctx, deploymentID, name, repoPath)
 }
 
+// persistFramework updates the framework column and transitions status to
+// "building" in one UPDATE — combining the two into a single round-trip
+// avoids a momentary state where framework is set but status is still pending.
 func (o *Orchestrator) persistFramework(ctx context.Context, deploymentID, framework string) (Deployment, error) {
 	var d Deployment
 	err := o.pool.QueryRow(ctx, `
 		UPDATE deployments
-		SET framework = $1, updated_at = now()
+		SET framework = $1, status = 'building', updated_at = now()
 		WHERE id = $2
-		RETURNING id::text, name, repo_url, branch, framework, target_type, status, updated_at
+		RETURNING id::text, name, repo_url, branch, framework,
+		          COALESCE(image_ref, ''), target_type, status, updated_at
 	`, framework, deploymentID).Scan(
-		&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework, &d.TargetType, &d.Status, &d.UpdatedAt,
+		&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
+		&d.ImageRef, &d.TargetType, &d.Status, &d.UpdatedAt,
 	)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("deploy: persist framework for %s: %w", deploymentID, err)
+	}
+	return d, nil
+}
+
+// persistStatus updates only the status column — used by buildImage to record
+// terminal states (failed) without touching framework or image_ref.
+func (o *Orchestrator) persistStatus(ctx context.Context, deploymentID, status string) (Deployment, error) {
+	var d Deployment
+	err := o.pool.QueryRow(ctx, `
+		UPDATE deployments
+		SET status = $1, updated_at = now()
+		WHERE id = $2
+		RETURNING id::text, name, repo_url, branch, framework,
+		          COALESCE(image_ref, ''), target_type, status, updated_at
+	`, status, deploymentID).Scan(
+		&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
+		&d.ImageRef, &d.TargetType, &d.Status, &d.UpdatedAt,
+	)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("deploy: persist status %q for %s: %w", status, deploymentID, err)
+	}
+	return d, nil
+}
+
+// persistImageRef records the k8s-resolvable image reference and transitions
+// status to "deploying" — called by buildImage after a successful pack build.
+func (o *Orchestrator) persistImageRef(ctx context.Context, deploymentID, imageRef string) (Deployment, error) {
+	var d Deployment
+	err := o.pool.QueryRow(ctx, `
+		UPDATE deployments
+		SET image_ref = $1, status = 'deploying', updated_at = now()
+		WHERE id = $2
+		RETURNING id::text, name, repo_url, branch, framework,
+		          COALESCE(image_ref, ''), target_type, status, updated_at
+	`, imageRef, deploymentID).Scan(
+		&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
+		&d.ImageRef, &d.TargetType, &d.Status, &d.UpdatedAt,
+	)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("deploy: persist image_ref for %s: %w", deploymentID, err)
 	}
 	return d, nil
 }
