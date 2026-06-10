@@ -84,28 +84,27 @@ func (p *Poller) pollAccount(ctx context.Context, cloudAccountID, provider, secr
 		return fmt.Errorf("cloud: decrypt credentials: %w", err)
 	}
 
-	var prov Provider
+	var resources []Resource
 	switch provider {
 	case ProviderAWS:
 		var creds awsCredentials
 		if err := json.Unmarshal(plaintext, &creds); err != nil {
 			return fmt.Errorf("cloud: decode aws credentials: %w", err)
 		}
-		prov, err = newAWSProvider(ctx, cloudAccountID, creds)
+		resources, err = p.listAWSResources(ctx, cloudAccountID, creds)
 	case ProviderAzure:
 		var creds azureCredentials
 		if err := json.Unmarshal(plaintext, &creds); err != nil {
 			return fmt.Errorf("cloud: decode azure credentials: %w", err)
 		}
+		var prov Provider
 		prov, err = newAzureProvider(cloudAccountID, creds)
+		if err == nil {
+			resources, err = prov.ListResources(ctx)
+		}
 	default:
 		return fmt.Errorf("cloud: unknown provider %q", provider)
 	}
-	if err != nil {
-		return fmt.Errorf("cloud: build provider: %w", err)
-	}
-
-	resources, err := prov.ListResources(ctx)
 	if err != nil {
 		return fmt.Errorf("cloud: list resources: %w", err)
 	}
@@ -116,6 +115,111 @@ func (p *Poller) pollAccount(ctx context.Context, cloudAccountID, provider, secr
 			continue
 		}
 		p.hub.Publish(sse.Event{Type: "cloud.resource", Payload: r})
+	}
+
+	if err := p.pruneStaleResources(ctx, cloudAccountID, resources); err != nil {
+		slog.Error("cloud: prune stale resources", "cloud_account_id", cloudAccountID, "error", err)
+	}
+	return nil
+}
+
+// listAWSResources lists EC2/RDS/ECS resources across the account's home
+// region (creds.Region) plus every region AutoDevOps has provisioned an AWS
+// resource into for this account. The AWS SDK has no "list across all
+// regions" call, and polling all ~30 partitions every tick would be wasteful
+// — provisioned_resources is the source of truth for which regions
+// AutoDevOps itself has put resources in.
+func (p *Poller) listAWSResources(ctx context.Context, cloudAccountID string, creds awsCredentials) ([]Resource, error) {
+	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" || creds.Region == "" {
+		return nil, fmt.Errorf("cloud: aws credentials require access_key_id, secret_access_key and region")
+	}
+
+	regions, err := p.awsRegions(ctx, cloudAccountID, creds.Region)
+	if err != nil {
+		return nil, err
+	}
+
+	var resources []Resource
+	for _, region := range regions {
+		prov, err := newAWSProvider(ctx, cloudAccountID, region, creds)
+		if err != nil {
+			return nil, fmt.Errorf("cloud: build provider for %s: %w", region, err)
+		}
+		rs, err := prov.ListResources(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("cloud: list aws resources in %s: %w", region, err)
+		}
+		resources = append(resources, rs...)
+	}
+	return resources, nil
+}
+
+// awsRegions returns homeRegion plus every distinct region AutoDevOps has
+// provisioned an AWS resource into for cloudAccountID, deduplicated.
+func (p *Poller) awsRegions(ctx context.Context, cloudAccountID, homeRegion string) ([]string, error) {
+	rows, err := p.pool.Query(ctx,
+		"SELECT DISTINCT region FROM provisioned_resources WHERE cloud_account_id = $1 AND provider = 'aws'",
+		cloudAccountID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("cloud: list provisioned regions: %w", err)
+	}
+	defer rows.Close()
+
+	regions := map[string]struct{}{homeRegion: {}}
+	for rows.Next() {
+		var region string
+		if err := rows.Scan(&region); err != nil {
+			return nil, fmt.Errorf("cloud: scan provisioned region: %w", err)
+		}
+		regions[region] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cloud: list provisioned regions: %w", err)
+	}
+
+	out := make([]string, 0, len(regions))
+	for region := range regions {
+		out = append(out, region)
+	}
+	return out, nil
+}
+
+// pruneStaleResources deletes cloud_resources rows for cloudAccountID that
+// the latest poll no longer reports — e.g. a resource destroyed via terraform
+// (or directly in the cloud console). Without this, destroyed resources stay
+// in the Cloud Inventory forever with a frozen polled_at.
+func (p *Poller) pruneStaleResources(ctx context.Context, cloudAccountID string, current []Resource) error {
+	types := make([]string, len(current))
+	ids := make([]string, len(current))
+	for i, r := range current {
+		types[i] = r.ResourceType
+		ids[i] = r.ResourceID
+	}
+
+	rows, err := p.pool.Query(ctx, `
+		DELETE FROM cloud_resources
+		WHERE cloud_account_id = $1
+		AND (resource_type, resource_id) NOT IN (
+			SELECT * FROM unnest($2::text[], $3::text[])
+		)
+		RETURNING resource_type, resource_id
+	`, cloudAccountID, types, ids)
+	if err != nil {
+		return fmt.Errorf("cloud: prune stale resources: %w", err)
+	}
+	defer rows.Close()
+
+	var pruned bool
+	for rows.Next() {
+		pruned = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("cloud: prune stale resources: %w", err)
+	}
+
+	if pruned {
+		p.hub.Publish(sse.Event{Type: "cloud.resource", Payload: map[string]string{"cloud_account_id": cloudAccountID}})
 	}
 	return nil
 }

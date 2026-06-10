@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/hashicorp/terraform-exec/tfexec"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,7 +17,8 @@ import (
 // the table created in the T01 schema.
 type Run struct {
 	ID             string `json:"id"`
-	DeploymentID   string `json:"deployment_id"`
+	DeploymentID   string `json:"deployment_id,omitempty"`
+	ResourceID     string `json:"resource_id,omitempty"`
 	CloudAccountID string `json:"cloud_account_id,omitempty"`
 	Template       string `json:"template"`
 	Action         string `json:"action"`
@@ -46,6 +48,7 @@ type Runner struct {
 	baseDir  string
 	pool     *pgxpool.Pool
 	hub      *sse.Hub
+	vault    *secrets.Vault
 
 	mu       sync.Mutex
 	inFlight map[string]struct{}
@@ -54,29 +57,34 @@ type Runner struct {
 // NewRunner builds a Runner. execPath is a resolved terraform binary (see
 // EnsureBinary); baseDir is the root directory under which each deployment
 // gets its own persistent workspace (one combined stack + state file per
-// deployment — see terraform-engine-design memory).
-func NewRunner(execPath, baseDir string, pool *pgxpool.Pool, hub *sse.Hub) *Runner {
+// deployment — see terraform-engine-design memory). vault decrypts
+// cloud_accounts credentials for cloudAccountID-scoped runs (see
+// providerEnv in credentials.go).
+func NewRunner(execPath, baseDir string, pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault) *Runner {
 	return &Runner{
 		execPath: execPath,
 		baseDir:  baseDir,
 		pool:     pool,
 		hub:      hub,
+		vault:    vault,
 		inFlight: make(map[string]struct{}),
 	}
 }
 
-// Plan renders config into the deployment's workspace (overwriting any
-// previous version — the engine always regenerates the full desired state)
-// and runs `terraform init` + `terraform plan -out=tfplan`, recording the run
-// with a human-readable summary of the plan (`terraform show <planfile>`).
-func (r *Runner) Plan(ctx context.Context, deploymentID, cloudAccountID, template string, config []byte) (*Run, error) {
-	return r.run(ctx, deploymentID, cloudAccountID, template, actionPlan, false, func(ctx context.Context) (string, error) {
-		dir, err := writeConfig(r.baseDir, deploymentID, config)
+// Plan renders config into the workspace identified by deploymentID (git
+// deployments) or resourceID (standalone Resources — exactly one of the two
+// is non-empty), overwriting any previous version — the engine always
+// regenerates the full desired state — and runs `terraform init` +
+// `terraform plan -out=tfplan`, recording the run with a human-readable
+// summary of the plan (`terraform show <planfile>`).
+func (r *Runner) Plan(ctx context.Context, deploymentID, resourceID, cloudAccountID, template string, config []byte) (*Run, error) {
+	return r.run(ctx, deploymentID, resourceID, cloudAccountID, template, actionPlan, false, func(ctx context.Context) (string, error) {
+		dir, err := writeConfig(r.baseDir, workspaceKey(deploymentID, resourceID), config)
 		if err != nil {
 			return "", err
 		}
 
-		tf, log, err := r.client(dir)
+		tf, log, err := r.client(ctx, dir, cloudAccountID)
 		if err != nil {
 			return "", err
 		}
@@ -98,20 +106,24 @@ func (r *Runner) Plan(ctx context.Context, deploymentID, cloudAccountID, templat
 }
 
 // Apply runs `terraform apply` against the most recently saved plan for the
-// deployment, recording the resulting state file path. Returns a friendly
-// error if Plan hasn't been run for this deployment yet.
-func (r *Runner) Apply(ctx context.Context, deploymentID, cloudAccountID, template string) (*Run, error) {
-	return r.run(ctx, deploymentID, cloudAccountID, template, actionApply, true, func(ctx context.Context) (string, error) {
-		dir := workspaceDir(r.baseDir, deploymentID)
+// workspace, recording the resulting state file path. Returns a friendly
+// error if Plan hasn't been run for this workspace yet.
+func (r *Runner) Apply(ctx context.Context, deploymentID, resourceID, cloudAccountID, template string) (*Run, error) {
+	return r.run(ctx, deploymentID, resourceID, cloudAccountID, template, actionApply, true, func(ctx context.Context) (string, error) {
+		key := workspaceKey(deploymentID, resourceID)
+		dir, err := workspaceDir(r.baseDir, key)
+		if err != nil {
+			return "", err
+		}
 		ok, err := hasPlan(dir)
 		if err != nil {
 			return "", err
 		}
 		if !ok {
-			return "", fmt.Errorf("no saved plan for deployment %s — run Plan first", deploymentID)
+			return "", fmt.Errorf("no saved plan for %s — run Plan first", key)
 		}
 
-		tf, log, err := r.client(dir)
+		tf, log, err := r.client(ctx, dir, cloudAccountID)
 		if err != nil {
 			return "", err
 		}
@@ -125,21 +137,25 @@ func (r *Runner) Apply(ctx context.Context, deploymentID, cloudAccountID, templa
 	})
 }
 
-// Destroy tears down every resource in the deployment's existing workspace.
-// Returns a friendly error if the deployment has no workspace yet (nothing
-// has ever been planned/applied).
-func (r *Runner) Destroy(ctx context.Context, deploymentID, cloudAccountID, template string) (*Run, error) {
-	return r.run(ctx, deploymentID, cloudAccountID, template, actionDestroy, true, func(ctx context.Context) (string, error) {
-		dir := workspaceDir(r.baseDir, deploymentID)
+// Destroy tears down every resource in the workspace's existing state.
+// Returns a friendly error if the workspace doesn't exist yet (nothing has
+// ever been planned/applied).
+func (r *Runner) Destroy(ctx context.Context, deploymentID, resourceID, cloudAccountID, template string) (*Run, error) {
+	return r.run(ctx, deploymentID, resourceID, cloudAccountID, template, actionDestroy, true, func(ctx context.Context) (string, error) {
+		key := workspaceKey(deploymentID, resourceID)
+		dir, err := workspaceDir(r.baseDir, key)
+		if err != nil {
+			return "", err
+		}
 		ok, err := hasWorkspace(dir)
 		if err != nil {
 			return "", err
 		}
 		if !ok {
-			return "", fmt.Errorf("no workspace for deployment %s — nothing to destroy", deploymentID)
+			return "", fmt.Errorf("no workspace for %s — nothing to destroy", key)
 		}
 
-		tf, log, err := r.client(dir)
+		tf, log, err := r.client(ctx, dir, cloudAccountID)
 		if err != nil {
 			return "", err
 		}
@@ -155,32 +171,59 @@ func (r *Runner) Destroy(ctx context.Context, deploymentID, cloudAccountID, temp
 
 // client builds a tfexec client rooted at dir with combined stdout/stderr
 // captured into a buffer — used both as the recorded run output on success
-// and as failure context when a step errors partway through.
-func (r *Runner) client(dir string) (*tfexec.Terraform, *bytes.Buffer, error) {
+// and as failure context when a step errors partway through. When
+// cloudAccountID is set, the subprocess env is augmented with that account's
+// decrypted provider credentials (see providerEnv) so the AWS/Azure provider
+// can authenticate without credentials ever touching the generated HCL.
+func (r *Runner) client(ctx context.Context, dir, cloudAccountID string) (*tfexec.Terraform, *bytes.Buffer, error) {
 	tf, err := tfexec.NewTerraform(dir, r.execPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("new client for %s: %w", dir, err)
 	}
+
+	env, err := r.providerEnv(ctx, cloudAccountID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if env != nil {
+		if err := tf.SetEnv(env); err != nil {
+			return nil, nil, fmt.Errorf("set env for %s: %w", dir, err)
+		}
+	}
+
 	var log bytes.Buffer
 	tf.SetStdout(&log)
 	tf.SetStderr(&log)
 	return tf, &log, nil
 }
 
+// workspaceKey returns the identifier used for the on-disk workspace
+// directory and the in-flight lock — exactly one of deploymentID/resourceID
+// is non-empty (git deployments vs. standalone Resources), and the workspace
+// is keyed off whichever one applies.
+func workspaceKey(deploymentID, resourceID string) string {
+	if deploymentID != "" {
+		return deploymentID
+	}
+	return resourceID
+}
+
 // run drives one plan/apply/destroy invocation through the full
 // pending -> running -> succeeded/failed lifecycle: it records and publishes
 // the run before and after executing step, and rejects a second concurrent
-// invocation for the same deployment with a clear error rather than letting
+// invocation for the same workspace with a clear error rather than letting
 // terraform's own state-lock error surface (matches the "deterministic
 // control plane, no surprise queueing" framing).
-func (r *Runner) run(ctx context.Context, deploymentID, cloudAccountID, template, action string, recordState bool, step func(context.Context) (string, error)) (*Run, error) {
-	if !r.acquire(deploymentID) {
-		return nil, fmt.Errorf("terraform: %s deployment %s: a run is already in progress for this deployment", action, deploymentID)
+func (r *Runner) run(ctx context.Context, deploymentID, resourceID, cloudAccountID, template, action string, recordState bool, step func(context.Context) (string, error)) (*Run, error) {
+	key := workspaceKey(deploymentID, resourceID)
+	if !r.acquire(key) {
+		return nil, fmt.Errorf("terraform: %s %s: a run is already in progress for this workspace", action, key)
 	}
-	defer r.release(deploymentID)
+	defer r.release(key)
 
 	run := &Run{
 		DeploymentID:   deploymentID,
+		ResourceID:     resourceID,
 		CloudAccountID: cloudAccountID,
 		Template:       template,
 		Action:         action,
@@ -195,11 +238,16 @@ func (r *Runner) run(ctx context.Context, deploymentID, cloudAccountID, template
 	run.PlanOutput = output
 
 	if stepErr == nil && recordState {
-		path, err := stateFilePath(workspaceDir(r.baseDir, deploymentID))
+		dir, err := workspaceDir(r.baseDir, key)
 		if err != nil {
 			stepErr = err
 		} else {
-			run.StateFilePath = path
+			path, err := stateFilePath(dir)
+			if err != nil {
+				stepErr = err
+			} else {
+				run.StateFilePath = path
+			}
 		}
 	}
 
@@ -214,33 +262,33 @@ func (r *Runner) run(ctx context.Context, deploymentID, cloudAccountID, template
 	r.publish(run)
 
 	if stepErr != nil {
-		return run, fmt.Errorf("terraform: %s deployment %s: %w", action, deploymentID, stepErr)
+		return run, fmt.Errorf("terraform: %s %s: %w", action, key, stepErr)
 	}
 	return run, nil
 }
 
-func (r *Runner) acquire(deploymentID string) bool {
+func (r *Runner) acquire(key string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, busy := r.inFlight[deploymentID]; busy {
+	if _, busy := r.inFlight[key]; busy {
 		return false
 	}
-	r.inFlight[deploymentID] = struct{}{}
+	r.inFlight[key] = struct{}{}
 	return true
 }
 
-func (r *Runner) release(deploymentID string) {
+func (r *Runner) release(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.inFlight, deploymentID)
+	delete(r.inFlight, key)
 }
 
 func (r *Runner) insertRun(ctx context.Context, run *Run) error {
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO terraform_runs (deployment_id, cloud_account_id, template, action, status)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO terraform_runs (deployment_id, resource_id, cloud_account_id, template, action, status)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id
-	`, run.DeploymentID, nullable(run.CloudAccountID), run.Template, run.Action, run.Status).Scan(&run.ID)
+	`, nullable(run.DeploymentID), nullable(run.ResourceID), nullable(run.CloudAccountID), run.Template, run.Action, run.Status).Scan(&run.ID)
 	if err != nil {
 		return fmt.Errorf("terraform: insert run: %w", err)
 	}

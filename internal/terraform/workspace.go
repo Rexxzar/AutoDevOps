@@ -17,16 +17,28 @@ const (
 	stateFileName  = "terraform.tfstate"
 )
 
-// workspaceDir returns the persistent directory for a deployment's terraform
-// workspace, rooted at baseDir.
-func workspaceDir(baseDir, deploymentID string) string {
-	return filepath.Join(baseDir, deploymentID)
+// workspaceDir returns the absolute persistent directory for a deployment's
+// terraform workspace, rooted at baseDir. It must be absolute: this same
+// path is used both as the terraform process's working directory (via
+// tfexec) and as the base for path arguments like -out=<dir>/tfplan — if dir
+// were relative, terraform would resolve those arguments relative to its own
+// (already-redirected) working directory and double the path.
+func workspaceDir(baseDir, deploymentID string) (string, error) {
+	dir := filepath.Join(baseDir, deploymentID)
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("terraform: resolve workspace dir %s: %w", dir, err)
+	}
+	return abs, nil
 }
 
 // writeConfig ensures the workspace directory exists and (over)writes its
 // rendered HCL config, returning the workspace directory path.
 func writeConfig(baseDir, deploymentID string, config []byte) (string, error) {
-	dir := workspaceDir(baseDir, deploymentID)
+	dir, err := workspaceDir(baseDir, deploymentID)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("terraform: create workspace %s: %w", dir, err)
 	}

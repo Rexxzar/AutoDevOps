@@ -23,11 +23,12 @@ type Server struct {
 	vault    *secrets.Vault
 	deploy   *deploy.Orchestrator
 	tfRunner *terraform.Runner
+	tfEngine *terraform.Engine
 	publicIP string
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, publicIP string) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, publicIP: publicIP}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, publicIP string) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, publicIP: publicIP}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -55,11 +56,18 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Get("/clusters", s.handleListClusters)
 		r.Get("/cloud/accounts", s.handleListCloudAccounts)
 		r.Post("/cloud/accounts", s.handleCreateCloudAccount)
+		r.Delete("/cloud/accounts/{id}", s.handleDeleteCloudAccount)
 		r.Get("/cloud/resources", s.handleListCloudResources)
+		r.Post("/cloud/resources/{id}/dismiss", s.handleDismissCloudResource)
 		r.Get("/compliance/findings", s.handleListComplianceFindings)
 		r.Post("/clusters", s.handleCreateCluster)
 		r.Get("/terraform/runs", s.handleListTerraformRuns)
-		r.Post("/terraform/runs", s.handleCreateTerraformRun)
+		r.Get("/resources", s.handleListResources)
+		r.Post("/resources", s.handleCreateResource)
+		r.Post("/resources/preview", s.handlePreviewResource)
+		r.Post("/resources/{id}/apply", s.handleApplyResource)
+		r.Post("/resources/{id}/destroy", s.handleDestroyResource)
+		r.Post("/resources/{id}/dismiss", s.handleDismissResource)
 		r.Post("/secrets", s.handlePutSecret)
 		r.Get("/secrets/{name}", s.handleGetSecret)
 		r.Delete("/secrets/{name}", s.handleDeleteSecret)

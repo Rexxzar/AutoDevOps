@@ -10,9 +10,14 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v7"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerinstance/armcontainerinstance"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/postgresql/armpostgresqlflexibleservers/v2"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -83,6 +88,110 @@ func TestEC2InstanceToResource_NoNameTagOrNetwork(t *testing.T) {
 	}
 }
 
+func TestRDSInstanceToResource(t *testing.T) {
+	db := rdstypes.DBInstance{
+		DBInstanceArn:        strPtr("arn:aws:rds:eu-west-2:123456789012:db:my-db"),
+		DBInstanceIdentifier: strPtr("my-db"),
+		DBInstanceClass:      strPtr("db.t3.micro"),
+		DBInstanceStatus:     strPtr("available"),
+		Engine:               strPtr("postgres"),
+		EngineVersion:        strPtr("16.3"),
+		MultiAZ:              aws.Bool(false),
+		Endpoint: &rdstypes.Endpoint{
+			Address: strPtr("my-db.abc123.eu-west-2.rds.amazonaws.com"),
+			Port:    aws.Int32(5432),
+		},
+	}
+
+	r := rdsInstanceToResource("acct-1", "eu-west-2", db)
+
+	if r.CloudAccountID != "acct-1" || r.Provider != ProviderAWS || r.ResourceType != ResourceTypeRDSInstance {
+		t.Fatalf("unexpected identity fields: %+v", r)
+	}
+	if r.ResourceID != *db.DBInstanceArn {
+		t.Errorf("resource id = %q, want %q", r.ResourceID, *db.DBInstanceArn)
+	}
+	if r.Region != "eu-west-2" || r.Name != "my-db" {
+		t.Errorf("region/name = %q/%q, want eu-west-2/my-db", r.Region, r.Name)
+	}
+	wantState := map[string]any{
+		"engine":         "postgres",
+		"engine_version": "16.3",
+		"instance_class": "db.t3.micro",
+		"multi_az":       false,
+		"status":         "available",
+		"endpoint":       "my-db.abc123.eu-west-2.rds.amazonaws.com",
+		"port":           int32(5432),
+	}
+	for k, want := range wantState {
+		if got := r.State[k]; got != want {
+			t.Errorf("state[%q] = %v, want %v", k, got, want)
+		}
+	}
+}
+
+func TestRDSInstanceToResource_NoEndpoint(t *testing.T) {
+	db := rdstypes.DBInstance{
+		DBInstanceArn:        strPtr("arn:aws:rds:eu-west-2:123456789012:db:provisioning-db"),
+		DBInstanceIdentifier: strPtr("provisioning-db"),
+		DBInstanceClass:      strPtr("db.t3.micro"),
+		DBInstanceStatus:     strPtr("creating"),
+		Engine:               strPtr("postgres"),
+		EngineVersion:        strPtr("16.3"),
+		MultiAZ:              aws.Bool(false),
+	}
+
+	r := rdsInstanceToResource("acct-1", "eu-west-2", db)
+
+	if _, ok := r.State["endpoint"]; ok {
+		t.Errorf("state should omit endpoint while the instance is still provisioning, got %v", r.State)
+	}
+	if _, ok := r.State["port"]; ok {
+		t.Errorf("state should omit port while the instance is still provisioning, got %v", r.State)
+	}
+	if r.State["status"] != "creating" {
+		t.Errorf(`state["status"] = %v, want "creating"`, r.State["status"])
+	}
+}
+
+func TestECSServiceToResource(t *testing.T) {
+	svc := ecstypes.Service{
+		ServiceArn:     strPtr("arn:aws:ecs:eu-west-2:123456789012:service/my-cluster/my-service"),
+		ServiceName:    strPtr("my-service"),
+		ClusterArn:     strPtr("arn:aws:ecs:eu-west-2:123456789012:cluster/my-cluster"),
+		Status:         strPtr("ACTIVE"),
+		LaunchType:     ecstypes.LaunchTypeFargate,
+		DesiredCount:   2,
+		RunningCount:   2,
+		TaskDefinition: strPtr("arn:aws:ecs:eu-west-2:123456789012:task-definition/my-service:3"),
+	}
+
+	r := ecsServiceToResource("acct-1", "eu-west-2", svc)
+
+	if r.CloudAccountID != "acct-1" || r.Provider != ProviderAWS || r.ResourceType != ResourceTypeECSService {
+		t.Fatalf("unexpected identity fields: %+v", r)
+	}
+	if r.ResourceID != *svc.ServiceArn {
+		t.Errorf("resource id = %q, want %q", r.ResourceID, *svc.ServiceArn)
+	}
+	if r.Region != "eu-west-2" || r.Name != "my-service" {
+		t.Errorf("region/name = %q/%q, want eu-west-2/my-service", r.Region, r.Name)
+	}
+	wantState := map[string]any{
+		"launch_type":     "FARGATE",
+		"desired_count":   int32(2),
+		"running_count":   int32(2),
+		"task_definition": "arn:aws:ecs:eu-west-2:123456789012:task-definition/my-service:3",
+		"cluster_arn":     "arn:aws:ecs:eu-west-2:123456789012:cluster/my-cluster",
+		"status":          "ACTIVE",
+	}
+	for k, want := range wantState {
+		if got := r.State[k]; got != want {
+			t.Errorf("state[%q] = %v, want %v", k, got, want)
+		}
+	}
+}
+
 func TestVirtualMachineToResource(t *testing.T) {
 	size := armcompute.VirtualMachineSizeTypesStandardB1S
 	vm := &armcompute.VirtualMachine{
@@ -132,6 +241,164 @@ func TestVirtualMachineToResource_NilSafety(t *testing.T) {
 	if len(r.State) != 0 {
 		t.Errorf("state should be empty when Properties and Tags are nil, got %v", r.State)
 	}
+}
+
+func TestContainerGroupToResource(t *testing.T) {
+	osType := armcontainerinstance.OperatingSystemTypesLinux
+	cg := &armcontainerinstance.ContainerGroup{
+		ID:       to.Ptr("/subscriptions/sub/resourceGroups/rg/providers/Microsoft.ContainerInstance/containerGroups/aci-1"),
+		Name:     to.Ptr("aci-1"),
+		Location: to.Ptr("germanywestcentral"),
+		Tags:     map[string]*string{"environment": to.Ptr("staging")},
+		Properties: &armcontainerinstance.ContainerGroupProperties{
+			ProvisioningState: to.Ptr("Succeeded"),
+			OSType:            &osType,
+			InstanceView:      &armcontainerinstance.ContainerGroupPropertiesInstanceView{State: to.Ptr("Running")},
+			IPAddress: &armcontainerinstance.IPAddress{
+				Fqdn: to.Ptr("aci-1.germanywestcentral.azurecontainer.io"),
+				IP:   to.Ptr("10.0.0.4"),
+			},
+			Containers: []*armcontainerinstance.Container{
+				{Name: to.Ptr("app"), Properties: &armcontainerinstance.ContainerProperties{Image: to.Ptr("nginx:latest")}},
+			},
+		},
+	}
+
+	r := containerGroupToResource("acct-2", cg)
+
+	if r.CloudAccountID != "acct-2" || r.Provider != ProviderAzure || r.ResourceType != ResourceTypeContainerInstance {
+		t.Fatalf("unexpected identity fields: %+v", r)
+	}
+	if r.ResourceID != *cg.ID {
+		t.Errorf("resource id = %q, want %q", r.ResourceID, *cg.ID)
+	}
+	if r.Region != "germanywestcentral" || r.Name != "aci-1" {
+		t.Errorf("region/name = %q/%q, want germanywestcentral/aci-1", r.Region, r.Name)
+	}
+	wantState := map[string]any{
+		"provisioning_state": "Succeeded",
+		"state":              "Running",
+		"os_type":            "Linux",
+		"fqdn":               "aci-1.germanywestcentral.azurecontainer.io",
+		"ip":                 "10.0.0.4",
+		"image":              "nginx:latest",
+	}
+	for k, want := range wantState {
+		if got := r.State[k]; got != want {
+			t.Errorf("state[%q] = %v, want %v", k, got, want)
+		}
+	}
+	tags, ok := r.State["tags"].(map[string]string)
+	if !ok || tags["environment"] != "staging" {
+		t.Errorf(`state["tags"] = %v, want map with environment=staging`, r.State["tags"])
+	}
+}
+
+func TestContainerGroupToResource_NilSafety(t *testing.T) {
+	if r := containerGroupToResource("acct-2", nil); r.ResourceID != "" {
+		t.Errorf("nil container group should map to a zero-value resource, got %+v", r)
+	}
+
+	bare := &armcontainerinstance.ContainerGroup{ID: to.Ptr("/aci-bare")}
+	r := containerGroupToResource("acct-2", bare)
+	if r.ResourceID != "/aci-bare" {
+		t.Errorf("resource id = %q, want %q", r.ResourceID, "/aci-bare")
+	}
+	if len(r.State) != 0 {
+		t.Errorf("state should be empty when Properties and Tags are nil, got %v", r.State)
+	}
+}
+
+func TestPostgresServerToResource(t *testing.T) {
+	state := armpostgresqlflexibleservers.ServerStateReady
+	version := armpostgresqlflexibleservers.ServerVersionFourteen
+	srv := &armpostgresqlflexibleservers.Server{
+		ID:       to.Ptr("/subscriptions/sub/resourceGroups/rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/pg-1"),
+		Name:     to.Ptr("pg-1"),
+		Location: to.Ptr("germanywestcentral"),
+		Tags:     map[string]*string{"environment": to.Ptr("staging")},
+		SKU:      &armpostgresqlflexibleservers.SKU{Name: to.Ptr("Standard_B1ms")},
+		Properties: &armpostgresqlflexibleservers.ServerProperties{
+			State:                    &state,
+			Version:                  &version,
+			FullyQualifiedDomainName: to.Ptr("pg-1.postgres.database.azure.com"),
+		},
+	}
+
+	r := postgresServerToResource("acct-2", srv)
+
+	if r.CloudAccountID != "acct-2" || r.Provider != ProviderAzure || r.ResourceType != ResourceTypePostgresFlexibleServer {
+		t.Fatalf("unexpected identity fields: %+v", r)
+	}
+	if r.ResourceID != *srv.ID {
+		t.Errorf("resource id = %q, want %q", r.ResourceID, *srv.ID)
+	}
+	if r.Region != "germanywestcentral" || r.Name != "pg-1" {
+		t.Errorf("region/name = %q/%q, want germanywestcentral/pg-1", r.Region, r.Name)
+	}
+	wantState := map[string]any{
+		"state":   "Ready",
+		"version": "14",
+		"fqdn":    "pg-1.postgres.database.azure.com",
+		"sku":     "Standard_B1ms",
+	}
+	for k, want := range wantState {
+		if got := r.State[k]; got != want {
+			t.Errorf("state[%q] = %v, want %v", k, got, want)
+		}
+	}
+	tags, ok := r.State["tags"].(map[string]string)
+	if !ok || tags["environment"] != "staging" {
+		t.Errorf(`state["tags"] = %v, want map with environment=staging`, r.State["tags"])
+	}
+}
+
+func TestPostgresServerToResource_NilSafety(t *testing.T) {
+	if r := postgresServerToResource("acct-2", nil); r.ResourceID != "" {
+		t.Errorf("nil server should map to a zero-value resource, got %+v", r)
+	}
+
+	bare := &armpostgresqlflexibleservers.Server{ID: to.Ptr("/pg-bare")}
+	r := postgresServerToResource("acct-2", bare)
+	if r.ResourceID != "/pg-bare" {
+		t.Errorf("resource id = %q, want %q", r.ResourceID, "/pg-bare")
+	}
+	if len(r.State) != 0 {
+		t.Errorf("state should be empty when Properties, SKU and Tags are nil, got %v", r.State)
+	}
+}
+
+// TestNewAzureProvider_CredentialModes covers the auth-mode selection in
+// newAzureProvider: subscription_id is always required; full service-principal
+// fields select NewClientSecretCredential, omitting them all selects the
+// AzureCLICredential fallback (the operator's own `az login` session), and a
+// partial set of SP fields is rejected rather than silently falling back.
+// None of these construct network calls, so no real Azure account is needed.
+func TestNewAzureProvider_CredentialModes(t *testing.T) {
+	t.Run("missing subscription_id", func(t *testing.T) {
+		if _, err := newAzureProvider("acct", azureCredentials{}); err == nil {
+			t.Fatal("expected error when subscription_id is empty")
+		}
+	})
+
+	t.Run("cli fallback when service principal fields all empty", func(t *testing.T) {
+		if _, err := newAzureProvider("acct", azureCredentials{SubscriptionID: "sub"}); err != nil {
+			t.Errorf("expected AzureCLICredential fallback to succeed, got %v", err)
+		}
+	})
+
+	t.Run("partial service principal fields rejected", func(t *testing.T) {
+		if _, err := newAzureProvider("acct", azureCredentials{SubscriptionID: "sub", ClientID: "client"}); err == nil {
+			t.Fatal("expected error when only some service-principal fields are set")
+		}
+	})
+
+	t.Run("full service principal fields accepted", func(t *testing.T) {
+		creds := azureCredentials{SubscriptionID: "sub", TenantID: "tenant", ClientID: "client", ClientSecret: "secret"}
+		if _, err := newAzureProvider("acct", creds); err != nil {
+			t.Errorf("expected service-principal credential to succeed, got %v", err)
+		}
+	})
 }
 
 func TestDerefString(t *testing.T) {

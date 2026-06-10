@@ -94,10 +94,19 @@ func main() {
 
 	var tfRunner *terraform.Runner
 	if tfExecPath != "" {
-		tfRunner = terraform.NewRunner(tfExecPath, filepath.Join(cfg.DataDir, "terraform", "workspaces"), pool, hub)
+		tfRunner = terraform.NewRunner(tfExecPath, filepath.Join(cfg.DataDir, "terraform", "workspaces"), pool, hub, vault)
 	}
 
-	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, cfg.PublicIP)
+	tfEngine, err := terraform.New([]terraform.Definition{
+		{ID: terraform.AWSStackID, Provider: terraform.ProviderAWS, Path: "templates/aws/stack.tf.tmpl"},
+		{ID: terraform.AzureStackID, Provider: terraform.ProviderAzure, Path: "templates/azure/stack.tf.tmpl"},
+	})
+	if err != nil {
+		slog.Error("init terraform engine", "error", err)
+		os.Exit(1)
+	}
+
+	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, cfg.PublicIP)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),

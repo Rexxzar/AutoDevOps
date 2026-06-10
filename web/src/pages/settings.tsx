@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plus, Server, Cloud, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Loader2, Plus, Server, Cloud, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -122,14 +122,30 @@ function CloudAccountSection() {
   const [creds, setCreds] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['cloud-accounts'],
     queryFn: () => apiFetch<ApiAccount[]>('/cloud/accounts'),
   })
 
+  async function handleDelete(id: string, accountName: string) {
+    if (!window.confirm(`Remove cloud account "${accountName}"? This deletes its stored credentials and cached inventory.`)) return
+    setDeletingId(id)
+    setResult(null)
+    try {
+      await apiFetch(`/cloud/accounts/${id}`, { method: 'DELETE' })
+      qc.invalidateQueries({ queryKey: ['cloud-accounts'] })
+      qc.invalidateQueries({ queryKey: ['cloud-resources'] })
+    } catch (err) {
+      setResult({ ok: false, msg: err instanceof Error ? err.message : 'Failed to remove account' })
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const awsPlaceholder = JSON.stringify({ access_key_id: 'AKIA...', secret_access_key: '...', region: 'us-east-1' }, null, 2)
-  const azurePlaceholder = JSON.stringify({ subscription_id: '...', tenant_id: '...', client_id: '...', client_secret: '...' }, null, 2)
+  const azurePlaceholder = JSON.stringify({ subscription_id: '...' }, null, 2)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -168,7 +184,17 @@ function CloudAccountSection() {
           {accounts.map((a) => (
             <div key={a.id} className="flex items-center gap-3 px-5 py-3">
               <ProviderTag provider={a.provider as Provider} />
-              <p className="text-sm font-medium">{a.name}</p>
+              <p className="flex-1 text-sm font-medium">{a.name}</p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-critical"
+                disabled={deletingId === a.id}
+                onClick={() => handleDelete(a.id, a.name)}
+              >
+                {deletingId === a.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+              </Button>
             </div>
           ))}
         </div>
@@ -216,6 +242,13 @@ function CloudAccountSection() {
             required
             className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs outline-none placeholder:text-muted-foreground/50 focus:border-ring focus:ring-2 focus:ring-ring/40 resize-none"
           />
+          {provider === 'azure' && (
+            <p className="text-[0.7rem] text-muted-foreground">
+              Add <code className="font-mono">tenant_id</code>, <code className="font-mono">client_id</code> and{' '}
+              <code className="font-mono">client_secret</code> for a service principal — omit all three to fall back to the
+              server's own <code className="font-mono">az login</code> session.
+            </p>
+          )}
         </div>
 
         {result && <StatusMsg ok={result.ok} msg={result.msg} />}

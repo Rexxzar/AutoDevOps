@@ -18,10 +18,19 @@ import (
 // DB-touching code like upsertPodHealth to manual/integration verification)
 
 func TestWorkspaceDir(t *testing.T) {
-	got := workspaceDir(filepath.Join("base", "runs"), "dep-123")
-	want := filepath.Join("base", "runs", "dep-123")
+	got, err := workspaceDir(filepath.Join("base", "runs"), "dep-123")
+	if err != nil {
+		t.Fatalf("workspaceDir: %v", err)
+	}
+	want, err := filepath.Abs(filepath.Join("base", "runs", "dep-123"))
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
 	if got != want {
 		t.Fatalf("workspaceDir = %q, want %q", got, want)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("workspaceDir = %q, want an absolute path", got)
 	}
 }
 
@@ -32,7 +41,11 @@ func TestWriteConfig_writesAndOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeConfig: %v", err)
 	}
-	if want := workspaceDir(base, "dep-1"); dir != want {
+	want, err := workspaceDir(base, "dep-1")
+	if err != nil {
+		t.Fatalf("workspaceDir: %v", err)
+	}
+	if dir != want {
 		t.Fatalf("writeConfig dir = %q, want %q", dir, want)
 	}
 
@@ -60,7 +73,10 @@ func TestWriteConfig_writesAndOverwrites(t *testing.T) {
 
 func TestHasPlan(t *testing.T) {
 	base := t.TempDir()
-	dir := workspaceDir(base, "dep-1")
+	dir, err := workspaceDir(base, "dep-1")
+	if err != nil {
+		t.Fatalf("workspaceDir: %v", err)
+	}
 
 	if ok, err := hasPlan(dir); err != nil || ok {
 		t.Fatalf("hasPlan on nonexistent workspace = (%v, %v), want (false, nil)", ok, err)
@@ -84,7 +100,11 @@ func TestHasPlan(t *testing.T) {
 func TestHasWorkspace(t *testing.T) {
 	base := t.TempDir()
 
-	if ok, err := hasWorkspace(workspaceDir(base, "dep-never-planned")); err != nil || ok {
+	neverPlannedDir, err := workspaceDir(base, "dep-never-planned")
+	if err != nil {
+		t.Fatalf("workspaceDir: %v", err)
+	}
+	if ok, err := hasWorkspace(neverPlannedDir); err != nil || ok {
 		t.Fatalf("hasWorkspace on nonexistent workspace = (%v, %v), want (false, nil)", ok, err)
 	}
 
@@ -99,7 +119,10 @@ func TestHasWorkspace(t *testing.T) {
 
 func TestStateFilePath(t *testing.T) {
 	base := t.TempDir()
-	dir := workspaceDir(base, "dep-1")
+	dir, err := workspaceDir(base, "dep-1")
+	if err != nil {
+		t.Fatalf("workspaceDir: %v", err)
+	}
 
 	got, err := stateFilePath(dir)
 	if err != nil {
@@ -180,7 +203,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	deploymentID := seedDeployment(t, pool)
 
 	hub := sse.NewHub()
-	r := NewRunner(tfPath, t.TempDir(), pool, hub)
+	r := NewRunner(tfPath, t.TempDir(), pool, hub, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -202,13 +225,13 @@ resource "random_pet" "this" {
 	const template = "random-stack"
 
 	t.Run("apply without a prior plan is rejected", func(t *testing.T) {
-		if _, err := r.Apply(ctx, deploymentID, "", template); err == nil {
+		if _, err := r.Apply(ctx, deploymentID, "", "", template); err == nil {
 			t.Fatal("Apply before any Plan should return an error")
 		}
 	})
 
 	t.Run("plan", func(t *testing.T) {
-		run, err := r.Plan(ctx, deploymentID, "", template, []byte(config))
+		run, err := r.Plan(ctx, deploymentID, "", "", template, []byte(config))
 		if err != nil {
 			t.Fatalf("Plan: %v", err)
 		}
@@ -225,7 +248,7 @@ resource "random_pet" "this" {
 	})
 
 	t.Run("apply", func(t *testing.T) {
-		run, err := r.Apply(ctx, deploymentID, "", template)
+		run, err := r.Apply(ctx, deploymentID, "", "", template)
 		if err != nil {
 			t.Fatalf("Apply: %v", err)
 		}
@@ -249,13 +272,13 @@ resource "random_pet" "this" {
 		}
 		defer r.release(deploymentID)
 
-		if _, err := r.Plan(ctx, deploymentID, "", template, []byte(config)); err == nil {
+		if _, err := r.Plan(ctx, deploymentID, "", "", template, []byte(config)); err == nil {
 			t.Fatal("Plan while a run is already in flight for this deployment should be rejected")
 		}
 	})
 
 	t.Run("destroy", func(t *testing.T) {
-		run, err := r.Destroy(ctx, deploymentID, "", template)
+		run, err := r.Destroy(ctx, deploymentID, "", "", template)
 		if err != nil {
 			t.Fatalf("Destroy: %v", err)
 		}

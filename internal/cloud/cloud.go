@@ -31,8 +31,13 @@ const (
 	ProviderAWS   = "aws"
 	ProviderAzure = "azure"
 
-	ResourceTypeEC2Instance    = "ec2_instance"
-	ResourceTypeVirtualMachine = "virtual_machine"
+	ResourceTypeEC2Instance = "ec2_instance"
+	ResourceTypeRDSInstance = "rds_instance"
+	ResourceTypeECSService  = "ecs_service"
+
+	ResourceTypeVirtualMachine         = "virtual_machine"
+	ResourceTypeContainerInstance      = "container_instance"
+	ResourceTypePostgresFlexibleServer = "postgresql_flexible_server"
 )
 
 // awsCredentials is the JSON shape stored (encrypted) via vault.Put and read
@@ -43,10 +48,13 @@ type awsCredentials struct {
 	Region          string `json:"region"`
 }
 
-// azureCredentials mirrors awsCredentials for Azure service-principal auth.
+// azureCredentials mirrors awsCredentials for Azure auth. SubscriptionID is
+// always required; TenantID/ClientID/ClientSecret are only required together
+// for service-principal auth — if all three are omitted, newAzureProvider
+// falls back to AzureCLICredential (the operator's own `az login` session).
 type azureCredentials struct {
-	TenantID       string `json:"tenant_id"`
-	ClientID       string `json:"client_id"`
-	ClientSecret   string `json:"client_secret"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	ClientID       string `json:"client_id,omitempty"`
+	ClientSecret   string `json:"client_secret,omitempty"`
 	SubscriptionID string `json:"subscription_id"`
 }

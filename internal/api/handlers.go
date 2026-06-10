@@ -5,17 +5,23 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/Rexxzar/autodevops/internal/auth"
 	"github.com/Rexxzar/autodevops/internal/cicd"
 	"github.com/Rexxzar/autodevops/internal/deploy"
+	"github.com/Rexxzar/autodevops/internal/sse"
+	"github.com/Rexxzar/autodevops/internal/terraform"
 )
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -429,6 +435,37 @@ func (s *Server) handleCreateCloudAccount(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, map[string]string{"id": accountID, "provider": req.Provider, "name": req.Name})
 }
 
+// handleDeleteCloudAccount unregisters a cloud account. cloud_resources rows
+// for it cascade via FK; if provisioned_resources or terraform_runs still
+// reference it, the delete is rejected (23503) until those are cleared.
+func (s *Server) handleDeleteCloudAccount(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var name string
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT name FROM cloud_accounts WHERE id = $1`, id,
+	).Scan(&name); err != nil {
+		writeError(w, http.StatusNotFound, "cloud account not found")
+		return
+	}
+
+	if _, err := s.db.Exec(r.Context(), `DELETE FROM cloud_accounts WHERE id = $1`, id); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			writeError(w, http.StatusConflict, "cloud account is still referenced by provisioned resources or terraform runs")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to delete cloud account")
+		return
+	}
+
+	if err := s.vault.Delete(r.Context(), "cloud-account:"+name); err != nil {
+		slog.Error("api: delete cloud account credentials", "name", name, "error", err)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name  string `json:"name"`
@@ -515,13 +552,23 @@ func (s *Server) handleListComplianceFindings(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleListCloudResources(w http.ResponseWriter, r *http.Request) {
+	// The same real-world resource can be discovered via more than one
+	// registered cloud account (e.g. two accounts on the same Azure
+	// subscription). Dedupe on the resource's own identity, keeping the
+	// most recently polled row for each.
 	rows, err := s.db.Query(r.Context(), `
-		SELECT cr.id::text, ca.provider, ca.name,
-		       cr.resource_type, cr.resource_id, cr.region,
-		       COALESCE(cr.name, ''), cr.state::text, cr.polled_at
-		FROM cloud_resources cr
-		JOIN cloud_accounts ca ON ca.id = cr.cloud_account_id
-		ORDER BY cr.polled_at DESC
+		SELECT id, provider, account_name, resource_type, resource_id, region, name, state, polled_at
+		FROM (
+			SELECT DISTINCT ON (cr.provider, cr.resource_type, cr.resource_id)
+			       cr.id::text AS id, ca.provider, ca.name AS account_name,
+			       cr.resource_type, cr.resource_id, cr.region,
+			       COALESCE(cr.name, '') AS name, cr.state::text AS state, cr.polled_at
+			FROM cloud_resources cr
+			JOIN cloud_accounts ca ON ca.id = cr.cloud_account_id
+			WHERE cr.dismissed_at IS NULL
+			ORDER BY cr.provider, cr.resource_type, cr.resource_id, cr.polled_at DESC
+		) deduped
+		ORDER BY polled_at DESC
 	`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list cloud resources")
@@ -557,6 +604,24 @@ func (s *Server) handleListCloudResources(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, results)
 }
 
+// handleDismissCloudResource hides a cloud_resources row from the default
+// Cloud Inventory list. The poller's upsert doesn't touch dismissed_at, so
+// this persists across polls; once the resource truly disappears from the
+// provider's API, pruneStaleResources deletes the row outright.
+func (s *Server) handleDismissCloudResource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	tag, err := s.db.Exec(r.Context(), `UPDATE cloud_resources SET dismissed_at = now() WHERE id = $1`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to dismiss cloud resource")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "cloud resource not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "dismissed", "id": id})
+}
+
 func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name     string `json:"name"`
@@ -587,7 +652,7 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListTerraformRuns(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
-		SELECT id::text, COALESCE(deployment_id::text,''), COALESCE(cloud_account_id::text,''),
+		SELECT id::text, COALESCE(deployment_id::text,''), COALESCE(resource_id::text,''), COALESCE(cloud_account_id::text,''),
 		       template, action, status, COALESCE(plan_output,''), created_at
 		FROM terraform_runs ORDER BY created_at DESC LIMIT 100
 	`)
@@ -599,6 +664,7 @@ func (s *Server) handleListTerraformRuns(w http.ResponseWriter, r *http.Request)
 	type row struct {
 		ID             string    `json:"id"`
 		DeploymentID   string    `json:"deployment_id,omitempty"`
+		ResourceID     string    `json:"resource_id,omitempty"`
 		CloudAccountID string    `json:"cloud_account_id,omitempty"`
 		Template       string    `json:"template"`
 		Action         string    `json:"action"`
@@ -609,7 +675,7 @@ func (s *Server) handleListTerraformRuns(w http.ResponseWriter, r *http.Request)
 	var results []row
 	for rows.Next() {
 		var rr row
-		if err := rows.Scan(&rr.ID, &rr.DeploymentID, &rr.CloudAccountID,
+		if err := rows.Scan(&rr.ID, &rr.DeploymentID, &rr.ResourceID, &rr.CloudAccountID,
 			&rr.Template, &rr.Action, &rr.Status, &rr.PlanOutput, &rr.CreatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan run")
 			return
@@ -622,7 +688,113 @@ func (s *Server) handleListTerraformRuns(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, results)
 }
 
-func (s *Server) handleCreateTerraformRun(w http.ResponseWriter, r *http.Request) {
+// resourceRow is a provisioned_resources row — a standalone, Terraform-backed
+// AWS/Azure resource with no git deployment behind it (the "Resources" tab,
+// distinct from git-driven Deployments). Its status reflects the most recent
+// plan/apply/destroy run; the run history itself is in terraform_runs,
+// grouped by resource_id (see GET /terraform/runs).
+type resourceRow struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Provider       string    `json:"provider"`
+	CloudAccountID string    `json:"cloud_account_id,omitempty"`
+	Region         string    `json:"region"`
+	ResourceType   string    `json:"resource_type"`
+	Template       string    `json:"template"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), `
+		SELECT id::text, name, provider, COALESCE(cloud_account_id::text,''),
+		       region, resource_type, template, status, created_at, updated_at
+		FROM provisioned_resources WHERE dismissed_at IS NULL ORDER BY created_at DESC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list resources")
+		return
+	}
+	defer rows.Close()
+
+	results := []resourceRow{}
+	for rows.Next() {
+		var rr resourceRow
+		if err := rows.Scan(&rr.ID, &rr.Name, &rr.Provider, &rr.CloudAccountID,
+			&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.CreatedAt, &rr.UpdatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan resource")
+			return
+		}
+		results = append(results, rr)
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+// getResource loads a single provisioned_resources row, used both for the
+// create response and to look up cloud_account_id/template before Apply/Destroy.
+func (s *Server) getResource(ctx context.Context, id string) (resourceRow, error) {
+	var rr resourceRow
+	err := s.db.QueryRow(ctx, `
+		SELECT id::text, name, provider, COALESCE(cloud_account_id::text,''),
+		       region, resource_type, template, status, created_at, updated_at
+		FROM provisioned_resources WHERE id = $1
+	`, id).Scan(&rr.ID, &rr.Name, &rr.Provider, &rr.CloudAccountID,
+		&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.CreatedAt, &rr.UpdatedAt)
+	return rr, err
+}
+
+// setResourceStatus updates a resource's status and publishes the refreshed
+// row over SSE — the "resource" event the Resources page listens for, mirroring
+// how Runner.publish streams "terraform.run" events for the run-log view.
+func (s *Server) setResourceStatus(ctx context.Context, id, status string) {
+	if _, err := s.db.Exec(ctx, `UPDATE provisioned_resources SET status = $2, updated_at = now() WHERE id = $1`, id, status); err != nil {
+		slog.Error("resources: update status", "id", id, "status", status, "error", err)
+		return
+	}
+	rr, err := s.getResource(ctx, id)
+	if err != nil {
+		slog.Error("resources: reload after status update", "id", id, "error", err)
+		return
+	}
+	s.hub.Publish(sse.Event{Type: "resource", Payload: rr})
+}
+
+// handlePreviewResource renders the Terraform HCL for the given resource
+// form without any side effects — no provisioned_resources row, no
+// terraform-exec call. Lets the /new-resource wizard show the generated
+// config before the user confirms creation, reusing the same
+// buildTerraformConfig path handleCreateResource uses for the real plan.
+func (s *Server) handlePreviewResource(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name         string            `json:"name"`
+		Provider     string            `json:"provider"`
+		Region       string            `json:"region"`
+		ResourceType string            `json:"resource_type"`
+		ResourceOpts map[string]string `json:"resource_opts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" || req.Provider == "" || req.Region == "" || req.ResourceType == "" {
+		writeError(w, http.StatusBadRequest, "name, provider, region, resource_type required")
+		return
+	}
+
+	config, err := s.buildTerraformConfig(req.Provider, req.ResourceType, req.Name, req.Region, req.ResourceOpts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"config": string(config)})
+}
+
+// handleCreateResource provisions a standalone cloud resource for the
+// Resources tab — registers it in provisioned_resources and runs `terraform
+// plan` in the background. Unlike POST /deployments, no git repo is involved.
+func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           string            `json:"name"`
 		Provider       string            `json:"provider"`
@@ -644,34 +816,119 @@ func (s *Server) handleCreateTerraformRun(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	config, err := buildTerraformConfig(req.Provider, req.ResourceType, req.Name, req.Region, req.ResourceOpts)
+	config, err := s.buildTerraformConfig(req.Provider, req.ResourceType, req.Name, req.Region, req.ResourceOpts)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// Insert placeholder deployment so the run has a deployment_id foreign key.
-	var deploymentID string
-	_ = s.db.QueryRow(r.Context(), `
-		INSERT INTO deployments (name, repo_url, branch, target_type, status)
-		VALUES ($1, 'terraform:'||$1, 'main', 'cloud', 'pending')
-		ON CONFLICT (name) DO UPDATE SET updated_at = NOW()
+	template := req.Provider + "-stack"
+	var resourceID string
+	err = s.db.QueryRow(r.Context(), `
+		INSERT INTO provisioned_resources (name, provider, cloud_account_id, region, resource_type, template, status)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending')
 		RETURNING id::text
-	`, req.Name).Scan(&deploymentID)
+	`, req.Name, req.Provider, req.CloudAccountID, req.Region, req.ResourceType, template).Scan(&resourceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to register resource")
+		return
+	}
+
+	rr, err := s.getResource(r.Context(), resourceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load created resource")
+		return
+	}
 
 	go func() {
 		ctx := context.Background()
-		if _, err := s.tfRunner.Plan(ctx, deploymentID, req.CloudAccountID, req.Provider+"-stack", config); err != nil {
+		status := "planned"
+		if _, err := s.tfRunner.Plan(ctx, "", resourceID, req.CloudAccountID, template, config); err != nil {
 			slog.Error("terraform: plan failed", "name", req.Name, "error", err)
+			status = "failed"
 		}
+		s.setResourceStatus(ctx, resourceID, status)
 	}()
 
-	writeJSON(w, http.StatusAccepted, map[string]string{
-		"status":      "plan_initiated",
-		"name":        req.Name,
-		"provider":    req.Provider,
-		"description": "Terraform plan running — watch the SSE stream for terraform.run events",
-	})
+	writeJSON(w, http.StatusAccepted, rr)
+}
+
+// handleApplyResource runs `terraform apply` against a resource's saved plan.
+func (s *Server) handleApplyResource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	rr, err := s.getResource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if s.tfRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "terraform binary unavailable — check server logs")
+		return
+	}
+
+	s.setResourceStatus(r.Context(), id, "applying")
+
+	go func() {
+		ctx := context.Background()
+		status := "applied"
+		if _, err := s.tfRunner.Apply(ctx, "", id, rr.CloudAccountID, rr.Template); err != nil {
+			slog.Error("terraform: apply failed", "id", id, "error", err)
+			status = "failed"
+		}
+		s.setResourceStatus(ctx, id, status)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "apply_initiated", "id": id})
+}
+
+// handleDestroyResource runs `terraform destroy` against a resource's workspace.
+func (s *Server) handleDestroyResource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	rr, err := s.getResource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if s.tfRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "terraform binary unavailable — check server logs")
+		return
+	}
+
+	s.setResourceStatus(r.Context(), id, "destroying")
+
+	go func() {
+		ctx := context.Background()
+		status := "destroyed"
+		if _, err := s.tfRunner.Destroy(ctx, "", id, rr.CloudAccountID, rr.Template); err != nil {
+			slog.Error("terraform: destroy failed", "id", id, "error", err)
+			status = "failed"
+		}
+		s.setResourceStatus(ctx, id, status)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "destroy_initiated", "id": id})
+}
+
+// handleDismissResource hides a finished provisioned_resources row from the
+// default Resources list. Only resources with no remaining live
+// infrastructure (status = destroyed) can be dismissed — the row and its
+// terraform_runs history stay in the database as an audit trail, just
+// excluded from GET /resources.
+func (s *Server) handleDismissResource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	tag, err := s.db.Exec(r.Context(), `
+		UPDATE provisioned_resources SET dismissed_at = now()
+		WHERE id = $1 AND status = 'destroyed'
+	`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to dismiss resource")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "resource not found or not in a dismissable state")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "dismissed", "id": id})
 }
 
 func strOpt(opts map[string]string, key, def string) string {
@@ -681,78 +938,172 @@ func strOpt(opts map[string]string, key, def string) string {
 	return def
 }
 
-func buildTerraformConfig(provider, resourceType, name, region string, opts map[string]string) ([]byte, error) {
+// intOpt parses opts[key] as an int, falling back to def if the key is
+// absent and returning a friendly error if it's present but not a number.
+func intOpt(opts map[string]string, key string, def int) (int, error) {
+	v, ok := opts[key]
+	if !ok || v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: must be a whole number", key, v)
+	}
+	return n, nil
+}
+
+// floatOpt parses opts[key] as a float64, falling back to def if the key is
+// absent and returning a friendly error if it's present but not a number.
+func floatOpt(opts map[string]string, key string, def float64) (float64, error) {
+	v, ok := opts[key]
+	if !ok || v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: must be a number", key, v)
+	}
+	return n, nil
+}
+
+// awsZonalSubnets builds the two-AZ subnet pair RDS and ECS both require for
+// their subnet groups / ALB placement, derived from the stack's region — the
+// wizard doesn't collect subnet placement directly, so AutoDevOps carves out
+// fixed, non-overlapping blocks within the standard 10.0.0.0/16 VPC.
+func awsZonalSubnets(region string) []terraform.AWSSubnet {
+	return []terraform.AWSSubnet{
+		{CIDR: "10.0.2.0/24", AvailabilityZone: region + "a"},
+		{CIDR: "10.0.3.0/24", AvailabilityZone: region + "b"},
+	}
+}
+
+// buildTerraformConfig renders the HCL for one deployment's combined
+// Terraform stack via the engine's typed, validated parameter structs —
+// resource_opts (free-form strings from the wizard) are converted to the
+// concrete types AWSStackParams/AzureStackParams expect, and Validate()
+// surfaces any missing/malformed fields as a friendly error before anything
+// is written to disk.
+func (s *Server) buildTerraformConfig(provider, resourceType, name, region string, opts map[string]string) ([]byte, error) {
 	if opts == nil {
 		opts = map[string]string{}
 	}
+	if s.tfEngine == nil {
+		return nil, fmt.Errorf("terraform engine unavailable")
+	}
+
 	switch provider {
 	case "aws":
-		params := map[string]interface{}{
-			"Name":    name,
-			"Region":  region,
-			"VPCCIDR": "10.0.0.0/16",
-		}
+		params := terraform.AWSStackParams{Name: name, Region: region, VPCCIDR: "10.0.0.0/16"}
 		switch resourceType {
-		case "ecs":
-			params["ECS"] = map[string]interface{}{
-				"Image":         strOpt(opts, "image", "nginx:latest"),
-				"CPU":           strOpt(opts, "cpu", "256"),
-				"Memory":        strOpt(opts, "memory", "512"),
-				"ContainerPort": strOpt(opts, "port", "80"),
-				"DesiredCount":  strOpt(opts, "desired_count", "1"),
-			}
 		case "vm":
-			ami := strOpt(opts, "ami", "ami-0c101f26f147fa7fd")
-			ec2 := map[string]interface{}{
-				"InstanceType": strOpt(opts, "instance_type", "t3.micro"),
-				"AMI":          ami,
+			params.EC2 = &terraform.EC2Params{
+				InstanceType:     strOpt(opts, "instance_type", "t3.micro"),
+				SubnetCIDR:       "10.0.1.0/24",
+				AvailabilityZone: region + "a",
 			}
-			if kn := strOpt(opts, "key_name", ""); kn != "" {
-				ec2["KeyName"] = kn
-			}
-			params["EC2"] = ec2
 		case "rds":
-			params["RDS"] = map[string]interface{}{
-				"Engine":        strOpt(opts, "engine", "postgres"),
-				"InstanceClass": strOpt(opts, "instance_class", "db.t3.micro"),
-				"DBName":        strOpt(opts, "db_name", name),
-				"Username":      strOpt(opts, "username", "admin"),
+			engine := strOpt(opts, "engine", "postgres")
+			engineVersion, port := "16.4", 5432
+			if engine == "mysql" {
+				engineVersion, port = "8.0", 3306
 			}
+			storage, err := intOpt(opts, "allocated_storage", 20)
+			if err != nil {
+				return nil, err
+			}
+			params.RDS = &terraform.RDSParams{
+				Engine:           engine,
+				EngineVersion:    engineVersion,
+				InstanceClass:    strOpt(opts, "instance_class", "db.t3.micro"),
+				AllocatedStorage: storage,
+				Username:         strOpt(opts, "username", "admin"),
+				Port:             port,
+				Subnets:          awsZonalSubnets(region),
+			}
+		case "ecs":
+			cpu, err := intOpt(opts, "cpu", 256)
+			if err != nil {
+				return nil, err
+			}
+			memory, err := intOpt(opts, "memory", 512)
+			if err != nil {
+				return nil, err
+			}
+			port, err := intOpt(opts, "port", 80)
+			if err != nil {
+				return nil, err
+			}
+			desiredCount, err := intOpt(opts, "desired_count", 1)
+			if err != nil {
+				return nil, err
+			}
+			params.ECS = &terraform.ECSParams{
+				ContainerImage: strOpt(opts, "image", "nginx:latest"),
+				ContainerPort:  port,
+				CPU:            cpu,
+				Memory:         memory,
+				DesiredCount:   desiredCount,
+				Subnets:        awsZonalSubnets(region),
+			}
+		default:
+			return nil, fmt.Errorf("unsupported aws resource type %q", resourceType)
 		}
-		raw, _ := json.Marshal(params)
-		return raw, nil
+		out, err := s.tfEngine.Render(terraform.AWSStackID, params)
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
+
 	case "azure":
-		params := map[string]interface{}{
-			"Name":       name,
-			"Location":   region,
-			"VNetCIDR":   "10.0.0.0/16",
-			"SubnetCIDR": "10.0.1.0/24",
-		}
+		params := terraform.AzureStackParams{Name: name, Location: region, VNetCIDR: "10.0.0.0/16"}
 		switch resourceType {
 		case "aci":
-			params["ACI"] = map[string]interface{}{
-				"Image":    strOpt(opts, "image", "nginx:latest"),
-				"CPU":      strOpt(opts, "cpu", "1"),
-				"MemoryGB": strOpt(opts, "memory_gb", "1.5"),
-				"Port":     strOpt(opts, "port", "80"),
-				"OSType":   strOpt(opts, "os_type", "Linux"),
+			cpu, err := floatOpt(opts, "cpu", 1)
+			if err != nil {
+				return nil, err
+			}
+			memoryGB, err := floatOpt(opts, "memory_gb", 1.5)
+			if err != nil {
+				return nil, err
+			}
+			port, err := intOpt(opts, "port", 80)
+			if err != nil {
+				return nil, err
+			}
+			params.ACI = &terraform.AzureACIParams{
+				ContainerImage: strOpt(opts, "image", "nginx:latest"),
+				ContainerPort:  port,
+				CPU:            cpu,
+				MemoryGB:       memoryGB,
 			}
 		case "vm":
-			params["VM"] = map[string]interface{}{
-				"Size":          strOpt(opts, "size", "Standard_B1s"),
-				"AdminUsername": strOpt(opts, "admin_username", "azureuser"),
-				"ImageSKU":      strOpt(opts, "image_sku", "Ubuntu2204"),
+			params.VM = &terraform.AzureVMParams{
+				Size:          strOpt(opts, "size", "Standard_B1s"),
+				SubnetCIDR:    "10.0.1.0/24",
+				AdminUsername: strOpt(opts, "admin_username", "azureuser"),
+				SSHPublicKey:  strOpt(opts, "ssh_public_key", ""),
 			}
 		case "db":
-			params["DB"] = map[string]interface{}{
-				"Engine":     strOpt(opts, "engine", "postgres"),
-				"SKU":        strOpt(opts, "sku", "B_Gen5_1"),
-				"DBName":     strOpt(opts, "db_name", name),
-				"AdminLogin": strOpt(opts, "admin_login", "adminuser"),
+			storageMB, err := intOpt(opts, "storage_mb", 32768)
+			if err != nil {
+				return nil, err
 			}
+			params.DB = &terraform.AzureDBParams{
+				Version:               strOpt(opts, "version", "16"),
+				SKU:                   strOpt(opts, "sku", "B_Standard_B1ms"),
+				StorageMB:             storageMB,
+				AADAdminObjectID:      strOpt(opts, "aad_admin_object_id", ""),
+				AADAdminPrincipalName: strOpt(opts, "aad_admin_principal_name", ""),
+				AADAdminPrincipalType: strOpt(opts, "aad_admin_principal_type", "User"),
+			}
+		default:
+			return nil, fmt.Errorf("unsupported azure resource type %q", resourceType)
 		}
-		raw, _ := json.Marshal(params)
-		return raw, nil
+		out, err := s.tfEngine.Render(terraform.AzureStackID, params)
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
 	return nil, fmt.Errorf("unknown provider %q", provider)
 }
