@@ -5,6 +5,7 @@ import { DeploymentsPage } from '@/pages/deployments'
 import { ClustersPage } from '@/pages/clusters'
 import { OverviewPage } from '@/pages/overview'
 import { ResourcesPage } from '@/pages/resources'
+import { ResourceDetailPage } from '@/pages/resource-detail'
 import { CompliancePage } from '@/pages/compliance'
 import { SettingsPage } from '@/pages/settings'
 import { PlaceholderPage } from '@/pages/placeholder'
@@ -31,6 +32,7 @@ function DashboardLayout() {
             <Route path="/deployments" element={<DeploymentsPage />} />
             <Route path="/clusters" element={<ClustersPage />} />
             <Route path="/resources" element={<ResourcesPage />} />
+            <Route path="/resources/:id" element={<ResourceDetailPage />} />
             <Route path="/compliance" element={<CompliancePage />} />
             <Route
               path="/secrets"

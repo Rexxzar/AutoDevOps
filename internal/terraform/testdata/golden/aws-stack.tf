@@ -20,3 +20,12 @@ resource "aws_vpc" "main" {
     Name = "demo"
   }
 }
+
+locals {
+  vpc_id         = aws_vpc.main.id
+  vpc_cidr_block = aws_vpc.main.cidr_block
+}
+
+output "vpc_id" {
+  value = local.vpc_id
+}

@@ -20,6 +20,18 @@ resource "azurerm_resource_group" "main" {
   }
 }
 
+output "resource_group_name" {
+  value = azurerm_resource_group.main.name
+}
+
+{{- if .ExistingVNet }}
+
+data "azurerm_virtual_network" "main" {
+  name                = "{{ .ExistingVNet.Name }}"
+  resource_group_name = "{{ .ExistingVNet.ResourceGroup }}"
+}
+{{- else }}
+
 resource "azurerm_virtual_network" "main" {
   name                = "{{ .Name }}-vnet"
   address_space       = ["{{ .VNetCIDR }}"]
@@ -30,12 +42,18 @@ resource "azurerm_virtual_network" "main" {
     Name = "{{ .Name }}"
   }
 }
+{{- end }}
+
+locals {
+  vnet_name           = {{ if .ExistingVNet }}data.azurerm_virtual_network.main.name{{ else }}azurerm_virtual_network.main.name{{ end }}
+  vnet_resource_group = {{ if .ExistingVNet }}data.azurerm_virtual_network.main.resource_group_name{{ else }}azurerm_resource_group.main.name{{ end }}
+}
 {{- if .VM }}
 
 resource "azurerm_subnet" "vm" {
   name                 = "{{ .Name }}-vm"
-  resource_group_name  = azurerm_resource_group.main.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  resource_group_name  = local.vnet_resource_group
+  virtual_network_name = local.vnet_name
   address_prefixes     = ["{{ .VM.SubnetCIDR }}"]
 }
 
@@ -126,6 +144,18 @@ resource "azurerm_linux_virtual_machine" "main" {
     Name = "{{ .Name }}"
   }
 }
+
+output "vm_public_ip" {
+  value = azurerm_public_ip.vm.ip_address
+}
+
+output "vm_private_ip" {
+  value = azurerm_network_interface.vm.private_ip_address
+}
+
+output "vm_admin_username" {
+  value = azurerm_linux_virtual_machine.main.admin_username
+}
 {{- end }}
 {{- if .DB }}
 
@@ -167,6 +197,14 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "azure_services" {
   start_ip_address = "0.0.0.0"
   end_ip_address   = "0.0.0.0"
 }
+
+output "db_fqdn" {
+  value = azurerm_postgresql_flexible_server.main.fqdn
+}
+
+output "db_admin_username" {
+  value = azurerm_postgresql_flexible_server_active_directory_administrator.main.principal_name
+}
 {{- end }}
 {{- if .ACI }}
 
@@ -193,5 +231,13 @@ resource "azurerm_container_group" "main" {
   tags = {
     Name = "{{ .Name }}"
   }
+}
+
+output "aci_ip_address" {
+  value = azurerm_container_group.main.ip_address
+}
+
+output "aci_fqdn" {
+  value = azurerm_container_group.main.fqdn
 }
 {{- end }}

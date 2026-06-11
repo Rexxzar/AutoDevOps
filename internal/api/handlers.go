@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/Rexxzar/autodevops/internal/auth"
 	"github.com/Rexxzar/autodevops/internal/cicd"
+	"github.com/Rexxzar/autodevops/internal/cloud"
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/Rexxzar/autodevops/internal/terraform"
@@ -466,6 +469,31 @@ func (s *Server) handleDeleteCloudAccount(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleListCloudAccountNetworks lists existing VPCs/VNets and their subnets
+// for a cloud account in the given region — backs the New Resource wizard's
+// "use existing network" picker (see the design notes: Terraform engine scope notes:
+// existing-resource references are wired as `data` blocks backed by these
+// IDs, not remote state).
+func (s *Server) handleListCloudAccountNetworks(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	region := r.URL.Query().Get("region")
+	if region == "" {
+		writeError(w, http.StatusBadRequest, "region query parameter required")
+		return
+	}
+
+	networks, err := cloud.ListNetworks(r.Context(), s.db, s.vault, id, region)
+	if err != nil {
+		slog.Error("api: list cloud account networks", "cloud_account_id", id, "region", region, "error", err)
+		writeError(w, http.StatusBadGateway, "failed to list networks")
+		return
+	}
+	if networks == nil {
+		networks = []cloud.Network{}
+	}
+	writeJSON(w, http.StatusOK, networks)
+}
+
 func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name  string `json:"name"`
@@ -702,14 +730,20 @@ type resourceRow struct {
 	ResourceType   string    `json:"resource_type"`
 	Template       string    `json:"template"`
 	Status         string    `json:"status"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	// Outputs is the JSON-encoded terraform outputs (vpc_id, public IP, db
+	// endpoint, etc. — see `output` blocks in templates/*/stack.tf.tmpl),
+	// "{}" until the first successful Apply. Cast to text in SQL (same
+	// pattern as cloud_resources.state) and re-parsed by the frontend with
+	// JSON.parse.
+	Outputs   string    `json:"outputs"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
 		SELECT id::text, name, provider, COALESCE(cloud_account_id::text,''),
-		       region, resource_type, template, status, created_at, updated_at
+		       region, resource_type, template, status, COALESCE(outputs::text, '{}'), created_at, updated_at
 		FROM provisioned_resources WHERE dismissed_at IS NULL ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -722,7 +756,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rr resourceRow
 		if err := rows.Scan(&rr.ID, &rr.Name, &rr.Provider, &rr.CloudAccountID,
-			&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.CreatedAt, &rr.UpdatedAt); err != nil {
+			&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.Outputs, &rr.CreatedAt, &rr.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan resource")
 			return
 		}
@@ -731,17 +765,58 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
+// handleGetResource returns a single provisioned_resources row, including the
+// terraform outputs captured after the last successful Apply (vpc_id, public
+// IP, db endpoint, etc.) — backs the resource detail page.
+func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	rr, err := s.getResource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, rr)
+}
+
 // getResource loads a single provisioned_resources row, used both for the
 // create response and to look up cloud_account_id/template before Apply/Destroy.
 func (s *Server) getResource(ctx context.Context, id string) (resourceRow, error) {
 	var rr resourceRow
 	err := s.db.QueryRow(ctx, `
 		SELECT id::text, name, provider, COALESCE(cloud_account_id::text,''),
-		       region, resource_type, template, status, created_at, updated_at
+		       region, resource_type, template, status, COALESCE(outputs::text, '{}'), created_at, updated_at
 		FROM provisioned_resources WHERE id = $1
 	`, id).Scan(&rr.ID, &rr.Name, &rr.Provider, &rr.CloudAccountID,
-		&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.CreatedAt, &rr.UpdatedAt)
+		&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.Outputs, &rr.CreatedAt, &rr.UpdatedAt)
 	return rr, err
+}
+
+// handleGetResourceTerraform returns the exact Terraform HCL last planned
+// for this resource — read from its workspace's main.tf, whether generated
+// by buildTerraformConfig or hand-edited via handlePlanResourceTerraform.
+// Backs the resource detail page's "View Terraform" panel and download
+// action.
+func (s *Server) handleGetResourceTerraform(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, err := s.getResource(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if s.tfRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "terraform binary unavailable — check server logs")
+		return
+	}
+
+	config, err := s.tfRunner.ReadConfig("", id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "no terraform configuration has been planned for this resource yet")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to read terraform config")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"config": string(config)})
 }
 
 // setResourceStatus updates a resource's status and publishes the refreshed
@@ -758,6 +833,26 @@ func (s *Server) setResourceStatus(ctx context.Context, id, status string) {
 		return
 	}
 	s.hub.Publish(sse.Event{Type: "resource", Payload: rr})
+}
+
+// setResourceOutputs persists the terraform outputs captured after a
+// successful Apply (vpc_id, public/private IPs, RDS endpoint, db FQDN, etc. —
+// see the `output` blocks in internal/terraform/templates/*/stack.tf.tmpl)
+// for the resource detail page. A nil/empty map clears any previously stored
+// outputs (used after Destroy, since the underlying infrastructure is gone).
+func (s *Server) setResourceOutputs(ctx context.Context, id string, outputs map[string]json.RawMessage) {
+	var data []byte
+	if len(outputs) > 0 {
+		var err error
+		data, err = json.Marshal(outputs)
+		if err != nil {
+			slog.Error("resources: marshal outputs", "id", id, "error", err)
+			return
+		}
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE provisioned_resources SET outputs = $2, updated_at = now() WHERE id = $1`, id, data); err != nil {
+		slog.Error("resources: update outputs", "id", id, "error", err)
+	}
 }
 
 // handlePreviewResource renders the Terraform HCL for the given resource
@@ -789,6 +884,22 @@ func (s *Server) handlePreviewResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"config": string(config)})
+}
+
+// handleGenerateSSHKey creates a new ed25519 SSH keypair for the New
+// Resource wizard's "generate a key for me" option. The private key is
+// returned once and never stored server-side — it's the user's
+// responsibility to copy/download it from the response before it's gone.
+func (s *Server) handleGenerateSSHKey(w http.ResponseWriter, r *http.Request) {
+	publicKey, privateKey, err := generateSSHKeyPair()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate SSH key")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"public_key":  publicKey,
+		"private_key": privateKey,
+	})
 }
 
 // handleCreateResource provisions a standalone cloud resource for the
@@ -830,6 +941,11 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 		RETURNING id::text
 	`, req.Name, req.Provider, req.CloudAccountID, req.Region, req.ResourceType, template).Scan(&resourceID)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, fmt.Sprintf("a resource named %q already exists — choose a different name or dismiss the existing one", req.Name))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to register resource")
 		return
 	}
@@ -871,14 +987,62 @@ func (s *Server) handleApplyResource(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx := context.Background()
 		status := "applied"
-		if _, err := s.tfRunner.Apply(ctx, "", id, rr.CloudAccountID, rr.Template); err != nil {
+		run, err := s.tfRunner.Apply(ctx, "", id, rr.CloudAccountID, rr.Template)
+		if err != nil {
 			slog.Error("terraform: apply failed", "id", id, "error", err)
 			status = "failed"
+		} else {
+			s.setResourceOutputs(ctx, id, run.Outputs)
 		}
 		s.setResourceStatus(ctx, id, status)
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "apply_initiated", "id": id})
+}
+
+// handlePlanResourceTerraform re-plans a resource's workspace against
+// hand-edited Terraform HCL submitted from the resource detail page — the
+// same Runner.Plan used by handleCreateResource, but with user-supplied
+// config bytes in place of buildTerraformConfig's output. On success the
+// resource becomes 'planned' again, so the existing Apply action applies the
+// edited config against the workspace's current state.
+func (s *Server) handlePlanResourceTerraform(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	rr, err := s.getResource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if s.tfRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "terraform binary unavailable — check server logs")
+		return
+	}
+
+	var req struct {
+		Config string `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Config) == "" {
+		writeError(w, http.StatusBadRequest, "config required")
+		return
+	}
+
+	s.setResourceStatus(r.Context(), id, "planning")
+
+	go func() {
+		ctx := context.Background()
+		status := "planned"
+		if _, err := s.tfRunner.Plan(ctx, "", id, rr.CloudAccountID, rr.Template, []byte(req.Config)); err != nil {
+			slog.Error("terraform: re-plan with edited config failed", "id", id, "error", err)
+			status = "failed"
+		}
+		s.setResourceStatus(ctx, id, status)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "plan_initiated", "id": id})
 }
 
 // handleDestroyResource runs `terraform destroy` against a resource's workspace.
@@ -902,6 +1066,8 @@ func (s *Server) handleDestroyResource(w http.ResponseWriter, r *http.Request) {
 		if _, err := s.tfRunner.Destroy(ctx, "", id, rr.CloudAccountID, rr.Template); err != nil {
 			slog.Error("terraform: destroy failed", "id", id, "error", err)
 			status = "failed"
+		} else {
+			s.setResourceOutputs(ctx, id, nil)
 		}
 		s.setResourceStatus(ctx, id, status)
 	}()
@@ -994,6 +1160,9 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 	switch provider {
 	case "aws":
 		params := terraform.AWSStackParams{Name: name, Region: region, VPCCIDR: "10.0.0.0/16"}
+		if vpcID := strOpt(opts, "existing_vpc_id", ""); vpcID != "" {
+			params.ExistingVPCID = vpcID
+		}
 		switch resourceType {
 		case "vm":
 			params.EC2 = &terraform.EC2Params{
@@ -1003,7 +1172,11 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 			}
 		case "rds":
 			engine := strOpt(opts, "engine", "postgres")
-			engineVersion, port := "16.4", 5432
+			// Major-version-only: RDS resolves this to its current default
+			// minor at creation time, and the AWS provider suppresses the
+			// resulting diff (state ends up e.g. "16.10") — pinning a full
+			// "16.4" goes stale as AWS retires old minors and breaks plan.
+			engineVersion, port := "16", 5432
 			if engine == "mysql" {
 				engineVersion, port = "8.0", 3306
 			}
@@ -1016,9 +1189,12 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 				EngineVersion:    engineVersion,
 				InstanceClass:    strOpt(opts, "instance_class", "db.t3.micro"),
 				AllocatedStorage: storage,
-				Username:         strOpt(opts, "username", "admin"),
-				Port:             port,
-				Subnets:          awsZonalSubnets(region),
+				// "admin" is a reserved master username on RDS for both
+				// postgres and mysql — AWS rejects CreateDBInstance with
+				// InvalidParameterValue if used.
+				Username: strOpt(opts, "username", "appadmin"),
+				Port:     port,
+				Subnets:  awsZonalSubnets(region),
 			}
 		case "ecs":
 			cpu, err := intOpt(opts, "cpu", 256)
@@ -1056,6 +1232,12 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 
 	case "azure":
 		params := terraform.AzureStackParams{Name: name, Location: region, VNetCIDR: "10.0.0.0/16"}
+		if vnetName := strOpt(opts, "existing_vnet_name", ""); vnetName != "" {
+			params.ExistingVNet = &terraform.AzureExistingVNet{
+				Name:          vnetName,
+				ResourceGroup: strOpt(opts, "existing_vnet_resource_group", ""),
+			}
+		}
 		switch resourceType {
 		case "aci":
 			cpu, err := floatOpt(opts, "cpu", 1)
@@ -1078,7 +1260,7 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 			}
 		case "vm":
 			params.VM = &terraform.AzureVMParams{
-				Size:          strOpt(opts, "size", "Standard_B1s"),
+				Size:          strOpt(opts, "size", "Standard_D2as_v7"),
 				SubnetCIDR:    "10.0.1.0/24",
 				AdminUsername: strOpt(opts, "admin_username", "azureuser"),
 				SSHPublicKey:  strOpt(opts, "ssh_public_key", ""),

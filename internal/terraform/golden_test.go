@@ -80,6 +80,20 @@ var goldenCases = []struct {
 		},
 	},
 	{
+		name: "aws-stack-existing-vpc",
+		id:   AWSStackID,
+		params: AWSStackParams{
+			Name:          "demo",
+			Region:        "us-east-1",
+			ExistingVPCID: "vpc-0123456789abcdef0",
+			EC2: &EC2Params{
+				InstanceType:     "t3.micro",
+				SubnetCIDR:       "10.0.1.0/24",
+				AvailabilityZone: "us-east-1a",
+			},
+		},
+	},
+	{
 		name: "azure-stack",
 		id:   AzureStackID,
 		params: AzureStackParams{
@@ -130,6 +144,19 @@ var goldenCases = []struct {
 			ACI:      &exampleAzureACIParams,
 		},
 	},
+	{
+		name: "azure-stack-existing-vnet",
+		id:   AzureStackID,
+		params: AzureStackParams{
+			Name:     "demo",
+			Location: "uksouth",
+			ExistingVNet: &AzureExistingVNet{
+				Name:          "shared-vnet",
+				ResourceGroup: "shared-rg",
+			},
+			VM: &exampleAzureVMParams,
+		},
+	},
 }
 
 // exampleAzureVMParams is the shared example value for the Azure VM golden
@@ -173,7 +200,7 @@ var exampleAzureACIParams = AzureACIParams{
 // aws-stack-full renders all three into the same VPC.
 var exampleRDSParams = RDSParams{
 	Engine:           "postgres",
-	EngineVersion:    "16.4",
+	EngineVersion:    "16",
 	InstanceClass:    "db.t3.micro",
 	AllocatedStorage: 20,
 	Username:         "appadmin",

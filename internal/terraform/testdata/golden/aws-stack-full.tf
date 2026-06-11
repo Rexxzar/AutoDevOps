@@ -21,6 +21,15 @@ resource "aws_vpc" "main" {
   }
 }
 
+locals {
+  vpc_id         = aws_vpc.main.id
+  vpc_cidr_block = aws_vpc.main.cidr_block
+}
+
+output "vpc_id" {
+  value = local.vpc_id
+}
+
 data "aws_ami" "amazon_linux" {
   most_recent = true
   owners      = ["amazon"]
@@ -32,9 +41,10 @@ data "aws_ami" "amazon_linux" {
 }
 
 resource "aws_subnet" "ec2" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.1.0/24"
-  availability_zone = "us-east-1a"
+  vpc_id                  = local.vpc_id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "us-east-1a"
+  map_public_ip_on_launch = true
 
   tags = {
     Name = "demo-ec2"
@@ -44,7 +54,7 @@ resource "aws_subnet" "ec2" {
 resource "aws_security_group" "ec2" {
   name        = "demo-ec2"
   description = "Allow SSH inbound and all outbound for demo"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "SSH"
@@ -77,8 +87,20 @@ resource "aws_instance" "main" {
   }
 }
 
+output "ec2_instance_id" {
+  value = aws_instance.main.id
+}
+
+output "ec2_public_ip" {
+  value = aws_instance.main.public_ip
+}
+
+output "ec2_private_ip" {
+  value = aws_instance.main.private_ip
+}
+
 resource "aws_subnet" "rds_0" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = local.vpc_id
   cidr_block        = "10.0.2.0/24"
   availability_zone = "us-east-1a"
 
@@ -88,7 +110,7 @@ resource "aws_subnet" "rds_0" {
 }
 
 resource "aws_subnet" "rds_1" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = local.vpc_id
   cidr_block        = "10.0.3.0/24"
   availability_zone = "us-east-1b"
 
@@ -109,14 +131,14 @@ resource "aws_db_subnet_group" "rds" {
 resource "aws_security_group" "rds" {
   name        = "demo-rds"
   description = "Allow database access from within the VPC for demo"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "Database"
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
+    cidr_blocks = [local.vpc_cidr_block]
   }
 
   egress {
@@ -134,7 +156,7 @@ resource "aws_security_group" "rds" {
 resource "aws_db_instance" "main" {
   identifier                  = "demo-db"
   engine                      = "postgres"
-  engine_version              = "16.4"
+  engine_version              = "16"
   instance_class              = "db.t3.micro"
   allocated_storage           = 20
   username                    = "appadmin"
@@ -149,8 +171,20 @@ resource "aws_db_instance" "main" {
   }
 }
 
+output "rds_endpoint" {
+  value = aws_db_instance.main.address
+}
+
+output "rds_port" {
+  value = aws_db_instance.main.port
+}
+
+output "rds_username" {
+  value = aws_db_instance.main.username
+}
+
 resource "aws_subnet" "ecs_0" {
-  vpc_id                  = aws_vpc.main.id
+  vpc_id                  = local.vpc_id
   cidr_block              = "10.0.4.0/24"
   availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
@@ -161,7 +195,7 @@ resource "aws_subnet" "ecs_0" {
 }
 
 resource "aws_subnet" "ecs_1" {
-  vpc_id                  = aws_vpc.main.id
+  vpc_id                  = local.vpc_id
   cidr_block              = "10.0.5.0/24"
   availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
@@ -172,7 +206,7 @@ resource "aws_subnet" "ecs_1" {
 }
 
 resource "aws_internet_gateway" "ecs" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = local.vpc_id
 
   tags = {
     Name = "demo-ecs"
@@ -180,7 +214,7 @@ resource "aws_internet_gateway" "ecs" {
 }
 
 resource "aws_route_table" "ecs" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = local.vpc_id
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -205,7 +239,7 @@ resource "aws_route_table_association" "ecs_1" {
 resource "aws_security_group" "alb" {
   name        = "demo-alb"
   description = "Allow inbound HTTP to the demo load balancer"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "HTTP"
@@ -230,7 +264,7 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "ecs_task" {
   name        = "demo-ecs-task"
   description = "Allow inbound traffic from the load balancer to demo tasks"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description     = "From ALB"
@@ -268,7 +302,7 @@ resource "aws_lb_target_group" "main" {
   name        = "demo-tg"
   port        = 80
   protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
   target_type = "ip"
 
   health_check {
@@ -387,4 +421,12 @@ resource "aws_ecs_service" "main" {
   tags = {
     Name = "demo"
   }
+}
+
+output "ecs_alb_dns_name" {
+  value = aws_lb.main.dns_name
+}
+
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.main.name
 }

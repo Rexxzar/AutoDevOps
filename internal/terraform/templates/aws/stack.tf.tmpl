@@ -10,6 +10,12 @@ terraform {
 provider "aws" {
   region = "{{ .Region }}"
 }
+{{- if .ExistingVPCID }}
+
+data "aws_vpc" "main" {
+  id = "{{ .ExistingVPCID }}"
+}
+{{- else }}
 
 resource "aws_vpc" "main" {
   cidr_block           = "{{ .VPCCIDR }}"
@@ -19,6 +25,16 @@ resource "aws_vpc" "main" {
   tags = {
     Name = "{{ .Name }}"
   }
+}
+{{- end }}
+
+locals {
+  vpc_id         = {{ if .ExistingVPCID }}data.aws_vpc.main.id{{ else }}aws_vpc.main.id{{ end }}
+  vpc_cidr_block = {{ if .ExistingVPCID }}data.aws_vpc.main.cidr_block{{ else }}aws_vpc.main.cidr_block{{ end }}
+}
+
+output "vpc_id" {
+  value = local.vpc_id
 }
 {{- if .EC2 }}
 
@@ -33,9 +49,10 @@ data "aws_ami" "amazon_linux" {
 }
 
 resource "aws_subnet" "ec2" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "{{ .EC2.SubnetCIDR }}"
-  availability_zone = "{{ .EC2.AvailabilityZone }}"
+  vpc_id                  = local.vpc_id
+  cidr_block              = "{{ .EC2.SubnetCIDR }}"
+  availability_zone       = "{{ .EC2.AvailabilityZone }}"
+  map_public_ip_on_launch = true
 
   tags = {
     Name = "{{ .Name }}-ec2"
@@ -45,7 +62,7 @@ resource "aws_subnet" "ec2" {
 resource "aws_security_group" "ec2" {
   name        = "{{ .Name }}-ec2"
   description = "Allow SSH inbound and all outbound for {{ .Name }}"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "SSH"
@@ -77,11 +94,23 @@ resource "aws_instance" "main" {
     Name = "{{ .Name }}"
   }
 }
+
+output "ec2_instance_id" {
+  value = aws_instance.main.id
+}
+
+output "ec2_public_ip" {
+  value = aws_instance.main.public_ip
+}
+
+output "ec2_private_ip" {
+  value = aws_instance.main.private_ip
+}
 {{- end }}
 {{- if .RDS }}
 {{ range $i, $s := .RDS.Subnets }}
 resource "aws_subnet" "rds_{{ $i }}" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = local.vpc_id
   cidr_block        = "{{ $s.CIDR }}"
   availability_zone = "{{ $s.AvailabilityZone }}"
 
@@ -102,14 +131,14 @@ resource "aws_db_subnet_group" "rds" {
 resource "aws_security_group" "rds" {
   name        = "{{ .Name }}-rds"
   description = "Allow database access from within the VPC for {{ .Name }}"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "Database"
     from_port   = {{ .RDS.Port }}
     to_port     = {{ .RDS.Port }}
     protocol    = "tcp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
+    cidr_blocks = [local.vpc_cidr_block]
   }
 
   egress {
@@ -141,11 +170,23 @@ resource "aws_db_instance" "main" {
     Name = "{{ .Name }}-db"
   }
 }
+
+output "rds_endpoint" {
+  value = aws_db_instance.main.address
+}
+
+output "rds_port" {
+  value = aws_db_instance.main.port
+}
+
+output "rds_username" {
+  value = aws_db_instance.main.username
+}
 {{- end }}
 {{- if .ECS }}
 {{ range $i, $s := .ECS.Subnets }}
 resource "aws_subnet" "ecs_{{ $i }}" {
-  vpc_id                  = aws_vpc.main.id
+  vpc_id                  = local.vpc_id
   cidr_block              = "{{ $s.CIDR }}"
   availability_zone       = "{{ $s.AvailabilityZone }}"
   map_public_ip_on_launch = true
@@ -156,7 +197,7 @@ resource "aws_subnet" "ecs_{{ $i }}" {
 }
 {{ end }}
 resource "aws_internet_gateway" "ecs" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = local.vpc_id
 
   tags = {
     Name = "{{ .Name }}-ecs"
@@ -164,7 +205,7 @@ resource "aws_internet_gateway" "ecs" {
 }
 
 resource "aws_route_table" "ecs" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = local.vpc_id
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -184,7 +225,7 @@ resource "aws_route_table_association" "ecs_{{ $i }}" {
 resource "aws_security_group" "alb" {
   name        = "{{ .Name }}-alb"
   description = "Allow inbound HTTP to the {{ .Name }} load balancer"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "HTTP"
@@ -209,7 +250,7 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "ecs_task" {
   name        = "{{ .Name }}-ecs-task"
   description = "Allow inbound traffic from the load balancer to {{ .Name }} tasks"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description     = "From ALB"
@@ -247,7 +288,7 @@ resource "aws_lb_target_group" "main" {
   name        = "{{ .Name }}-tg"
   port        = {{ .ECS.ContainerPort }}
   protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
   target_type = "ip"
 
   health_check {
@@ -366,5 +407,13 @@ resource "aws_ecs_service" "main" {
   tags = {
     Name = "{{ .Name }}"
   }
+}
+
+output "ecs_alb_dns_name" {
+  value = aws_lb.main.dns_name
+}
+
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.main.name
 }
 {{- end }}

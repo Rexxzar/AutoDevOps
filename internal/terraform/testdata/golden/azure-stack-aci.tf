@@ -20,6 +20,10 @@ resource "azurerm_resource_group" "main" {
   }
 }
 
+output "resource_group_name" {
+  value = azurerm_resource_group.main.name
+}
+
 resource "azurerm_virtual_network" "main" {
   name                = "demo-vnet"
   address_space       = ["10.0.0.0/16"]
@@ -29,6 +33,11 @@ resource "azurerm_virtual_network" "main" {
   tags = {
     Name = "demo"
   }
+}
+
+locals {
+  vnet_name           = azurerm_virtual_network.main.name
+  vnet_resource_group = azurerm_resource_group.main.name
 }
 
 resource "azurerm_container_group" "main" {
@@ -54,4 +63,12 @@ resource "azurerm_container_group" "main" {
   tags = {
     Name = "demo"
   }
+}
+
+output "aci_ip_address" {
+  value = azurerm_container_group.main.ip_address
+}
+
+output "aci_fqdn" {
+  value = azurerm_container_group.main.fqdn
 }

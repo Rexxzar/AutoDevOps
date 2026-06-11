@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Loader2, CheckCircle2, AlertCircle, AlertTriangle, KeyRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Dialog } from '@/components/ui/dialog'
+import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { TargetPill, FormField, inputCls, selectCls } from '@/components/deploy-form-fields'
 
@@ -10,6 +12,17 @@ type Step = 'form' | 'preview' | 'success'
 type CloudProvider = 'aws' | 'azure'
 type AWSResource = 'ecs' | 'vm' | 'rds'
 type AzureResource = 'aci' | 'vm' | 'db'
+type NetworkMode = 'new' | 'existing'
+
+// CloudNetwork mirrors internal/cloud.Network — an existing VPC (AWS) or
+// VNet (Azure) returned by GET /cloud/accounts/{id}/networks for the
+// "use existing network" picker.
+type CloudNetwork = {
+  id: string
+  name?: string
+  cidr?: string
+  resource_group?: string
+}
 
 function SectionDivider({ label }: { label: string }) {
   return (
@@ -96,8 +109,8 @@ function RDSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
         <FormField label="Database name">
           <input value={v.db_name ?? ''} onChange={e => set('db_name', e.target.value)} placeholder="mydb" className={inputCls} />
         </FormField>
-        <FormField label="Master username">
-          <input value={v.username ?? ''} onChange={e => set('username', e.target.value)} placeholder="admin" className={inputCls} />
+        <FormField label="Master username" hint='"admin" is reserved on RDS'>
+          <input value={v.username ?? ''} onChange={e => set('username', e.target.value)} placeholder="appadmin" className={inputCls} />
         </FormField>
       </div>
     </>
@@ -139,14 +152,54 @@ function ACIFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
 
 // ─── Azure VM sub-fields ──────────────────────────────────────────
 function AzureVMFields({ v, set }: { v: Record<string,string>; set: (k: string, val: string) => void }) {
+  const [generating, setGenerating] = useState(false)
+  const [generatedKey, setGeneratedKey] = useState<{ publicKey: string; privateKey: string } | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  async function handleGenerateKey() {
+    setGenerating(true)
+    try {
+      const data = await apiFetch<{ public_key: string; private_key: string }>('/resources/generate-ssh-key', { method: 'POST' })
+      set('ssh_public_key', data.public_key)
+      setGeneratedKey({ publicKey: data.public_key, privateKey: data.private_key })
+      setCopied(false)
+    } catch {
+      // ignore — user can still paste their own key into the field above
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  function handleCopy() {
+    if (!generatedKey) return
+    navigator.clipboard.writeText(generatedKey.privateKey)
+    setCopied(true)
+  }
+
+  function handleDownload() {
+    if (!generatedKey) return
+    const blob = new Blob([generatedKey.privateKey], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'autodevops-key'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <>
       <SectionDivider label="Virtual machine options" />
       <div className="grid grid-cols-2 gap-3">
-        <FormField label="VM size">
-          <select value={v.size ?? 'Standard_B1s'} onChange={e => set('size', e.target.value)} className={selectCls}>
-            {['Standard_B1s','Standard_B2s','Standard_B2ms','Standard_D2s_v3','Standard_D4s_v3','Standard_F2s_v2'].map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
+        <FormField label="VM size" hint="varies by region">
+          <input
+            value={v.size ?? ''} onChange={e => set('size', e.target.value)}
+            list="vm-size-suggestions" placeholder="Standard_D2as_v7"
+            className={inputCls}
+          />
+          <datalist id="vm-size-suggestions">
+            {['Standard_D2as_v7','Standard_D2ads_v7','Standard_F2as_v7','Standard_E2as_v7','Standard_B1s','Standard_B2s','Standard_B2ms','Standard_D2s_v3','Standard_D4s_v3','Standard_F2s_v2'].map(s => <option key={s} value={s} />)}
+          </datalist>
         </FormField>
         <FormField label="Admin username">
           <input value={v.admin_username ?? ''} onChange={e => set('admin_username', e.target.value)} placeholder="azureuser" className={inputCls} />
@@ -160,6 +213,40 @@ function AzureVMFields({ v, set }: { v: Record<string,string>; set: (k: string, 
           <option value="Debian11">Debian 11</option>
         </select>
       </FormField>
+      <FormField label="SSH public key" hint="ssh-ed25519 AAAA... you@example.com">
+        <textarea
+          value={v.ssh_public_key ?? ''}
+          onChange={e => set('ssh_public_key', e.target.value)}
+          placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... you@example.com"
+          rows={2}
+          className={cn(inputCls, 'h-auto resize-none py-2 font-mono text-xs leading-relaxed')}
+        />
+      </FormField>
+      <Button type="button" variant="outline" size="sm" className="gap-2" onClick={handleGenerateKey} disabled={generating}>
+        {generating ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+        {generating ? 'Generating…' : "Don't have a key? Generate one for me"}
+      </Button>
+
+      <Dialog open={!!generatedKey} onClose={() => setGeneratedKey(null)} title="Your new SSH private key">
+        <div className="space-y-4 p-6">
+          <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2.5 text-sm text-warning">
+            <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+            <span>Copy or download this key now — once you close this dialog, AutoDevOps does not keep a copy and you won't be able to see it again.</span>
+          </div>
+          <pre className="max-h-48 overflow-auto rounded-lg border border-border bg-background p-3 text-xs font-mono leading-relaxed whitespace-pre-wrap break-all">
+            {generatedKey?.privateKey}
+          </pre>
+          <div className="flex gap-3">
+            <Button type="button" variant="outline" className="flex-1" onClick={handleCopy}>
+              {copied ? 'Copied!' : 'Copy to clipboard'}
+            </Button>
+            <Button type="button" className="flex-1" onClick={handleDownload}>Download</Button>
+          </div>
+          <Button type="button" variant="ghost" className="w-full" onClick={() => setGeneratedKey(null)}>
+            I've saved it — done
+          </Button>
+        </div>
+      </Dialog>
     </>
   )
 }
@@ -176,10 +263,15 @@ function AzureDBFields({ v, set }: { v: Record<string,string>; set: (k: string, 
             <option value="mysql">MySQL</option>
           </select>
         </FormField>
-        <FormField label="SKU">
-          <select value={v.sku ?? 'B_Gen5_1'} onChange={e => set('sku', e.target.value)} className={selectCls}>
-            {['B_Gen5_1','B_Gen5_2','GP_Gen5_2','GP_Gen5_4','MO_Gen5_2'].map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
+        <FormField label="SKU" hint="Flexible Server tier_ComputeSize, e.g. B_Standard_B1ms">
+          <input
+            value={v.sku ?? ''} onChange={e => set('sku', e.target.value)}
+            list="db-sku-suggestions" placeholder="B_Standard_B1ms"
+            className={inputCls}
+          />
+          <datalist id="db-sku-suggestions">
+            {['B_Standard_B1ms','B_Standard_B2s','GP_Standard_D2s_v3','GP_Standard_D4s_v3','MO_Standard_E2s_v3'].map(s => <option key={s} value={s} />)}
+          </datalist>
         </FormField>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -190,6 +282,22 @@ function AzureDBFields({ v, set }: { v: Record<string,string>; set: (k: string, 
           <input value={v.admin_login ?? ''} onChange={e => set('admin_login', e.target.value)} placeholder="adminuser" className={inputCls} />
         </FormField>
       </div>
+      <SectionDivider label="Azure AD admin (no password is stored)" />
+      <div className="grid grid-cols-2 gap-3">
+        <FormField label="AAD admin object ID" hint="az ad signed-in-user show --query id -o tsv">
+          <input value={v.aad_admin_object_id ?? ''} onChange={e => set('aad_admin_object_id', e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" className={inputCls} />
+        </FormField>
+        <FormField label="AAD admin principal name" hint="UPN, e.g. you@example.com">
+          <input value={v.aad_admin_principal_name ?? ''} onChange={e => set('aad_admin_principal_name', e.target.value)} placeholder="alice@example.com" className={inputCls} />
+        </FormField>
+      </div>
+      <FormField label="AAD principal type">
+        <select value={v.aad_admin_principal_type ?? 'User'} onChange={e => set('aad_admin_principal_type', e.target.value)} className={selectCls}>
+          <option value="User">User</option>
+          <option value="Group">Group</option>
+          <option value="ServicePrincipal">Service Principal</option>
+        </select>
+      </FormField>
     </>
   )
 }
@@ -207,6 +315,8 @@ export function NewResourcePage() {
   const [awsResource, setAWSResource] = useState<AWSResource>('ecs')
   const [azureResource, setAzureResource] = useState<AzureResource>('aci')
   const [resourceOpts, setResourceOpts] = useState<Record<string, string>>({})
+  const [networkMode, setNetworkMode] = useState<NetworkMode>('new')
+  const [existingNetworkID, setExistingNetworkID] = useState('')
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -222,11 +332,42 @@ export function NewResourcePage() {
   // NTU Azure for Students subscription policy (sys.regionrestriction) only allows these regions
   const azureLocations = ['norwayeast', 'germanywestcentral', 'polandcentral', 'switzerlandnorth', 'spaincentral']
 
+  // The "use existing network" picker applies to every AWS resource type
+  // (they all share one VPC) but only the Azure VM (ACI/DB don't take a subnet).
+  const showNetworkPicker = provider === 'aws' || (provider === 'azure' && azureResource === 'vm')
+
+  const { data: networks = [], isLoading: networksLoading } = useQuery({
+    queryKey: ['cloud-networks', cloudAccountID, region],
+    queryFn: () => apiFetch<CloudNetwork[]>(`/cloud/accounts/${cloudAccountID}/networks?region=${encodeURIComponent(region)}`),
+    enabled: showNetworkPicker && networkMode === 'existing' && !!cloudAccountID && !!region,
+  })
+
   function setOpt(k: string, val: string) {
     setResourceOpts(prev => ({ ...prev, [k]: val }))
   }
 
   function clearOpts() { setResourceOpts({}) }
+
+  function resetNetwork() { setNetworkMode('new'); setExistingNetworkID('') }
+
+  // Merges the selected existing VPC/VNet (if any) into resource_opts for
+  // the API request — buildTerraformConfig (handlers.go) reads
+  // existing_vpc_id / existing_vnet_name + existing_vnet_resource_group.
+  function buildResourceOpts(): Record<string, string> {
+    if (!showNetworkPicker || networkMode !== 'existing' || !existingNetworkID) {
+      return resourceOpts
+    }
+    if (provider === 'aws') {
+      return { ...resourceOpts, existing_vpc_id: existingNetworkID }
+    }
+    const net = networks.find(n => n.id === existingNetworkID)
+    if (!net) return resourceOpts
+    return {
+      ...resourceOpts,
+      existing_vnet_name: net.name ?? '',
+      existing_vnet_resource_group: net.resource_group ?? '',
+    }
+  }
 
   async function handlePreview(e: React.FormEvent) {
     e.preventDefault(); setLoading(true); setError('')
@@ -235,7 +376,7 @@ export function NewResourcePage() {
       const data = await apiFetch<{ config: string }>('/resources/preview', {
         method: 'POST',
         body: JSON.stringify({
-          name, provider, region, resource_type: resourceType, resource_opts: resourceOpts,
+          name, provider, region, resource_type: resourceType, resource_opts: buildResourceOpts(),
         }),
       })
       setPreviewConfig(data.config)
@@ -253,7 +394,7 @@ export function NewResourcePage() {
         method: 'POST',
         body: JSON.stringify({
           name, provider, cloud_account_id: cloudAccountID,
-          region, resource_type: resourceType, resource_opts: resourceOpts,
+          region, resource_type: resourceType, resource_opts: buildResourceOpts(),
         }),
       })
       setSuccess({ name, provider, resourceType })
@@ -294,13 +435,13 @@ export function NewResourcePage() {
             <form onSubmit={handlePreview} className="space-y-4">
               <FormField label="Provider">
                 <div className="flex gap-2">
-                  <TargetPill label="AWS" active={provider === 'aws'} onClick={() => { setProvider('aws'); setCloudAccountID(''); clearOpts() }} />
-                  <TargetPill label="Azure" active={provider === 'azure'} onClick={() => { setProvider('azure'); setCloudAccountID(''); clearOpts() }} />
+                  <TargetPill label="AWS" active={provider === 'aws'} onClick={() => { setProvider('aws'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
+                  <TargetPill label="Azure" active={provider === 'azure'} onClick={() => { setProvider('azure'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
                 </div>
               </FormField>
 
               <FormField label="Cloud account">
-                <select value={cloudAccountID} onChange={e => setCloudAccountID(e.target.value)} required className={selectCls}>
+                <select value={cloudAccountID} onChange={e => { setCloudAccountID(e.target.value); setExistingNetworkID('') }} required className={selectCls}>
                   <option value="">Select account…</option>
                   {filteredAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
@@ -318,7 +459,7 @@ export function NewResourcePage() {
                 </FormField>
                 <FormField label={provider === 'aws' ? 'Region' : 'Location'} hint="type to enter a region not listed">
                   <input
-                    value={region} onChange={e => setRegion(e.target.value)} required
+                    value={region} onChange={e => { setRegion(e.target.value); setExistingNetworkID('') }} required
                     list="region-suggestions" placeholder={provider === 'aws' ? 'us-east-1' : 'uksouth'}
                     className={inputCls}
                   />
@@ -345,6 +486,46 @@ export function NewResourcePage() {
                   )}
                 </div>
               </FormField>
+
+              {showNetworkPicker && (
+                <FormField label="Networking">
+                  <div className="flex gap-2">
+                    <TargetPill
+                      label={`New ${provider === 'aws' ? 'VPC' : 'VNet'}`}
+                      active={networkMode === 'new'}
+                      onClick={() => setNetworkMode('new')}
+                    />
+                    <TargetPill
+                      label={`Existing ${provider === 'aws' ? 'VPC' : 'VNet'}`}
+                      active={networkMode === 'existing'}
+                      onClick={() => setNetworkMode('existing')}
+                    />
+                  </div>
+                  {networkMode === 'existing' && (
+                    !cloudAccountID ? (
+                      <p className="text-xs text-muted-foreground mt-1.5">Select a cloud account first.</p>
+                    ) : !region ? (
+                      <p className="text-xs text-muted-foreground mt-1.5">Enter a {provider === 'aws' ? 'region' : 'location'} first.</p>
+                    ) : networksLoading ? (
+                      <p className="text-xs text-muted-foreground mt-1.5">Loading {provider === 'aws' ? 'VPCs' : 'VNets'}…</p>
+                    ) : networks.length === 0 ? (
+                      <p className="text-xs text-muted-foreground mt-1.5">No existing {provider === 'aws' ? 'VPCs' : 'VNets'} found in this region.</p>
+                    ) : (
+                      <select
+                        value={existingNetworkID} onChange={e => setExistingNetworkID(e.target.value)}
+                        required className={cn(selectCls, 'mt-1.5')}
+                      >
+                        <option value="">Select {provider === 'aws' ? 'VPC' : 'VNet'}…</option>
+                        {networks.map(n => (
+                          <option key={n.id} value={n.id}>
+                            {n.name || n.id}{n.cidr ? ` (${n.cidr})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )
+                  )}
+                </FormField>
+              )}
 
               {/* Dynamic sub-fields based on resource type */}
               {provider === 'aws' && awsResource === 'ecs' && <ECSFields v={resourceOpts} set={setOpt} />}
@@ -415,7 +596,7 @@ export function NewResourcePage() {
               The Terraform plan is running. Watch the Resources page for live status — apply it once the plan succeeds.
             </p>
             <div className="flex gap-3">
-              <Button variant="outline" className="flex-1" onClick={() => { setStep('form'); setName(''); setRegion(''); setCloudAccountID(''); setPreviewConfig(''); clearOpts() }}>
+              <Button variant="outline" className="flex-1" onClick={() => { setStep('form'); setName(''); setRegion(''); setCloudAccountID(''); setPreviewConfig(''); clearOpts(); resetNetwork() }}>
                 New resource
               </Button>
               <Button className="flex-1" onClick={() => navigate('/resources')}>View resources</Button>

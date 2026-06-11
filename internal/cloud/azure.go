@@ -8,6 +8,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v7"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerinstance/armcontainerinstance"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v6"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/postgresql/armpostgresqlflexibleservers/v2"
 )
 
@@ -25,9 +26,10 @@ type azureProvider struct {
 	vmClient        *armcompute.VirtualMachinesClient
 	containerClient *armcontainerinstance.ContainerGroupsClient
 	postgresClient  *armpostgresqlflexibleservers.ServersClient
+	vnetClient      *armnetwork.VirtualNetworksClient
 }
 
-func newAzureProvider(cloudAccountID string, creds azureCredentials) (Provider, error) {
+func newAzureProvider(cloudAccountID string, creds azureCredentials) (*azureProvider, error) {
 	if creds.SubscriptionID == "" {
 		return nil, fmt.Errorf("cloud: azure credentials require subscription_id")
 	}
@@ -59,12 +61,17 @@ func newAzureProvider(cloudAccountID string, creds azureCredentials) (Provider, 
 	if err != nil {
 		return nil, fmt.Errorf("cloud: build azure postgresql flexible server client: %w", err)
 	}
+	vnetClient, err := armnetwork.NewVirtualNetworksClient(creds.SubscriptionID, cred, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cloud: build azure virtual networks client: %w", err)
+	}
 
 	return &azureProvider{
 		cloudAccountID:  cloudAccountID,
 		vmClient:        vmClient,
 		containerClient: containerClient,
 		postgresClient:  postgresClient,
+		vnetClient:      vnetClient,
 	}, nil
 }
 

@@ -21,8 +21,17 @@ resource "aws_vpc" "main" {
   }
 }
 
+locals {
+  vpc_id         = aws_vpc.main.id
+  vpc_cidr_block = aws_vpc.main.cidr_block
+}
+
+output "vpc_id" {
+  value = local.vpc_id
+}
+
 resource "aws_subnet" "rds_0" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = local.vpc_id
   cidr_block        = "10.0.2.0/24"
   availability_zone = "us-east-1a"
 
@@ -32,7 +41,7 @@ resource "aws_subnet" "rds_0" {
 }
 
 resource "aws_subnet" "rds_1" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = local.vpc_id
   cidr_block        = "10.0.3.0/24"
   availability_zone = "us-east-1b"
 
@@ -53,14 +62,14 @@ resource "aws_db_subnet_group" "rds" {
 resource "aws_security_group" "rds" {
   name        = "demo-rds"
   description = "Allow database access from within the VPC for demo"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "Database"
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
+    cidr_blocks = [local.vpc_cidr_block]
   }
 
   egress {
@@ -78,7 +87,7 @@ resource "aws_security_group" "rds" {
 resource "aws_db_instance" "main" {
   identifier                  = "demo-db"
   engine                      = "postgres"
-  engine_version              = "16.4"
+  engine_version              = "16"
   instance_class              = "db.t3.micro"
   allocated_storage           = 20
   username                    = "appadmin"
@@ -91,4 +100,16 @@ resource "aws_db_instance" "main" {
   tags = {
     Name = "demo-db"
   }
+}
+
+output "rds_endpoint" {
+  value = aws_db_instance.main.address
+}
+
+output "rds_port" {
+  value = aws_db_instance.main.port
+}
+
+output "rds_username" {
+  value = aws_db_instance.main.username
 }

@@ -20,6 +20,10 @@ resource "azurerm_resource_group" "main" {
   }
 }
 
+output "resource_group_name" {
+  value = azurerm_resource_group.main.name
+}
+
 resource "azurerm_virtual_network" "main" {
   name                = "demo-vnet"
   address_space       = ["10.0.0.0/16"]
@@ -31,10 +35,15 @@ resource "azurerm_virtual_network" "main" {
   }
 }
 
+locals {
+  vnet_name           = azurerm_virtual_network.main.name
+  vnet_resource_group = azurerm_resource_group.main.name
+}
+
 resource "azurerm_subnet" "vm" {
   name                 = "demo-vm"
-  resource_group_name  = azurerm_resource_group.main.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  resource_group_name  = local.vnet_resource_group
+  virtual_network_name = local.vnet_name
   address_prefixes     = ["10.0.1.0/24"]
 }
 
@@ -124,4 +133,16 @@ resource "azurerm_linux_virtual_machine" "main" {
   tags = {
     Name = "demo"
   }
+}
+
+output "vm_public_ip" {
+  value = azurerm_public_ip.vm.ip_address
+}
+
+output "vm_private_ip" {
+  value = azurerm_network_interface.vm.private_ip_address
+}
+
+output "vm_admin_username" {
+  value = azurerm_linux_virtual_machine.main.admin_username
 }

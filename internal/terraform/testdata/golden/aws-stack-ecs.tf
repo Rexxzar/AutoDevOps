@@ -21,8 +21,17 @@ resource "aws_vpc" "main" {
   }
 }
 
+locals {
+  vpc_id         = aws_vpc.main.id
+  vpc_cidr_block = aws_vpc.main.cidr_block
+}
+
+output "vpc_id" {
+  value = local.vpc_id
+}
+
 resource "aws_subnet" "ecs_0" {
-  vpc_id                  = aws_vpc.main.id
+  vpc_id                  = local.vpc_id
   cidr_block              = "10.0.4.0/24"
   availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
@@ -33,7 +42,7 @@ resource "aws_subnet" "ecs_0" {
 }
 
 resource "aws_subnet" "ecs_1" {
-  vpc_id                  = aws_vpc.main.id
+  vpc_id                  = local.vpc_id
   cidr_block              = "10.0.5.0/24"
   availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
@@ -44,7 +53,7 @@ resource "aws_subnet" "ecs_1" {
 }
 
 resource "aws_internet_gateway" "ecs" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = local.vpc_id
 
   tags = {
     Name = "demo-ecs"
@@ -52,7 +61,7 @@ resource "aws_internet_gateway" "ecs" {
 }
 
 resource "aws_route_table" "ecs" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = local.vpc_id
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -77,7 +86,7 @@ resource "aws_route_table_association" "ecs_1" {
 resource "aws_security_group" "alb" {
   name        = "demo-alb"
   description = "Allow inbound HTTP to the demo load balancer"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "HTTP"
@@ -102,7 +111,7 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "ecs_task" {
   name        = "demo-ecs-task"
   description = "Allow inbound traffic from the load balancer to demo tasks"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description     = "From ALB"
@@ -140,7 +149,7 @@ resource "aws_lb_target_group" "main" {
   name        = "demo-tg"
   port        = 80
   protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
   target_type = "ip"
 
   health_check {
@@ -259,4 +268,12 @@ resource "aws_ecs_service" "main" {
   tags = {
     Name = "demo"
   }
+}
+
+output "ecs_alb_dns_name" {
+  value = aws_lb.main.dns_name
+}
+
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.main.name
 }

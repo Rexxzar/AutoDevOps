@@ -30,7 +30,7 @@ type awsProvider struct {
 // passed separately from creds.Region so the poller can also query regions
 // where AutoDevOps has provisioned resources for this account, not just its
 // registered home region (see Poller.listAWSResources).
-func newAWSProvider(ctx context.Context, cloudAccountID, region string, creds awsCredentials) (Provider, error) {
+func newAWSProvider(ctx context.Context, cloudAccountID, region string, creds awsCredentials) (*awsProvider, error) {
 	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
 		return nil, fmt.Errorf("cloud: aws credentials require access_key_id and secret_access_key")
 	}

@@ -53,6 +53,25 @@ func planFilePath(dir string) string {
 	return filepath.Join(dir, planFileName)
 }
 
+// readConfig returns the workspace's current main.tf — the exact HCL last
+// written by writeConfig (from Engine.Render output, or a hand-edited
+// version submitted via the resource detail page's "Plan changes" action).
+// Returns a wrapped os.ErrNotExist if the workspace has never been planned.
+func readConfig(baseDir, deploymentID string) ([]byte, error) {
+	dir, err := workspaceDir(baseDir, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(dir, configFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("terraform: read config for %s: %w", deploymentID, os.ErrNotExist)
+		}
+		return nil, fmt.Errorf("terraform: read config for %s: %w", deploymentID, err)
+	}
+	return data, nil
+}
+
 // hasPlan reports whether a saved plan file exists for the workspace,
 // distinguishing "no plan yet" from a real filesystem error.
 func hasPlan(dir string) (bool, error) {
@@ -87,4 +106,25 @@ func stateFilePath(dir string) (string, error) {
 		return "", fmt.Errorf("terraform: resolve state file path for %s: %w", dir, err)
 	}
 	return abs, nil
+}
+
+// hasState reports whether a local-backend state file exists for the
+// workspace, i.e. whether `terraform apply` has ever succeeded here —
+// distinguishing "nothing was ever provisioned" from a real filesystem
+// error. A workspace can have a written config (and even a failed plan)
+// without ever reaching this point, e.g. if the rendered HCL failed
+// provider validation before anything was created.
+func hasState(dir string) (bool, error) {
+	path, err := stateFilePath(dir)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("terraform: stat state file in %s: %w", dir, err)
 }

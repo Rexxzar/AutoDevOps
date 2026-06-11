@@ -28,8 +28,15 @@ type AzureStackParams struct {
 	// Location is the Azure region to provision into, e.g. "uksouth".
 	Location string
 	// VNetCIDR is the address space for the deployment's virtual network,
-	// e.g. "10.0.0.0/16".
+	// e.g. "10.0.0.0/16". Ignored when ExistingVNet is set.
 	VNetCIDR string
+	// ExistingVNet, if set, reuses an existing virtual network — possibly in
+	// a different resource group — via a `data "azurerm_virtual_network"`
+	// block instead of creating a new one. The "use existing resource"
+	// picker (design notes Terraform engine scope notes), backed by the VNet
+	// name/resource group returned from GET /cloud/accounts/{id}/networks.
+	// VNetCIDR is ignored when this is set.
+	ExistingVNet *AzureExistingVNet
 
 	// VM provisions a single Linux virtual machine (subnet, network security
 	// group, public IP, network interface, VM) wired to the deployment's
@@ -54,7 +61,11 @@ func (p AzureStackParams) Validate() error {
 	if p.Location == "" {
 		return fmt.Errorf("location is required")
 	}
-	if _, _, err := net.ParseCIDR(p.VNetCIDR); err != nil {
+	if p.ExistingVNet != nil {
+		if err := p.ExistingVNet.Validate(); err != nil {
+			return fmt.Errorf("existing_vnet: %w", err)
+		}
+	} else if _, _, err := net.ParseCIDR(p.VNetCIDR); err != nil {
 		return fmt.Errorf("vnet_cidr %q: %w", p.VNetCIDR, err)
 	}
 	if p.VM != nil {
@@ -71,6 +82,28 @@ func (p AzureStackParams) Validate() error {
 		if err := p.ACI.Validate(); err != nil {
 			return fmt.Errorf("aci: %w", err)
 		}
+	}
+	return nil
+}
+
+// AzureExistingVNet references a virtual network that already exists —
+// possibly in a different resource group than this deployment's own
+// (azurerm_resource_group.main) — instead of creating a new one.
+type AzureExistingVNet struct {
+	// Name is the existing virtual network's name, e.g. "demo-vnet".
+	Name string
+	// ResourceGroup is the resource group the existing virtual network
+	// lives in — not necessarily this deployment's own resource group.
+	ResourceGroup string
+}
+
+// Validate checks the existing VNet reference fields are present.
+func (v AzureExistingVNet) Validate() error {
+	if v.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if v.ResourceGroup == "" {
+		return fmt.Errorf("resource_group is required")
 	}
 	return nil
 }

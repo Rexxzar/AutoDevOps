@@ -1,7 +1,7 @@
 import { Fragment, useState, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Cloud, RefreshCw, Server, Database, Plus, Play, Trash2, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react'
+import { Cloud, RefreshCw, Server, Database, Plus, Play, Trash2, ChevronDown, ChevronRight, Loader2, X, AlertTriangle } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,14 @@ import { useSSE } from '@/lib/use-sse'
 import { useAuth } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 import type { Provider } from '@/lib/mock-data'
+import {
+  type ProvisionedResource,
+  type TerraformRun,
+  provisionedTypeLabel,
+  provisionedStatusMeta,
+  formatRelativeTime,
+  friendlyTerraformError,
+} from '@/lib/resources'
 
 interface CloudResource {
   id: string
@@ -23,31 +31,6 @@ interface CloudResource {
   name: string
   state: string
   polled_at: string
-}
-
-interface ProvisionedResource {
-  id: string
-  name: string
-  provider: string
-  cloud_account_id?: string
-  region: string
-  resource_type: string
-  template: string
-  status: string
-  created_at: string
-  updated_at: string
-}
-
-interface TerraformRun {
-  id: string
-  deployment_id?: string
-  resource_id?: string
-  cloud_account_id?: string
-  template: string
-  action: string
-  status: string
-  plan_output?: string
-  created_at: string
 }
 
 const resourceIcon: Record<string, typeof Server> = {
@@ -66,21 +49,6 @@ const typeLabel: Record<string, string> = {
   virtual_machine: 'Virtual Machine',
   container_instance: 'Container Instance',
   postgresql_flexible_server: 'PostgreSQL Database',
-}
-
-const provisionedTypeLabel: Record<string, Record<string, string>> = {
-  aws: { ecs: 'ECS Fargate', vm: 'EC2 Instance', rds: 'RDS Database' },
-  azure: { aci: 'Container Instance', vm: 'Virtual Machine', db: 'Database' },
-}
-
-const provisionedStatusMeta: Record<string, { kind: StatusKind; label: string; pulse?: boolean }> = {
-  pending: { kind: 'pending', label: 'Pending' },
-  planned: { kind: 'queued', label: 'Planned' },
-  applying: { kind: 'building', label: 'Applying', pulse: true },
-  applied: { kind: 'running', label: 'Applied' },
-  destroying: { kind: 'building', label: 'Destroying', pulse: true },
-  destroyed: { kind: 'idle', label: 'Destroyed' },
-  failed: { kind: 'failed', label: 'Failed' },
 }
 
 function stateColor(state: string): string {
@@ -108,15 +76,6 @@ function stateLabel(state: string): string {
 function isDismissable(state: string): boolean {
   const c = stateColor(state)
   return c === 'bg-critical' || c === 'bg-muted-foreground/50'
-}
-
-function formatRelativeTime(iso: string): string {
-  const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
 }
 
 const providers = ['all', 'aws', 'azure'] as const
@@ -291,7 +250,14 @@ export function ResourcesPage() {
                           <td className="px-4 py-3">
                             <ProviderTag provider={res.provider as Provider} />
                           </td>
-                          <td className="px-4 py-3 font-medium">{res.name}</td>
+                          <td className="px-4 py-3 font-medium">
+                            <button
+                              onClick={() => navigate(`/resources/${res.id}`)}
+                              className="hover:underline hover:text-primary transition-colors"
+                            >
+                              {res.name}
+                            </button>
+                          </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground">
                             {provisionedTypeLabel[res.provider]?.[res.resource_type] ?? res.resource_type}
                           </td>
@@ -353,6 +319,12 @@ export function ResourcesPage() {
                                     <span className="font-mono">{latestRun.status}</span> ·{' '}
                                     {new Date(latestRun.created_at).toLocaleString()}
                                   </p>
+                                  {latestRun.status === 'failed' && friendlyTerraformError(latestRun.plan_output) && (
+                                    <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2.5 text-sm text-warning">
+                                      <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+                                      <span>{friendlyTerraformError(latestRun.plan_output)}</span>
+                                    </div>
+                                  )}
                                   <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-card p-3 text-xs whitespace-pre-wrap">
                                     {latestRun.plan_output || 'No output recorded.'}
                                   </pre>

@@ -20,6 +20,10 @@ resource "azurerm_resource_group" "main" {
   }
 }
 
+output "resource_group_name" {
+  value = azurerm_resource_group.main.name
+}
+
 resource "azurerm_virtual_network" "main" {
   name                = "demo-vnet"
   address_space       = ["10.0.0.0/16"]
@@ -29,6 +33,11 @@ resource "azurerm_virtual_network" "main" {
   tags = {
     Name = "demo"
   }
+}
+
+locals {
+  vnet_name           = azurerm_virtual_network.main.name
+  vnet_resource_group = azurerm_resource_group.main.name
 }
 
 data "azurerm_client_config" "current" {}
@@ -68,4 +77,12 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "azure_services" {
   server_id        = azurerm_postgresql_flexible_server.main.id
   start_ip_address = "0.0.0.0"
   end_ip_address   = "0.0.0.0"
+}
+
+output "db_fqdn" {
+  value = azurerm_postgresql_flexible_server.main.fqdn
+}
+
+output "db_admin_username" {
+  value = azurerm_postgresql_flexible_server_active_directory_administrator.main.principal_name
 }

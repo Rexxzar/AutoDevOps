@@ -117,6 +117,33 @@ func TestHasWorkspace(t *testing.T) {
 	}
 }
 
+func TestHasState(t *testing.T) {
+	base := t.TempDir()
+
+	// A workspace can have a written (even invalid) config with no state
+	// file if Plan failed validation before anything was ever applied —
+	// hasState must report false so Destroy can short-circuit instead of
+	// re-running terraform against the same broken config.
+	dir, err := writeConfig(base, "dep-1", []byte("# config"))
+	if err != nil {
+		t.Fatalf("writeConfig: %v", err)
+	}
+	if ok, err := hasState(dir); err != nil || ok {
+		t.Fatalf("hasState before apply = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	path, err := stateFilePath(dir)
+	if err != nil {
+		t.Fatalf("stateFilePath: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write state file: %v", err)
+	}
+	if ok, err := hasState(dir); err != nil || !ok {
+		t.Fatalf("hasState after apply = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
 func TestStateFilePath(t *testing.T) {
 	base := t.TempDir()
 	dir, err := workspaceDir(base, "dep-1")

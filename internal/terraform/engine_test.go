@@ -172,8 +172,8 @@ func TestRenderWithEC2IncludesInstanceResources(t *testing.T) {
 		`resource "aws_security_group" "ec2"`,
 		`resource "aws_instance" "main"`,
 		`instance_type          = "t3.micro"`,
-		`cidr_block        = "10.0.1.0/24"`,
-		`availability_zone = "us-east-1a"`,
+		`cidr_block              = "10.0.1.0/24"`,
+		`availability_zone       = "us-east-1a"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered output missing %q\ngot:\n%s", want, got)

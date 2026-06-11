@@ -21,6 +21,15 @@ resource "aws_vpc" "main" {
   }
 }
 
+locals {
+  vpc_id         = aws_vpc.main.id
+  vpc_cidr_block = aws_vpc.main.cidr_block
+}
+
+output "vpc_id" {
+  value = local.vpc_id
+}
+
 data "aws_ami" "amazon_linux" {
   most_recent = true
   owners      = ["amazon"]
@@ -32,9 +41,10 @@ data "aws_ami" "amazon_linux" {
 }
 
 resource "aws_subnet" "ec2" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.1.0/24"
-  availability_zone = "us-east-1a"
+  vpc_id                  = local.vpc_id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "us-east-1a"
+  map_public_ip_on_launch = true
 
   tags = {
     Name = "demo-ec2"
@@ -44,7 +54,7 @@ resource "aws_subnet" "ec2" {
 resource "aws_security_group" "ec2" {
   name        = "demo-ec2"
   description = "Allow SSH inbound and all outbound for demo"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     description = "SSH"
@@ -75,4 +85,16 @@ resource "aws_instance" "main" {
   tags = {
     Name = "demo"
   }
+}
+
+output "ec2_instance_id" {
+  value = aws_instance.main.id
+}
+
+output "ec2_public_ip" {
+  value = aws_instance.main.public_ip
+}
+
+output "ec2_private_ip" {
+  value = aws_instance.main.private_ip
 }

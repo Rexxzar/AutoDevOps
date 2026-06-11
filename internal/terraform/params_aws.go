@@ -22,7 +22,14 @@ type AWSStackParams struct {
 	// Region is the AWS region to provision into, e.g. "us-east-1".
 	Region string
 	// VPCCIDR is the CIDR block for the deployment's VPC, e.g. "10.0.0.0/16".
+	// Ignored when ExistingVPCID is set.
 	VPCCIDR string
+	// ExistingVPCID, if set, reuses an existing VPC via a `data "aws_vpc"`
+	// block instead of creating a new one — the "use existing resource"
+	// picker (design notes Terraform engine scope notes), backed by the VPC IDs
+	// returned from GET /cloud/accounts/{id}/networks. VPCCIDR is ignored
+	// when this is set.
+	ExistingVPCID string
 
 	// EC2 provisions a single VM (subnet, security group, instance) wired
 	// to the deployment's VPC. Nil means no EC2 instance was selected.
@@ -46,8 +53,10 @@ func (p AWSStackParams) Validate() error {
 	if p.Region == "" {
 		return fmt.Errorf("region is required")
 	}
-	if _, _, err := net.ParseCIDR(p.VPCCIDR); err != nil {
-		return fmt.Errorf("vpc_cidr %q: %w", p.VPCCIDR, err)
+	if p.ExistingVPCID == "" {
+		if _, _, err := net.ParseCIDR(p.VPCCIDR); err != nil {
+			return fmt.Errorf("vpc_cidr %q: %w", p.VPCCIDR, err)
+		}
 	}
 	if p.EC2 != nil {
 		if err := p.EC2.Validate(); err != nil {
@@ -149,7 +158,9 @@ var allowedRDSEngines = map[string]bool{"postgres": true, "mysql": true}
 type RDSParams struct {
 	// Engine is the database engine — "postgres" or "mysql".
 	Engine string
-	// EngineVersion is the engine version, e.g. "16.4".
+	// EngineVersion is the engine version, e.g. "16" (major-version-only —
+	// RDS resolves to its current default minor; the AWS provider suppresses
+	// the resulting state diff, so this stays stable as minors are retired).
 	EngineVersion string
 	// InstanceClass is the RDS instance size, e.g. "db.t3.micro".
 	InstanceClass string
