@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Rexxzar/autodevops/internal/auth"
+	"github.com/Rexxzar/autodevops/internal/console"
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
@@ -24,11 +25,12 @@ type Server struct {
 	deploy   *deploy.Orchestrator
 	tfRunner *terraform.Runner
 	tfEngine *terraform.Engine
+	console  *console.Manager
 	publicIP string
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, publicIP string) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, publicIP: publicIP}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, publicIP string) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, publicIP: publicIP}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -73,6 +75,12 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Post("/resources/{id}/apply", s.handleApplyResource)
 		r.Post("/resources/{id}/destroy", s.handleDestroyResource)
 		r.Post("/resources/{id}/dismiss", s.handleDismissResource)
+		r.Post("/resources/{id}/console/sessions", s.handleOpenConsoleSession)
+		r.Get("/resources/{id}/console/sessions/{sessionId}/stream", s.handleConsoleStream)
+		r.Post("/resources/{id}/console/sessions/{sessionId}/input", s.handleConsoleInput)
+		r.Post("/resources/{id}/console/sessions/{sessionId}/resize", s.handleConsoleResize)
+		r.Delete("/resources/{id}/console/sessions/{sessionId}", s.handleCloseConsoleSession)
+		r.Post("/resources/{id}/console/exec", s.handleConsoleExec)
 		r.Post("/secrets", s.handlePutSecret)
 		r.Get("/secrets/{name}", s.handleGetSecret)
 		r.Delete("/secrets/{name}", s.handleDeleteSecret)

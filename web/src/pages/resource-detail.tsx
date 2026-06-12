@@ -1,11 +1,12 @@
 import { useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Play, Trash2, X, Loader2, Copy, Check, AlertTriangle, FileCode, Download, Pencil } from 'lucide-react'
+import { ArrowLeft, Play, Trash2, X, Loader2, Copy, Check, AlertTriangle, FileCode, Download, Pencil, SquareTerminal } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
+import { ResourceConsole } from '@/components/resource-console'
 import { ProviderTag } from '@/components/meta-tags'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { apiFetch } from '@/lib/api'
@@ -70,6 +71,8 @@ export function ResourceDetailPage() {
   const [resource, setResource] = useState<ProvisionedResource | null>(null)
   const [runs, setRuns] = useState<TerraformRun[]>([])
   const [acting, setActing] = useState<'apply' | 'destroy' | null>(null)
+
+  const [consoleOpen, setConsoleOpen] = useState(false)
 
   const [tfOpen, setTfOpen] = useState(false)
   const [tfLoading, setTfLoading] = useState(false)
@@ -222,6 +225,12 @@ export function ResourceDetailPage() {
         </Button>
         {!isTransitional && (
           <>
+            {resource.status === 'applied' && resource.resource_type === 'vm' && (
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setConsoleOpen(true)}>
+                <SquareTerminal className="size-3.5" />
+                Connect
+              </Button>
+            )}
             <Button size="sm" variant="outline" className="gap-1.5" onClick={openTerraform}>
               <FileCode className="size-3.5" />
               View Terraform
@@ -425,6 +434,13 @@ export function ResourceDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      <ResourceConsole
+        resourceId={id!}
+        resourceName={resource.name}
+        open={consoleOpen}
+        onClose={() => setConsoleOpen(false)}
+      />
 
       <Dialog open={tfOpen} onClose={() => setTfOpen(false)} title="Terraform configuration" className="max-w-3xl">
         <div className="p-4 space-y-3">

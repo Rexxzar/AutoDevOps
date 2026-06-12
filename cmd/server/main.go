@@ -15,6 +15,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/auth"
 	"github.com/Rexxzar/autodevops/internal/cloud"
 	"github.com/Rexxzar/autodevops/internal/compliance"
+	"github.com/Rexxzar/autodevops/internal/console"
 	"github.com/Rexxzar/autodevops/internal/db"
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/docker"
@@ -106,7 +107,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, cfg.PublicIP)
+	consoleManager := console.NewManager(console.NewRegistry(pool, vault))
+	go consoleManager.Run(ctx)
+
+	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, cfg.PublicIP)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),
