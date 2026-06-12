@@ -70,11 +70,8 @@ func (m *Manager) DockerDeploy(ctx context.Context, name, imageRef string) error
 	cname := containerName(name)
 
 	// Remove any pre-existing container so re-deploys are clean.
-	if err := m.client.ContainerStop(ctx, cname, container.StopOptions{}); err != nil && !dockerclient.IsErrNotFound(err) {
-		slog.Warn("docker: stop existing container", "container", cname, "error", err)
-	}
-	if err := m.client.ContainerRemove(ctx, cname, container.RemoveOptions{Force: true}); err != nil && !dockerclient.IsErrNotFound(err) {
-		return fmt.Errorf("docker: remove existing container %s: %w", cname, err)
+	if err := m.removeContainer(ctx, cname); err != nil {
+		return err
 	}
 
 	portKey := nat.Port("8080/tcp")
@@ -134,4 +131,101 @@ func (m *Manager) ensureNetwork(ctx context.Context) error {
 		return fmt.Errorf("create network: %w", err)
 	}
 	return nil
+}
+
+// removeContainer stops and force-removes a container if it exists. A
+// not-found error from either call is treated as already-removed, making
+// this safe to call unconditionally before a (re-)create.
+func (m *Manager) removeContainer(ctx context.Context, cname string) error {
+	if err := m.client.ContainerStop(ctx, cname, container.StopOptions{}); err != nil && !dockerclient.IsErrNotFound(err) {
+		slog.Warn("docker: stop existing container", "container", cname, "error", err)
+	}
+	if err := m.client.ContainerRemove(ctx, cname, container.RemoveOptions{Force: true}); err != nil && !dockerclient.IsErrNotFound(err) {
+		return fmt.Errorf("docker: remove existing container %s: %w", cname, err)
+	}
+	return nil
+}
+
+// CreateContainer creates and starts a standalone container for a "local"
+// Resource (Phase 2 — provider='local', resource_type='docker'). Unlike
+// DockerDeploy, the image is used as-is (no registry address translation,
+// since standalone resources use public images, not Paketo-built ones from
+// the local registry) and no PORT env var is injected — arbitrary public
+// images don't expect the Paketo PORT contract. containerPort maps to a
+// deterministic host port via hostPort (8100-8999).
+func (m *Manager) CreateContainer(ctx context.Context, name, imageRef string, containerPort uint16, resourceID string) (containerID string, hostPortOut uint32, err error) {
+	if _, err := m.client.Ping(ctx); err != nil {
+		return "", 0, &ErrDockerNotFound{Cause: err}
+	}
+
+	if err := m.ensureNetwork(ctx); err != nil {
+		return "", 0, fmt.Errorf("docker: ensure network: %w", err)
+	}
+
+	port := hostPort(name)
+
+	slog.Info("docker: pulling image", "name", name, "image", imageRef)
+	reader, err := m.client.ImagePull(ctx, imageRef, image.PullOptions{})
+	if err != nil {
+		return "", 0, fmt.Errorf("docker: pull image %s: %w", imageRef, err)
+	}
+	io.Copy(io.Discard, reader)
+	reader.Close()
+
+	cname := containerName(name)
+	if err := m.removeContainer(ctx, cname); err != nil {
+		return "", 0, err
+	}
+
+	portKey := nat.Port(fmt.Sprintf("%d/tcp", containerPort))
+	cfg := &container.Config{
+		Image: imageRef,
+		ExposedPorts: nat.PortSet{
+			portKey: struct{}{},
+		},
+		Labels: map[string]string{
+			"autodevops.io/managed-by": "autodevops",
+			"autodevops.io/resource":   resourceID,
+		},
+	}
+	hostCfg := &container.HostConfig{
+		NetworkMode: container.NetworkMode(dockerNetwork),
+		PortBindings: nat.PortMap{
+			portKey: []nat.PortBinding{
+				{HostIP: "0.0.0.0", HostPort: fmt.Sprintf("%d", port)},
+			},
+		},
+		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+	}
+	netCfg := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			dockerNetwork: {},
+		},
+	}
+
+	resp, err := m.client.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, cname)
+	if err != nil {
+		return "", 0, fmt.Errorf("docker: create container %s: %w", cname, err)
+	}
+	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", 0, fmt.Errorf("docker: start container %s: %w", cname, err)
+	}
+
+	slog.Info("docker: resource container started",
+		"name", name,
+		"container", cname,
+		"host_port", port,
+		"id", resp.ID[:12],
+	)
+	return resp.ID[:12], port, nil
+}
+
+// RemoveContainer stops and removes the standalone container backing a
+// "local" Resource. A missing container is treated as already-removed, not
+// an error — the destroy path is idempotent.
+func (m *Manager) RemoveContainer(ctx context.Context, name string) error {
+	if _, err := m.client.Ping(ctx); err != nil {
+		return &ErrDockerNotFound{Cause: err}
+	}
+	return m.removeContainer(ctx, containerName(name))
 }

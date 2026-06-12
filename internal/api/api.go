@@ -12,25 +12,29 @@ import (
 	"github.com/Rexxzar/autodevops/internal/auth"
 	"github.com/Rexxzar/autodevops/internal/console"
 	"github.com/Rexxzar/autodevops/internal/deploy"
+	"github.com/Rexxzar/autodevops/internal/docker"
+	"github.com/Rexxzar/autodevops/internal/k8s"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/Rexxzar/autodevops/internal/terraform"
 )
 
 type Server struct {
-	db       *pgxpool.Pool
-	auth     *auth.Auth
-	hub      *sse.Hub
-	vault    *secrets.Vault
-	deploy   *deploy.Orchestrator
-	tfRunner *terraform.Runner
-	tfEngine *terraform.Engine
-	console  *console.Manager
-	publicIP string
+	db        *pgxpool.Pool
+	auth      *auth.Auth
+	hub       *sse.Hub
+	vault     *secrets.Vault
+	deploy    *deploy.Orchestrator
+	tfRunner  *terraform.Runner
+	tfEngine  *terraform.Engine
+	console   *console.Manager
+	k8sCtrl   *k8s.Controller
+	dockerMgr *docker.Manager
+	publicIP  string
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, publicIP string) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, publicIP: publicIP}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, k8sCtrl *k8s.Controller, dockerMgr *docker.Manager, publicIP string) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, k8sCtrl: k8sCtrl, dockerMgr: dockerMgr, publicIP: publicIP}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)

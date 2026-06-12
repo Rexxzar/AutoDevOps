@@ -32,6 +32,19 @@ func namespaceName(deploymentName string) string {
 	return ns
 }
 
+// ResourceNamespace derives the deterministic K8s namespace for a standalone
+// "local" Resource (provider='local', resource_type='k8s'):
+// "resource-<name>" with underscores→hyphens and lower-cased, capped at 63
+// characters. Uses a distinct prefix from namespaceName ("autodevops-...") so
+// standalone-resource namespaces can never collide with git-deploy namespaces.
+func ResourceNamespace(name string) string {
+	ns := "resource-" + strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+	if len(ns) > 63 {
+		ns = ns[:63]
+	}
+	return ns
+}
+
 func managedLabels(name string) map[string]string {
 	return map[string]string{
 		"app":                       name,
@@ -44,6 +57,18 @@ func buildNamespace(deploymentName string) *corev1.Namespace {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   namespaceName(deploymentName),
 			Labels: managedLabels(deploymentName),
+		},
+	}
+}
+
+// buildResourceNamespace builds the Namespace for a standalone "local"
+// Resource, using the caller-supplied namespace name (ResourceNamespace(name))
+// rather than the "autodevops-<name>" prefix buildNamespace derives.
+func buildResourceNamespace(name, namespace string) *corev1.Namespace {
+	return &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   namespace,
+			Labels: managedLabels(name),
 		},
 	}
 }
@@ -135,6 +160,78 @@ func buildService(name, namespace string) *corev1.Service {
 				{
 					Port:       80,
 					TargetPort: intstr.FromInt32(paketoPort),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+			Type: corev1.ServiceTypeClusterIP,
+		},
+	}
+}
+
+// buildResourceDeployment is like buildDeployment but for standalone "local"
+// Resources (provider='local', resource_type='k8s'): the container port is
+// caller-supplied (not hardcoded to the Paketo 8080 contract), no PORT env
+// var is injected, and there is no health-checker sidecar — arbitrary public
+// images don't follow either convention.
+func buildResourceDeployment(name, namespace, imageRef string, port int32) *appsv1.Deployment {
+	replicas := int32(1)
+	labels := managedLabels(name)
+
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": name},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app",
+							Image: imageRef,
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: port, Protocol: corev1.ProtocolTCP},
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("128Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("500m"),
+									corev1.ResourceMemory: resource.MustParse("512Mi"),
+								},
+							},
+							ImagePullPolicy: corev1.PullIfNotPresent,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// buildResourceService is like buildService but with a caller-supplied
+// target port (the standalone Resource's container port, not paketoPort).
+func buildResourceService(name, namespace string, port int32) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    managedLabels(name),
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": name},
+			Ports: []corev1.ServicePort{
+				{
+					Port:       80,
+					TargetPort: intstr.FromInt32(port),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},

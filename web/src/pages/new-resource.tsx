@@ -9,10 +9,13 @@ import { apiFetch } from '@/lib/api'
 import { TargetPill, FormField, inputCls, selectCls } from '@/components/deploy-form-fields'
 
 type Step = 'form' | 'preview' | 'success'
-type CloudProvider = 'aws' | 'azure'
+type Provider = 'aws' | 'azure' | 'local'
 type AWSResource = 'ecs' | 'vm' | 'rds'
 type AzureResource = 'aci' | 'vm' | 'db'
+type LocalResource = 'docker' | 'k8s'
 type NetworkMode = 'new' | 'existing'
+
+const LOCAL_IMAGE_PRESETS = ['nginx:latest', 'redis:7-alpine', 'postgres:16', 'busybox']
 
 // CloudNetwork mirrors internal/cloud.Network — an existing VPC (AWS) or
 // VNet (Azure) returned by GET /cloud/accounts/{id}/networks for the
@@ -302,18 +305,60 @@ function AzureDBFields({ v, set }: { v: Record<string,string>; set: (k: string, 
   )
 }
 
+// ─── Local resource sub-fields ────────────────────────────────────
+function LocalFields({ v, set, resourceType }: { v: Record<string,string>; set: (k: string, val: string) => void; resourceType: LocalResource }) {
+  return (
+    <>
+      <SectionDivider label={resourceType === 'docker' ? 'Docker container options' : 'Kubernetes workload options'} />
+      <FormField label="Image">
+        <input value={v.image ?? ''} onChange={e => set('image', e.target.value)} placeholder="nginx:latest" required className={inputCls} />
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {LOCAL_IMAGE_PRESETS.map(img => (
+            <button
+              key={img} type="button"
+              onClick={() => set('image', img)}
+              className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              {img}
+            </button>
+          ))}
+        </div>
+      </FormField>
+      <FormField label="Container port">
+        <input
+          type="number" min={1} max={65535}
+          value={v.container_port ?? ''} onChange={e => set('container_port', e.target.value)}
+          placeholder="80" required className={inputCls}
+        />
+      </FormField>
+      {resourceType === 'k8s' && (
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={v.expose_http === 'true'}
+            onChange={e => set('expose_http', e.target.checked ? 'true' : 'false')}
+            className="size-4 rounded border-border"
+          />
+          Expose via Ingress (HTTPS)
+        </label>
+      )}
+    </>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────
 export function NewResourcePage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [step, setStep] = useState<Step>('form')
 
-  const [provider, setProvider] = useState<CloudProvider>('aws')
+  const [provider, setProvider] = useState<Provider>('aws')
   const [cloudAccountID, setCloudAccountID] = useState('')
   const [name, setName] = useState('')
   const [region, setRegion] = useState('')
   const [awsResource, setAWSResource] = useState<AWSResource>('ecs')
   const [azureResource, setAzureResource] = useState<AzureResource>('aci')
+  const [localResource, setLocalResource] = useState<LocalResource>('docker')
   const [resourceOpts, setResourceOpts] = useState<Record<string, string>>({})
   const [networkMode, setNetworkMode] = useState<NetworkMode>('new')
   const [existingNetworkID, setExistingNetworkID] = useState('')
@@ -369,8 +414,28 @@ export function NewResourcePage() {
     }
   }
 
-  async function handlePreview(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setLoading(true); setError('')
+
+    // Local resources skip the Terraform preview step entirely — create =
+    // immediate apply via the Docker SDK / client-go, no HCL involved.
+    if (provider === 'local') {
+      try {
+        await apiFetch('/resources', {
+          method: 'POST',
+          body: JSON.stringify({
+            name, provider, resource_type: localResource, resource_opts: resourceOpts,
+          }),
+        })
+        setSuccess({ name, provider, resourceType: localResource })
+        setStep('success')
+        qc.invalidateQueries({ queryKey: ['resources'] })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to create resource')
+      } finally { setLoading(false) }
+      return
+    }
+
     try {
       const resourceType = provider === 'aws' ? awsResource : azureResource
       const data = await apiFetch<{ config: string }>('/resources/preview', {
@@ -430,58 +495,78 @@ export function NewResourcePage() {
           <div className="w-full max-w-md space-y-6">
             <div className="space-y-1">
               <h1 className="text-xl font-bold">New Resource</h1>
-              <p className="text-sm text-muted-foreground">Provision standalone infrastructure via Terraform</p>
+              <p className="text-sm text-muted-foreground">
+                {provider === 'local'
+                  ? 'Run a standalone container or workload on this machine'
+                  : 'Provision standalone infrastructure via Terraform'}
+              </p>
             </div>
-            <form onSubmit={handlePreview} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4">
               <FormField label="Provider">
                 <div className="flex gap-2">
                   <TargetPill label="AWS" active={provider === 'aws'} onClick={() => { setProvider('aws'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
                   <TargetPill label="Azure" active={provider === 'azure'} onClick={() => { setProvider('azure'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
+                  <TargetPill label="Local" active={provider === 'local'} onClick={() => { setProvider('local'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
                 </div>
               </FormField>
 
-              <FormField label="Cloud account">
-                <select value={cloudAccountID} onChange={e => { setCloudAccountID(e.target.value); setExistingNetworkID('') }} required className={selectCls}>
-                  <option value="">Select account…</option>
-                  {filteredAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-                {filteredAccounts.length === 0 && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    No {provider.toUpperCase()} accounts — register one in{' '}
-                    <button type="button" onClick={() => navigate('/settings')} className="underline">Settings</button>.
-                  </p>
-                )}
-              </FormField>
+              {provider !== 'local' && (
+                <FormField label="Cloud account">
+                  <select value={cloudAccountID} onChange={e => { setCloudAccountID(e.target.value); setExistingNetworkID('') }} required className={selectCls}>
+                    <option value="">Select account…</option>
+                    {filteredAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                  {filteredAccounts.length === 0 && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      No {provider.toUpperCase()} accounts — register one in{' '}
+                      <button type="button" onClick={() => navigate('/settings')} className="underline">Settings</button>.
+                    </p>
+                  )}
+                </FormField>
+              )}
 
-              <div className="grid grid-cols-2 gap-3">
+              {provider === 'local' ? (
                 <FormField label="Resource name">
                   <input value={name} onChange={e => setName(e.target.value)} placeholder="my-resource" required className={inputCls} />
                 </FormField>
-                <FormField label={provider === 'aws' ? 'Region' : 'Location'} hint="type to enter a region not listed">
-                  <input
-                    value={region} onChange={e => { setRegion(e.target.value); setExistingNetworkID('') }} required
-                    list="region-suggestions" placeholder={provider === 'aws' ? 'us-east-1' : 'uksouth'}
-                    className={inputCls}
-                  />
-                  <datalist id="region-suggestions">
-                    {(provider === 'aws' ? awsRegions : azureLocations).map(r => <option key={r} value={r} />)}
-                  </datalist>
-                </FormField>
-              </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <FormField label="Resource name">
+                    <input value={name} onChange={e => setName(e.target.value)} placeholder="my-resource" required className={inputCls} />
+                  </FormField>
+                  <FormField label={provider === 'aws' ? 'Region' : 'Location'} hint="type to enter a region not listed">
+                    <input
+                      value={region} onChange={e => { setRegion(e.target.value); setExistingNetworkID('') }} required
+                      list="region-suggestions" placeholder={provider === 'aws' ? 'us-east-1' : 'uksouth'}
+                      className={inputCls}
+                    />
+                    <datalist id="region-suggestions">
+                      {(provider === 'aws' ? awsRegions : azureLocations).map(r => <option key={r} value={r} />)}
+                    </datalist>
+                  </FormField>
+                </div>
+              )}
 
               <FormField label="Resource type">
                 <div className="flex gap-2">
-                  {provider === 'aws' ? (
+                  {provider === 'aws' && (
                     <>
                       <TargetPill label="ECS Fargate" active={awsResource === 'ecs'} onClick={() => { setAWSResource('ecs'); clearOpts() }} />
                       <TargetPill label="EC2 VM" active={awsResource === 'vm'} onClick={() => { setAWSResource('vm'); clearOpts() }} />
                       <TargetPill label="RDS DB" active={awsResource === 'rds'} onClick={() => { setAWSResource('rds'); clearOpts() }} />
                     </>
-                  ) : (
+                  )}
+                  {provider === 'azure' && (
                     <>
                       <TargetPill label="Container" sub="ACI" active={azureResource === 'aci'} onClick={() => { setAzureResource('aci'); clearOpts() }} />
                       <TargetPill label="VM" active={azureResource === 'vm'} onClick={() => { setAzureResource('vm'); clearOpts() }} />
                       <TargetPill label="Database" active={azureResource === 'db'} onClick={() => { setAzureResource('db'); clearOpts() }} />
+                    </>
+                  )}
+                  {provider === 'local' && (
+                    <>
+                      <TargetPill label="Docker Container" active={localResource === 'docker'} onClick={() => { setLocalResource('docker'); clearOpts() }} />
+                      <TargetPill label="K8s Workload" active={localResource === 'k8s'} onClick={() => { setLocalResource('k8s'); clearOpts() }} />
                     </>
                   )}
                 </div>
@@ -534,6 +619,7 @@ export function NewResourcePage() {
               {provider === 'azure' && azureResource === 'aci' && <ACIFields v={resourceOpts} set={setOpt} />}
               {provider === 'azure' && azureResource === 'vm'  && <AzureVMFields v={resourceOpts} set={setOpt} />}
               {provider === 'azure' && azureResource === 'db'  && <AzureDBFields v={resourceOpts} set={setOpt} />}
+              {provider === 'local' && <LocalFields v={resourceOpts} set={setOpt} resourceType={localResource} />}
 
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
@@ -542,7 +628,9 @@ export function NewResourcePage() {
               )}
               <Button type="submit" className="w-full h-10 gap-2 mt-2" disabled={loading}>
                 {loading && <Loader2 className="size-4 animate-spin" />}
-                {loading ? 'Generating preview…' : 'Preview Terraform config'}
+                {provider === 'local'
+                  ? (loading ? 'Creating…' : 'Create resource')
+                  : (loading ? 'Generating preview…' : 'Preview Terraform config')}
               </Button>
             </form>
           </div>
@@ -583,7 +671,7 @@ export function NewResourcePage() {
             <div className="flex items-center gap-3">
               <CheckCircle2 className="size-6 text-success shrink-0" />
               <div>
-                <p className="font-semibold">Terraform plan initiated</p>
+                <p className="font-semibold">{success.provider === 'local' ? 'Resource creation initiated' : 'Terraform plan initiated'}</p>
                 <p className="text-sm text-muted-foreground font-mono">{success.name}</p>
               </div>
             </div>
@@ -593,7 +681,9 @@ export function NewResourcePage() {
               <p className="text-sm"><span className="text-muted-foreground">Name:</span> <span className="font-mono">{success.name}</span></p>
             </div>
             <p className="text-xs text-muted-foreground">
-              The Terraform plan is running. Watch the Resources page for live status — apply it once the plan succeeds.
+              {success.provider === 'local'
+                ? 'The resource is being created. Watch the Resources page for live status as it comes up.'
+                : 'The Terraform plan is running. Watch the Resources page for live status — apply it once the plan succeeds.'}
             </p>
             <div className="flex gap-3">
               <Button variant="outline" className="flex-1" onClick={() => { setStep('form'); setName(''); setRegion(''); setCloudAccountID(''); setPreviewConfig(''); clearOpts(); resetNetwork() }}>

@@ -23,6 +23,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/cicd"
 	"github.com/Rexxzar/autodevops/internal/cloud"
 	"github.com/Rexxzar/autodevops/internal/deploy"
+	"github.com/Rexxzar/autodevops/internal/k8s"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/Rexxzar/autodevops/internal/terraform"
 )
@@ -798,8 +799,13 @@ func (s *Server) getResource(ctx context.Context, id string) (resourceRow, error
 // action.
 func (s *Server) handleGetResourceTerraform(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if _, err := s.getResource(r.Context(), id); err != nil {
+	rr, err := s.getResource(r.Context(), id)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if rr.Provider == "local" {
+		writeError(w, http.StatusBadRequest, "terraform config is not applicable to local resources")
 		return
 	}
 	if s.tfRunner == nil {
@@ -872,6 +878,10 @@ func (s *Server) handlePreviewResource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if req.Provider == "local" {
+		writeError(w, http.StatusBadRequest, "terraform preview is not applicable to local resources")
+		return
+	}
 	if req.Name == "" || req.Provider == "" || req.Region == "" || req.ResourceType == "" {
 		writeError(w, http.StatusBadRequest, "name, provider, region, resource_type required")
 		return
@@ -918,8 +928,18 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Name == "" || req.Provider == "" || req.CloudAccountID == "" || req.Region == "" || req.ResourceType == "" {
-		writeError(w, http.StatusBadRequest, "name, provider, cloud_account_id, region, resource_type required")
+	if req.Name == "" || req.Provider == "" || req.ResourceType == "" {
+		writeError(w, http.StatusBadRequest, "name, provider, resource_type required")
+		return
+	}
+
+	if req.Provider == "local" {
+		s.createLocalResource(w, r, req.Name, req.ResourceType, req.ResourceOpts)
+		return
+	}
+
+	if req.CloudAccountID == "" || req.Region == "" {
+		writeError(w, http.StatusBadRequest, "cloud_account_id, region required")
 		return
 	}
 	if s.tfRunner == nil {
@@ -969,6 +989,150 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, rr)
 }
 
+// createLocalResource provisions a standalone "local" Resource — a Docker
+// container or K8s workload on the existing kind cluster, created directly
+// via the Docker SDK / client-go (no Terraform, no cloud_account_id). Unlike
+// the AWS/Azure path, create = immediate apply: the row goes
+// pending -> applying -> applied/failed in the background, skipping
+// planning/planned entirely.
+func (s *Server) createLocalResource(w http.ResponseWriter, r *http.Request, name, resourceType string, opts map[string]string) {
+	image := strOpt(opts, "image", "")
+	if image == "" {
+		writeError(w, http.StatusBadRequest, "resource_opts.image required")
+		return
+	}
+	port, err := intOpt(opts, "container_port", 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if port <= 0 || port > 65535 {
+		writeError(w, http.StatusBadRequest, "resource_opts.container_port must be between 1 and 65535")
+		return
+	}
+
+	var template string
+	switch resourceType {
+	case "docker":
+		if s.dockerMgr == nil {
+			writeError(w, http.StatusServiceUnavailable, "docker daemon unavailable — check server logs")
+			return
+		}
+		template = "docker-local"
+	case "k8s":
+		if s.k8sCtrl == nil {
+			writeError(w, http.StatusServiceUnavailable, "kubernetes cluster unavailable — check server logs")
+			return
+		}
+		template = "k8s-local"
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported local resource_type %q", resourceType))
+		return
+	}
+
+	exposeHTTP := strOpt(opts, "expose_http", "") == "true"
+
+	var resourceID string
+	err = s.db.QueryRow(r.Context(), `
+		INSERT INTO provisioned_resources (name, provider, region, resource_type, template, status)
+		VALUES ($1, 'local', 'local', $2, $3, 'pending')
+		RETURNING id::text
+	`, name, resourceType, template).Scan(&resourceID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, fmt.Sprintf("a resource named %q already exists — choose a different name or dismiss the existing one", name))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to register resource")
+		return
+	}
+
+	rr, err := s.getResource(r.Context(), resourceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load created resource")
+		return
+	}
+
+	go func() {
+		ctx := context.Background()
+		s.setResourceStatus(ctx, resourceID, "applying")
+
+		var (
+			outputs  map[string]json.RawMessage
+			summary  string
+			applyErr error
+		)
+		switch resourceType {
+		case "docker":
+			containerID, hostPort, err := s.dockerMgr.CreateContainer(ctx, name, image, uint16(port), resourceID)
+			if err != nil {
+				applyErr = err
+				break
+			}
+			outputs = map[string]json.RawMessage{
+				"image":        jsonString(image),
+				"container_id": jsonString(containerID),
+				"host_port":    json.RawMessage(strconv.FormatUint(uint64(hostPort), 10)),
+			}
+			summary = fmt.Sprintf("container %s started on host port %d", containerID, hostPort)
+		case "k8s":
+			namespace := k8s.ResourceNamespace(name)
+			serviceIP, ingressURL, err := s.k8sCtrl.KubeDeployResource(ctx, name, namespace, image, int32(port), exposeHTTP)
+			if err != nil {
+				applyErr = err
+				break
+			}
+			outputs = map[string]json.RawMessage{
+				"image":      jsonString(image),
+				"namespace":  jsonString(namespace),
+				"service_ip": jsonString(serviceIP),
+			}
+			if ingressURL != "" {
+				outputs["ingress_url"] = jsonString(ingressURL)
+			}
+			summary = fmt.Sprintf("deployment %s/%s available (service %s)", namespace, name, serviceIP)
+		}
+
+		status := "applied"
+		runStatus := "succeeded"
+		runOutput := summary
+		if applyErr != nil {
+			slog.Error("resources: local apply failed", "id", resourceID, "type", resourceType, "error", applyErr)
+			status = "failed"
+			runStatus = "failed"
+			runOutput = applyErr.Error()
+		} else {
+			s.setResourceOutputs(ctx, resourceID, outputs)
+		}
+		s.insertSyntheticRun(ctx, resourceID, template, "apply", runStatus, runOutput)
+		s.setResourceStatus(ctx, resourceID, status)
+	}()
+
+	writeJSON(w, http.StatusAccepted, rr)
+}
+
+// insertSyntheticRun records a completed action for a "local" Resource — no
+// terraform-exec was involved (the action was a direct Docker SDK / client-go
+// call), but a terraform_runs row reuses the existing "Latest Run" card on
+// the resource detail page and the GET /terraform/runs history for free.
+func (s *Server) insertSyntheticRun(ctx context.Context, resourceID, template, action, status, output string) {
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO terraform_runs (resource_id, template, action, status, plan_output)
+		VALUES ($1, $2, $3, $4, $5)
+	`, resourceID, template, action, status, output); err != nil {
+		slog.Error("resources: insert synthetic run", "id", resourceID, "error", err)
+	}
+}
+
+// jsonString marshals a Go string to a JSON string value for assembly into a
+// resourceRow.Outputs map[string]json.RawMessage — json.Marshal on a string
+// never errors.
+func jsonString(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return b
+}
+
 // handleApplyResource runs `terraform apply` against a resource's saved plan.
 func (s *Server) handleApplyResource(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -1013,6 +1177,10 @@ func (s *Server) handlePlanResourceTerraform(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
+	if rr.Provider == "local" {
+		writeError(w, http.StatusBadRequest, "terraform config is not applicable to local resources")
+		return
+	}
 	if s.tfRunner == nil {
 		writeError(w, http.StatusServiceUnavailable, "terraform binary unavailable — check server logs")
 		return
@@ -1045,7 +1213,10 @@ func (s *Server) handlePlanResourceTerraform(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "plan_initiated", "id": id})
 }
 
-// handleDestroyResource runs `terraform destroy` against a resource's workspace.
+// handleDestroyResource runs `terraform destroy` against a resource's
+// workspace (AWS/Azure), or removes the underlying Docker container / K8s
+// namespace directly for provider='local' resources (see
+// destroyLocalResource).
 func (s *Server) handleDestroyResource(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	rr, err := s.getResource(r.Context(), id)
@@ -1053,6 +1224,12 @@ func (s *Server) handleDestroyResource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
+
+	if rr.Provider == "local" {
+		s.destroyLocalResource(w, r, rr)
+		return
+	}
+
 	if s.tfRunner == nil {
 		writeError(w, http.StatusServiceUnavailable, "terraform binary unavailable — check server logs")
 		return
@@ -1073,6 +1250,52 @@ func (s *Server) handleDestroyResource(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "destroy_initiated", "id": id})
+}
+
+// destroyLocalResource removes the Docker container / K8s namespace backing
+// a "local" Resource — the destroy-path counterpart to createLocalResource.
+// The K8s namespace is recomputed via k8s.ResourceNamespace(rr.Name) (the
+// same deterministic derivation used at create time), so no outputs lookup
+// is needed.
+func (s *Server) destroyLocalResource(w http.ResponseWriter, r *http.Request, rr resourceRow) {
+	s.setResourceStatus(r.Context(), rr.ID, "destroying")
+
+	go func() {
+		ctx := context.Background()
+		var destroyErr error
+		switch rr.ResourceType {
+		case "docker":
+			if s.dockerMgr == nil {
+				destroyErr = fmt.Errorf("docker manager unavailable")
+				break
+			}
+			destroyErr = s.dockerMgr.RemoveContainer(ctx, rr.Name)
+		case "k8s":
+			if s.k8sCtrl == nil {
+				destroyErr = fmt.Errorf("k8s controller unavailable")
+				break
+			}
+			destroyErr = s.k8sCtrl.KubeDestroyResource(ctx, k8s.ResourceNamespace(rr.Name))
+		default:
+			destroyErr = fmt.Errorf("unsupported local resource_type %q", rr.ResourceType)
+		}
+
+		status := "destroyed"
+		runStatus := "succeeded"
+		runOutput := fmt.Sprintf("%s resource %q removed", rr.ResourceType, rr.Name)
+		if destroyErr != nil {
+			slog.Error("resources: local destroy failed", "id", rr.ID, "type", rr.ResourceType, "error", destroyErr)
+			status = "failed"
+			runStatus = "failed"
+			runOutput = destroyErr.Error()
+		} else {
+			s.setResourceOutputs(ctx, rr.ID, nil)
+		}
+		s.insertSyntheticRun(ctx, rr.ID, rr.Template, "destroy", runStatus, runOutput)
+		s.setResourceStatus(ctx, rr.ID, status)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "destroy_initiated", "id": rr.ID})
 }
 
 // handleDismissResource hides a finished provisioned_resources row from the

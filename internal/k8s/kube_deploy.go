@@ -62,6 +62,68 @@ func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef s
 	return nil
 }
 
+// KubeDeployResource applies the K8s resources for a standalone "local"
+// Resource (provider='local', resource_type='k8s'): Namespace, Deployment
+// (single container, caller-supplied port, no sidecar), and Service. When
+// exposeHTTP is true, also applies the same cert-manager ClusterIssuer /
+// Certificate / Ingress as KubeDeploy. Blocks until at least one pod reports
+// Available. Returns the Service's ClusterIP and (if exposed) the ingress URL
+// for the caller to persist as resource outputs.
+func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, imageRef string, port int32, exposeHTTP bool) (serviceIP, ingressURL string, err error) {
+	slog.Info("k8s: deploying resource", "name", name, "namespace", namespace, "image", imageRef, "port", port, "expose_http", exposeHTTP)
+
+	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
+		return "", "", fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
+	}
+	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port)); err != nil {
+		return "", "", fmt.Errorf("k8s: apply deployment %s: %w", name, err)
+	}
+	if err := c.applyService(ctx, buildResourceService(name, namespace, port)); err != nil {
+		return "", "", fmt.Errorf("k8s: apply service %s: %w", name, err)
+	}
+
+	svc, err := c.clientset.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", "", fmt.Errorf("k8s: get service %s: %w", name, err)
+	}
+	serviceIP = svc.Spec.ClusterIP
+
+	if exposeHTTP {
+		host := name + "." + c.ingressDomain
+		ingressURL = "https://" + host
+
+		// cert-manager resources are best-effort: the platform still works over
+		// plain HTTP if cert-manager is not installed in the cluster.
+		if err := c.applyCRD(ctx, issuerGVR, buildClusterIssuer()); err != nil {
+			slog.Warn("k8s: cluster issuer not applied (cert-manager may not be installed)", "error", err)
+		}
+		if err := c.applyCRD(ctx, certGVR, buildCertificate(name, namespace, host)); err != nil {
+			slog.Warn("k8s: certificate not applied (cert-manager may not be installed)", "error", err)
+		}
+		if err := c.applyIngress(ctx, buildIngress(name, namespace, host)); err != nil {
+			return "", "", fmt.Errorf("k8s: apply ingress %s: %w", name, err)
+		}
+	}
+
+	slog.Info("k8s: waiting for resource deployment to become available", "name", name, "namespace", namespace)
+	if err := c.waitForDeployment(ctx, namespace, name); err != nil {
+		return "", "", fmt.Errorf("k8s: wait for deployment %s/%s: %w", namespace, name, err)
+	}
+
+	slog.Info("k8s: resource deployment available", "name", name, "namespace", namespace)
+	return serviceIP, ingressURL, nil
+}
+
+// KubeDestroyResource deletes the namespace for a standalone "local" Resource,
+// cascading to its Deployment/Service/Ingress/Certificate. A missing namespace
+// is treated as already-removed, not an error.
+func (c *Controller) KubeDestroyResource(ctx context.Context, namespace string) error {
+	if err := c.clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("k8s: delete namespace %s: %w", namespace, err)
+	}
+	return nil
+}
+
 func (c *Controller) applyNamespace(ctx context.Context, ns *corev1.Namespace) error {
 	_, err := c.clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 	if kerrors.IsAlreadyExists(err) {

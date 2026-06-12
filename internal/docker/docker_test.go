@@ -86,7 +86,7 @@ func TestErrDockerNotFoundMessage(t *testing.T) {
 }
 
 func TestClassifyRunning(t *testing.T) {
-	h := classify("dep1", "my-app", dockertypes.ContainerJSON{
+	h := classify("dep1", "my-app", "deployment", dockertypes.ContainerJSON{
 		ContainerJSONBase: &dockertypes.ContainerJSONBase{
 			ID:    "abc123def456789",
 			State: &dockertypes.ContainerState{Status: "running"},
@@ -98,10 +98,13 @@ func TestClassifyRunning(t *testing.T) {
 	if h.ContainerID != "abc123def456" {
 		t.Errorf("ContainerID = %q, want abc123def456", h.ContainerID)
 	}
+	if h.DeploymentID != "dep1" || h.Kind != "deployment" {
+		t.Errorf("DeploymentID/Kind = %q/%q, want dep1/deployment", h.DeploymentID, h.Kind)
+	}
 }
 
 func TestClassifyExited(t *testing.T) {
-	h := classify("dep1", "my-app", dockertypes.ContainerJSON{
+	h := classify("dep1", "my-app", "deployment", dockertypes.ContainerJSON{
 		ContainerJSONBase: &dockertypes.ContainerJSONBase{
 			ID:    "abc123def456789",
 			State: &dockertypes.ContainerState{Status: "exited", ExitCode: 1},
@@ -117,9 +120,24 @@ func TestClassifyExited(t *testing.T) {
 
 func TestClassifyNotFound(t *testing.T) {
 	notFoundErr := &notFoundError{}
-	h := classify("dep1", "my-app", dockertypes.ContainerJSON{}, notFoundErr)
+	h := classify("dep1", "my-app", "deployment", dockertypes.ContainerJSON{}, notFoundErr)
 	if h.Status != "missing" {
 		t.Errorf("classify not found = %q, want missing", h.Status)
+	}
+}
+
+func TestClassifyResourceKind(t *testing.T) {
+	h := classify("res1", "my-resource", "resource", dockertypes.ContainerJSON{
+		ContainerJSONBase: &dockertypes.ContainerJSONBase{
+			ID:    "abc123def456789",
+			State: &dockertypes.ContainerState{Status: "running"},
+		},
+	}, nil)
+	if h.ResourceID != "res1" || h.Kind != "resource" {
+		t.Errorf("ResourceID/Kind = %q/%q, want res1/resource", h.ResourceID, h.Kind)
+	}
+	if h.DeploymentID != "" {
+		t.Errorf("DeploymentID = %q, want empty for resource kind", h.DeploymentID)
 	}
 }
 

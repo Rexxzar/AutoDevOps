@@ -1,6 +1,6 @@
 import type { StatusKind } from '@/components/ui/status'
 
-export type Provider = 'aws' | 'azure' | 'kind'
+export type Provider = 'aws' | 'azure' | 'kind' | 'local'
 export type Target = 'kubernetes' | 'docker' | 'vm'
 export type Framework = 'node' | 'go' | 'python' | 'java' | 'static' | string
 

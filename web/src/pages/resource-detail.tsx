@@ -64,6 +64,30 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
+// dockerHealthKind maps internal/docker.ContainerHealth.Status ("running" |
+// "stopped" | "failed" | "missing" | "unknown") to a StatusBadge tone.
+function dockerHealthKind(status: string): StatusKind {
+  switch (status) {
+    case 'running': return 'running'
+    case 'stopped': return 'warning'
+    case 'failed': return 'failed'
+    default: return 'unknown'
+  }
+}
+
+// podHealthKind maps internal/k8s.PodStatus ("healthy" | "unhealthy" |
+// "pending" | "terminating" | "succeeded" | "unknown") to a StatusBadge tone.
+function podHealthKind(status: string): StatusKind {
+  switch (status) {
+    case 'healthy': return 'healthy'
+    case 'unhealthy': return 'critical'
+    case 'pending': return 'pending'
+    case 'terminating': return 'building'
+    case 'succeeded': return 'idle'
+    default: return 'unknown'
+  }
+}
+
 export function ResourceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { token } = useAuth()
@@ -71,6 +95,8 @@ export function ResourceDetailPage() {
   const [resource, setResource] = useState<ProvisionedResource | null>(null)
   const [runs, setRuns] = useState<TerraformRun[]>([])
   const [acting, setActing] = useState<'apply' | 'destroy' | null>(null)
+  const [containerHealth, setContainerHealth] = useState<{ status: string; reason?: string } | null>(null)
+  const [podHealths, setPodHealths] = useState<Record<string, { status: string; reason?: string; restart_count: number }>>({})
 
   const [consoleOpen, setConsoleOpen] = useState(false)
 
@@ -103,6 +129,11 @@ export function ResourceDetailPage() {
     refetchInterval: 30_000,
   })
 
+  // outputs is computed here (rather than after the loading/error guards
+  // below) so the SSE callback's pod.health filter can read
+  // outputs.namespace from the latest resource state.
+  const outputs = resource ? parseOutputs(resource.outputs) : {}
+
   useSSE(token, useCallback((type: string, data: unknown) => {
     if (type === 'resource') {
       const r = data as ProvisionedResource
@@ -120,8 +151,18 @@ export function ResourceDetailPage() {
           return [run, ...prev]
         })
       }
+    } else if (type === 'container.health') {
+      const ch = data as { resource_id?: string; kind: string; status: string; reason?: string }
+      if (ch.kind === 'resource' && ch.resource_id === id) {
+        setContainerHealth({ status: ch.status, reason: ch.reason })
+      }
+    } else if (type === 'pod.health') {
+      const ph = data as { namespace: string; pod_name: string; status: string; reason?: string; restart_count: number }
+      if (outputs.namespace && ph.namespace === outputs.namespace) {
+        setPodHealths((prev) => ({ ...prev, [ph.pod_name]: ph }))
+      }
     }
-  }, [id]))
+  }, [id, outputs.namespace]))
 
   async function handleApply() {
     if (!id) return
@@ -209,7 +250,6 @@ export function ResourceDetailPage() {
     )
   }
 
-  const outputs = parseOutputs(resource.outputs)
   const meta = provisionedStatusMeta[resource.status] ?? { kind: 'unknown' as StatusKind, label: resource.status }
   const isTransitional = resource.status === 'pending' || resource.status === 'applying' || resource.status === 'destroying' || resource.status === 'planning'
   const latestRun = [...runs].filter((r) => r.resource_id === id).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
@@ -236,10 +276,12 @@ export function ResourceDetailPage() {
                 Connect
               </Button>
             )}
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={openTerraform}>
-              <FileCode className="size-3.5" />
-              View Terraform
-            </Button>
+            {resource.provider !== 'local' && (
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={openTerraform}>
+                <FileCode className="size-3.5" />
+                View Terraform
+              </Button>
+            )}
             {(resource.status === 'planned') && (
               <Button size="sm" className="gap-1.5" disabled={!!acting} onClick={handleApply}>
                 {acting === 'apply' ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
@@ -285,7 +327,7 @@ export function ResourceDetailPage() {
           </Card>
         )}
 
-        {hasOutputs && (
+        {hasOutputs && (outputs.vpc_id || outputs.resource_group_name) && (
           <Card>
             <CardHeader>
               <CardTitle>Network</CardTitle>
@@ -293,6 +335,57 @@ export function ResourceDetailPage() {
             <CardContent className="space-y-2">
               {outputs.vpc_id && <CopyField label="VPC ID" value={outputs.vpc_id} />}
               {outputs.resource_group_name && <CopyField label="Resource Group" value={outputs.resource_group_name} />}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Local Docker container */}
+        {hasOutputs && resource.provider === 'local' && resource.resource_type === 'docker' && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Container</CardTitle>
+              {containerHealth && (
+                <StatusBadge status={dockerHealthKind(containerHealth.status)} label={containerHealth.status} />
+              )}
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {outputs.image && <CopyField label="Image" value={outputs.image} />}
+              {outputs.container_id && <CopyField label="Container ID" value={outputs.container_id} />}
+              {outputs.host_port && <CopyField label="Host Port" value={outputs.host_port} />}
+              {outputs.host_port && (
+                <CopyField label="Test command" value={`curl http://localhost:${outputs.host_port}`} />
+              )}
+              {containerHealth?.reason && (
+                <p className="text-xs text-muted-foreground">{containerHealth.reason}</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Local K8s workload */}
+        {hasOutputs && resource.provider === 'local' && resource.resource_type === 'k8s' && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Workload</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {outputs.image && <CopyField label="Image" value={outputs.image} />}
+              {outputs.namespace && <CopyField label="Namespace" value={outputs.namespace} />}
+              {outputs.service_ip && <CopyField label="Service ClusterIP" value={outputs.service_ip} />}
+              {outputs.ingress_url && (
+                <CopyField label="Ingress URL" value={outputs.ingress_url} href={outputs.ingress_url} />
+              )}
+              {Object.keys(podHealths).length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Pods</p>
+                  {Object.entries(podHealths).map(([podName, ph]) => (
+                    <div key={podName} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2">
+                      <span className="truncate font-mono text-xs">{podName}</span>
+                      <StatusBadge status={podHealthKind(ph.status)} label={ph.status} />
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

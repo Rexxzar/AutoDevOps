@@ -20,9 +20,14 @@ import (
 
 // ContainerHealth is the classified state of a managed container, published
 // via SSE as "container.health" after every poll tick — mirrors k8s.PodHealth.
+// Kind distinguishes which entity Name/DeploymentID/ResourceID refers to:
+// "deployment" (git-deploy, internal/deploy) or "resource" (standalone local
+// Resource, provider='local' resource_type='docker').
 type ContainerHealth struct {
-	DeploymentID string `json:"deployment_id"`
-	Name         string `json:"name"` // deployment name, not container name
+	DeploymentID string `json:"deployment_id,omitempty"`
+	ResourceID   string `json:"resource_id,omitempty"`
+	Kind         string `json:"kind"` // "deployment" | "resource"
+	Name         string `json:"name"` // deployment/resource name, not container name
 	ContainerID  string `json:"container_id,omitempty"`
 	Status       string `json:"status"` // "running" | "stopped" | "failed" | "missing" | "unknown"
 	Reason       string `json:"reason,omitempty"`
@@ -108,23 +113,42 @@ func (m *Manager) checkAll(ctx context.Context) {
 	`)
 	if err != nil {
 		slog.Error("docker: query running container deployments", "error", err)
+	} else {
+		for rows.Next() {
+			var depID, name string
+			if err := rows.Scan(&depID, &name); err != nil {
+				slog.Error("docker: scan deployment row", "error", err)
+				continue
+			}
+			m.checkContainer(ctx, depID, name, "deployment")
+		}
+		rows.Close()
+	}
+
+	resRows, err := m.pool.Query(ctx, `
+		SELECT id::text, name FROM provisioned_resources
+		WHERE provider = 'local' AND resource_type = 'docker'
+		  AND status = 'applied' AND dismissed_at IS NULL
+	`)
+	if err != nil {
+		slog.Error("docker: query local docker resources", "error", err)
 		return
 	}
-	defer rows.Close()
+	defer resRows.Close()
 
-	for rows.Next() {
-		var depID, name string
-		if err := rows.Scan(&depID, &name); err != nil {
-			slog.Error("docker: scan deployment row", "error", err)
+	for resRows.Next() {
+		var resID, name string
+		if err := resRows.Scan(&resID, &name); err != nil {
+			slog.Error("docker: scan resource row", "error", err)
 			continue
 		}
-		m.checkContainer(ctx, depID, name)
+		m.checkContainer(ctx, resID, name, "resource")
 	}
 }
 
-func (m *Manager) checkContainer(ctx context.Context, deploymentID, name string) {
+func (m *Manager) checkContainer(ctx context.Context, id, name, kind string) {
 	inspect, err := m.client.ContainerInspect(ctx, containerName(name))
-	h := classify(deploymentID, name, inspect, err)
+	h := classify(id, name, kind, inspect, err)
 	m.hub.Publish(sse.Event{Type: "container.health", Payload: h})
 	m.healer.handle(ctx, h)
 }
@@ -136,9 +160,15 @@ func containerName(deploymentName string) string {
 }
 
 // classify converts a ContainerInspect result into a ContainerHealth value.
-// Pure function — no I/O.
-func classify(deploymentID, name string, inspect dockertypes.ContainerJSON, inspectErr error) ContainerHealth {
-	h := ContainerHealth{DeploymentID: deploymentID, Name: name}
+// Pure function — no I/O. id is the deployment or resource UUID depending on
+// kind ("deployment" | "resource").
+func classify(id, name, kind string, inspect dockertypes.ContainerJSON, inspectErr error) ContainerHealth {
+	h := ContainerHealth{Name: name, Kind: kind}
+	if kind == "resource" {
+		h.ResourceID = id
+	} else {
+		h.DeploymentID = id
+	}
 	if inspectErr != nil {
 		if dockerclient.IsErrNotFound(inspectErr) {
 			h.Status = "missing"

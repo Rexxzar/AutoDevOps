@@ -110,7 +110,7 @@ func main() {
 	consoleManager := console.NewManager(console.NewRegistry(pool, vault))
 	go consoleManager.Run(ctx)
 
-	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, cfg.PublicIP)
+	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, k8sCtrl, dockerMgr, cfg.PublicIP)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),

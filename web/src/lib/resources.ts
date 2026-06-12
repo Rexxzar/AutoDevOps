@@ -33,6 +33,7 @@ export interface TerraformRun {
 export const provisionedTypeLabel: Record<string, Record<string, string>> = {
   aws: { ecs: 'ECS Fargate', vm: 'EC2 Instance', rds: 'RDS Database' },
   azure: { aci: 'Container Instance', vm: 'Virtual Machine', db: 'Database' },
+  local: { docker: 'Docker Container', k8s: 'K8s Workload' },
 }
 
 export const provisionedStatusMeta: Record<string, { kind: import('@/components/ui/status').StatusKind; label: string; pulse?: boolean }> = {

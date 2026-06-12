@@ -108,6 +108,8 @@ func (h *healer) handle(ctx context.Context, ch ContainerHealth) {
 		}
 		h.hub.Publish(sse.Event{Type: "container.heal.restart", Payload: map[string]any{
 			"deployment_id": ch.DeploymentID,
+			"resource_id":   ch.ResourceID,
+			"kind":          ch.Kind,
 			"name":          ch.Name,
 			"attempt":       attempt + 1,
 			"reason":        ch.Reason,

@@ -5,6 +5,7 @@ const providerMeta: Record<Provider, { label: string; className: string }> = {
   aws: { label: 'AWS', className: 'text-aws border-aws/25 bg-aws/10' },
   azure: { label: 'Azure', className: 'text-azure border-azure/25 bg-azure/10' },
   kind: { label: 'kind', className: 'text-muted-foreground border-border bg-muted/50' },
+  local: { label: 'Local', className: 'text-muted-foreground border-border bg-muted/50' },
 }
 
 export const targetLabel: Record<Target, string> = {
