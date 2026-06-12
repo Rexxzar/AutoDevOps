@@ -139,6 +139,14 @@ func (s *sshPTYSession) Close() error {
 	return s.client.Close()
 }
 
+// isAuthFailure reports whether err is an SSH authentication rejection (as
+// opposed to a dial/network failure). golang.org/x/crypto/ssh has no typed
+// error for this case — "ssh: unable to authenticate" is the stable message
+// substring returned by clientAuthenticate when no auth method succeeds.
+func isAuthFailure(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unable to authenticate")
+}
+
 // sshExec dials addr as user with signer, runs command without a PTY, and
 // captures stdout/stderr/exit-code — used by the EC2 and Azure VM connectors
 // for POST /resources/{id}/console/exec.

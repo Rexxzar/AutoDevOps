@@ -36,6 +36,29 @@ locals {
 output "vpc_id" {
   value = local.vpc_id
 }
+{{- if and (not .ExistingVPCID) (or .EC2 .ECS) }}
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "{{ .Name }}-public"
+  }
+}
+{{- end }}
 {{- if .EC2 }}
 
 data "aws_ami" "amazon_linux" {
@@ -43,8 +66,11 @@ data "aws_ami" "amazon_linux" {
   owners      = ["amazon"]
 
   filter {
+    # "al2023-ami-*-x86_64" also matches the "minimal" and "ecs-hvm" AL2023
+    # variants, which omit the EC2 Instance Connect agent the Resource
+    # Console relies on. Pin to the standard image: al2023-ami-2023.<ver>-kernel-<k>-x86_64.
     name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+    values = ["al2023-ami-2023.*-kernel-*-x86_64"]
   }
 }
 
@@ -83,6 +109,13 @@ resource "aws_security_group" "ec2" {
     Name = "{{ .Name }}-ec2"
   }
 }
+{{- if not .ExistingVPCID }}
+
+resource "aws_route_table_association" "ec2" {
+  subnet_id      = aws_subnet.ec2.id
+  route_table_id = aws_route_table.public.id
+}
+{{- end }}
 
 resource "aws_instance" "main" {
   ami                    = data.aws_ami.amazon_linux.id
@@ -196,30 +229,10 @@ resource "aws_subnet" "ecs_{{ $i }}" {
   }
 }
 {{ end }}
-resource "aws_internet_gateway" "ecs" {
-  vpc_id = local.vpc_id
-
-  tags = {
-    Name = "{{ .Name }}-ecs"
-  }
-}
-
-resource "aws_route_table" "ecs" {
-  vpc_id = local.vpc_id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.ecs.id
-  }
-
-  tags = {
-    Name = "{{ .Name }}-ecs"
-  }
-}
 {{ range $i, $s := .ECS.Subnets }}
 resource "aws_route_table_association" "ecs_{{ $i }}" {
   subnet_id      = aws_subnet.ecs_{{ $i }}.id
-  route_table_id = aws_route_table.ecs.id
+  route_table_id = aws_route_table.public.id
 }
 {{ end }}
 resource "aws_security_group" "alb" {
@@ -348,6 +361,48 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+resource "aws_iam_role" "ecs_task" {
+  name = "{{ .Name }}-ecs-task"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action    = "sts:AssumeRole"
+        Effect    = "Allow"
+        Principal = { Service = "ecs-tasks.amazonaws.com" }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "{{ .Name }}-ecs-task"
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task_exec" {
+  name = "{{ .Name }}-ecs-exec"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel",
+          "ssm:StartSession",
+          "ecs:ExecuteCommand"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 resource "aws_ecs_task_definition" "main" {
   family                   = "{{ .Name }}"
   requires_compatibilities = ["FARGATE"]
@@ -355,6 +410,7 @@ resource "aws_ecs_task_definition" "main" {
   cpu                      = "{{ .ECS.CPU }}"
   memory                   = "{{ .ECS.Memory }}"
   execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([
     {
@@ -384,11 +440,12 @@ resource "aws_ecs_task_definition" "main" {
 }
 
 resource "aws_ecs_service" "main" {
-  name            = "{{ .Name }}"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.main.arn
-  desired_count   = {{ .ECS.DesiredCount }}
-  launch_type     = "FARGATE"
+  name                   = "{{ .Name }}"
+  cluster                = aws_ecs_cluster.main.id
+  task_definition        = aws_ecs_task_definition.main.arn
+  desired_count          = {{ .ECS.DesiredCount }}
+  launch_type            = "FARGATE"
+  enable_execute_command = true
 
   network_configuration {
     subnets          = [{{ range $i, $s := .ECS.Subnets }}aws_subnet.ecs_{{ $i }}.id, {{ end }}]

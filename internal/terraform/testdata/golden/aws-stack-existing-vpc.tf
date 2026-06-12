@@ -29,8 +29,11 @@ data "aws_ami" "amazon_linux" {
   owners      = ["amazon"]
 
   filter {
+    # "al2023-ami-*-x86_64" also matches the "minimal" and "ecs-hvm" AL2023
+    # variants, which omit the EC2 Instance Connect agent the Resource
+    # Console relies on. Pin to the standard image: al2023-ami-2023.<ver>-kernel-<k>-x86_64.
     name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+    values = ["al2023-ami-2023.*-kernel-*-x86_64"]
   }
 }
 

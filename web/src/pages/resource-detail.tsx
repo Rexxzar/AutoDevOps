@@ -215,6 +215,11 @@ export function ResourceDetailPage() {
   const latestRun = [...runs].filter((r) => r.resource_id === id).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
   const typeLabel = provisionedTypeLabel[resource.provider]?.[resource.resource_type] ?? resource.resource_type
   const hasOutputs = Object.keys(outputs).length > 0
+  // Mirrors internal/console/registry.go's Connector dispatch: aws:vm, azure:vm, aws:ecs, azure:aci.
+  const consoleSupported =
+    resource.resource_type === 'vm' ||
+    (resource.provider === 'aws' && resource.resource_type === 'ecs') ||
+    (resource.provider === 'azure' && resource.resource_type === 'aci')
 
   return (
     <div>
@@ -225,7 +230,7 @@ export function ResourceDetailPage() {
         </Button>
         {!isTransitional && (
           <>
-            {resource.status === 'applied' && resource.resource_type === 'vm' && (
+            {resource.status === 'applied' && consoleSupported && (
               <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setConsoleOpen(true)}>
                 <SquareTerminal className="size-3.5" />
                 Connect

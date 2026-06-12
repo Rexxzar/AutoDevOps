@@ -12,13 +12,13 @@ func TestRegistryConnectorDispatch(t *testing.T) {
 
 	tests := []struct {
 		provider, resourceType string
-		want                    bool
+		want                   bool
 	}{
 		{"aws", "vm", true},
 		{"azure", "vm", true},
 		{"aws", "rds", false},
-		{"aws", "ecs", false},
-		{"azure", "aci", false},
+		{"aws", "ecs", true},
+		{"azure", "aci", true},
 		{"azure", "db", false},
 		{"gcp", "vm", false},
 	}

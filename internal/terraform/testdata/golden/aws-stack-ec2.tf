@@ -30,13 +30,37 @@ output "vpc_id" {
   value = local.vpc_id
 }
 
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "demo"
+  }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "demo-public"
+  }
+}
+
 data "aws_ami" "amazon_linux" {
   most_recent = true
   owners      = ["amazon"]
 
   filter {
+    # "al2023-ami-*-x86_64" also matches the "minimal" and "ecs-hvm" AL2023
+    # variants, which omit the EC2 Instance Connect agent the Resource
+    # Console relies on. Pin to the standard image: al2023-ami-2023.<ver>-kernel-<k>-x86_64.
     name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+    values = ["al2023-ami-2023.*-kernel-*-x86_64"]
   }
 }
 
@@ -74,6 +98,11 @@ resource "aws_security_group" "ec2" {
   tags = {
     Name = "demo-ec2"
   }
+}
+
+resource "aws_route_table_association" "ec2" {
+  subnet_id      = aws_subnet.ec2.id
+  route_table_id = aws_route_table.public.id
 }
 
 resource "aws_instance" "main" {
