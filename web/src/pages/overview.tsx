@@ -28,6 +28,11 @@ interface ApiCluster {
   created_at: string
 }
 
+interface ApiCloudResource {
+  id: string
+  provider: string
+}
+
 function backendStatusToKind(s: string): StatusKind {
   const map: Record<string, StatusKind> = {
     pending: 'pending',
@@ -68,11 +73,20 @@ export function OverviewPage() {
     refetchInterval: 15_000,
   })
 
+  const cloudResourcesQ = useQuery({
+    queryKey: ['cloud-resources'],
+    queryFn: () => apiFetch<ApiCloudResource[]>('/cloud/resources'),
+    refetchInterval: 60_000,
+  })
+
   const deps = deploymentsQ.data ?? []
   const clusters = clustersQ.data ?? []
+  const cloudResources = cloudResourcesQ.data ?? []
 
   const building = deps.filter((d) => d.status === 'building' || d.status === 'deploying').length
   const degradedClusters = clusters.filter((c) => c.status === 'degraded').length
+  const awsResources = cloudResources.filter((r) => r.provider === 'aws').length
+  const azureResources = cloudResources.filter((r) => r.provider === 'azure').length
 
   const stats = [
     {
@@ -98,10 +112,10 @@ export function OverviewPage() {
     },
     {
       label: 'Cloud resources',
-      value: '—',
+      value: String(cloudResources.length),
       icon: Cloud,
       to: '/resources',
-      sub: 'AWS + Azure',
+      sub: `${awsResources} AWS · ${azureResources} Azure`,
     },
   ]
 
