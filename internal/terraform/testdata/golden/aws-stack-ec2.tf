@@ -88,6 +88,17 @@ resource "aws_security_group" "ec2" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    # internal/deploy's cloud_vm SSH deployer publishes app containers on a
+    # deterministic port in this range (FNV-32a hash of the container name,
+    # see internal/docker.hostPort).
+    description = "AutoDevOps app containers"
+    from_port   = 8100
+    to_port     = 8999
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -110,6 +121,16 @@ resource "aws_instance" "main" {
   instance_type          = "t3.micro"
   subnet_id              = aws_subnet.ec2.id
   vpc_security_group_ids = [aws_security_group.ec2.id]
+
+  # Installs Docker so the SSH deployer (internal/deploy cloud_vm target) can
+  # "docker load"/"docker run" Paketo-built images without a separate
+  # provisioning step.
+  user_data = <<-EOF
+    #!/bin/bash
+    dnf install -y docker
+    systemctl enable --now docker
+    usermod -aG docker ec2-user
+  EOF
 
   tags = {
     Name = "demo"

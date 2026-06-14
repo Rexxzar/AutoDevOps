@@ -12,17 +12,20 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/Rexxzar/autodevops/internal/auth"
 	"github.com/Rexxzar/autodevops/internal/cicd"
 	"github.com/Rexxzar/autodevops/internal/cloud"
 	"github.com/Rexxzar/autodevops/internal/deploy"
+	"github.com/Rexxzar/autodevops/internal/docker"
 	"github.com/Rexxzar/autodevops/internal/k8s"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/Rexxzar/autodevops/internal/terraform"
@@ -38,8 +41,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// handleHealth doubles as a tiny unauthenticated bootstrap endpoint: the
+// frontend reads ingress_domain here so generated app URLs
+// (web/src/pages/deployment-detail.tsx) match the server's actual
+// INGRESS_DOMAIN instead of a hardcoded guess.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "ingress_domain": s.ingressDomain})
 }
 
 func (s *Server) handleDNSCheck(w http.ResponseWriter, r *http.Request) {
@@ -128,12 +135,190 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
+// appTargetType maps a deployment_apps.target_kind value back to the legacy
+// "k8s"/"container"/"vm" target_type vocabulary the frontend still expects.
+func appTargetType(targetKind string) string {
+	switch targetKind {
+	case "local_k8s":
+		return "k8s"
+	case "local_docker":
+		return "container"
+	case "cloud_vm":
+		return "vm"
+	default:
+		return targetKind
+	}
+}
+
+// normalizeTargetType maps the legacy "k8s"/"container"/"vm" target_type
+// vocabulary (still used by the frontend) to a deployment_apps.target_kind
+// value, rejecting anything else.
+func normalizeTargetType(targetType string) (string, error) {
+	switch targetType {
+	case "k8s":
+		return "local_k8s", nil
+	case "container":
+		return "local_docker", nil
+	case "vm":
+		return "cloud_vm", nil
+	default:
+		return "", fmt.Errorf(`target_type must be "k8s", "container", or "vm"`)
+	}
+}
+
+// validateCloudVMTarget checks that resourceID refers to an applied "vm"
+// provisioned_resources row — required when targetKind == "cloud_vm" (the
+// cloud_vm SSH deployer in internal/deploy dials this resource at deploy
+// time and fails if it's missing or not yet provisioned).
+func (s *Server) validateCloudVMTarget(ctx context.Context, resourceID string) error {
+	if resourceID == "" {
+		return fmt.Errorf(`target_resource_id required for target_type "vm"`)
+	}
+	var resourceType, status string
+	if err := s.db.QueryRow(ctx,
+		`SELECT resource_type, status FROM provisioned_resources WHERE id = $1`, resourceID,
+	).Scan(&resourceType, &status); err != nil {
+		return fmt.Errorf("target_resource_id must reference an existing resource")
+	}
+	if resourceType != "vm" {
+		return fmt.Errorf("target_resource_id must reference a vm resource (got %q)", resourceType)
+	}
+	if status != "applied" {
+		return fmt.Errorf("target_resource_id must reference an applied resource (status=%q)", status)
+	}
+	return nil
+}
+
+// gitAuthRequest is the request-body shape for optional git credentials,
+// shared by handleCreateDeployment and handleAddApp.
+type gitAuthRequest struct {
+	Type   string `json:"type"`
+	Token  string `json:"token,omitempty"`
+	SSHKey string `json:"ssh_key,omitempty"`
+}
+
+// appCreateRequest is createApp's input — already-validated fields shared by
+// "create stack + first app" (handleCreateDeployment) and "add app to
+// existing stack" (handleAddApp). Kind selects between the two: "git"
+// (default, zero value) uses RepoURL/Branch/GitAuth; "image" (Phase 4, only
+// reachable via handleAddApp) uses ImageRef/Port/Env instead.
+type appCreateRequest struct {
+	Name             string
+	Kind             string // "git" (default) | "image"
+	RepoURL          string
+	Branch           string
+	TargetKind       string // "local_k8s" | "local_docker" | "cloud_vm"
+	TargetResourceID string // cloud_vm: provisioned_resources.id (a "vm" resource)
+	Domain           string
+	GitAuth          *gitAuthRequest
+	ImageRef         string            // kind == "image"
+	Port             int               // kind == "image"
+	Env              map[string]string // kind == "image", optional
+}
+
+// createApp generates a per-app webhook secret and (optionally) stores git
+// credentials — both encrypted in the vault — then inserts the
+// deployment_apps row under the given stack, mirroring
+// handleCreateCloudAccount's "encrypt before it touches the database" shape.
+// Returns the new app's id and its plaintext webhook secret (returned to the
+// caller exactly once, for pasting into GitHub's repo → Settings → Webhooks).
+// req.Kind == "image" delegates to createImageApp instead — those apps have
+// no webhook/git credentials, so webhookSecret is always "" for them.
+func (s *Server) createApp(ctx context.Context, deploymentID string, req appCreateRequest) (appID, webhookSecret string, err error) {
+	if req.Kind == "image" {
+		appID, err = s.createImageApp(ctx, deploymentID, req)
+		return appID, "", err
+	}
+
+	webhookSecretRaw := make([]byte, 32)
+	if _, err := rand.Read(webhookSecretRaw); err != nil {
+		return "", "", fmt.Errorf("generate webhook secret: %w", err)
+	}
+	webhookSecret = hex.EncodeToString(webhookSecretRaw)
+
+	webhookSecretName := "webhook:" + deploymentID + ":" + req.Name
+	if err := s.vault.Put(ctx, webhookSecretName, []byte(webhookSecret)); err != nil {
+		return "", "", fmt.Errorf("store webhook secret: %w", err)
+	}
+
+	var gitCredsSecretName *string
+	if req.GitAuth != nil {
+		raw, err := json.Marshal(map[string]string{
+			"type":    req.GitAuth.Type,
+			"token":   req.GitAuth.Token,
+			"ssh_key": req.GitAuth.SSHKey,
+		})
+		if err != nil {
+			return "", "", fmt.Errorf("encode git credentials: %w", err)
+		}
+		name := "git-credentials:" + deploymentID + ":" + req.Name
+		if err := s.vault.Put(ctx, name, raw); err != nil {
+			return "", "", fmt.Errorf("store git credentials: %w", err)
+		}
+		gitCredsSecretName = &name
+	}
+
+	branch := req.Branch
+	if branch == "" {
+		branch = "main"
+	}
+
+	err = s.db.QueryRow(ctx, `
+		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id)
+		SELECT $1, $2, $3, $4, $5, NULLIF($6, '')::uuid, NULLIF($7, ''),
+		       (SELECT id FROM secrets WHERE name = $8),
+		       (SELECT id FROM secrets WHERE name = $9)
+		RETURNING id::text
+	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName).Scan(&appID)
+	if err != nil {
+		return "", "", fmt.Errorf("insert app: %w", err)
+	}
+	return appID, webhookSecret, nil
+}
+
+// createImageApp inserts a "image"-kind app (Phase 4, e.g. a postgres:16 db
+// container) — no webhook secret or git credentials, just an image ref and
+// container port, plus an optional vault-encrypted env-vars blob (e.g.
+// POSTGRES_PASSWORD) referenced by image_env_secret_id, mirroring
+// createApp's git-credentials encryption shape.
+func (s *Server) createImageApp(ctx context.Context, deploymentID string, req appCreateRequest) (appID string, err error) {
+	var envSecretName *string
+	if len(req.Env) > 0 {
+		raw, err := json.Marshal(req.Env)
+		if err != nil {
+			return "", fmt.Errorf("encode image env: %w", err)
+		}
+		name := "image-env:" + deploymentID + ":" + req.Name
+		if err := s.vault.Put(ctx, name, raw); err != nil {
+			return "", fmt.Errorf("store image env: %w", err)
+		}
+		envSecretName = &name
+	}
+
+	err = s.db.QueryRow(ctx, `
+		INSERT INTO deployment_apps (deployment_id, name, kind, image_ref, port, target_kind, target_resource_id, image_env_secret_id)
+		SELECT $1, $2, 'image', $3, $4, $5, NULLIF($6, '')::uuid, (SELECT id FROM secrets WHERE name = $7)
+		RETURNING id::text
+	`, deploymentID, req.Name, req.ImageRef, req.Port, req.TargetKind, req.TargetResourceID, envSecretName).Scan(&appID)
+	if err != nil {
+		return "", fmt.Errorf("insert image app: %w", err)
+	}
+	return appID, nil
+}
+
+// handleListDeployments lists stacks (deployments) with their apps. Each
+// stack also carries flat fields mirroring its first app — kept for
+// `web/src/pages/deployments.tsx` and friends, which predate multi-app
+// stacks and only render a single app per row.
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
-		SELECT id::text, name, repo_url, branch,
-		       COALESCE(framework,''), target_type, status,
-		       COALESCE(image_ref,''), created_at, updated_at
-		FROM deployments ORDER BY created_at DESC
+		SELECT d.id::text, d.name, d.created_at, d.updated_at,
+		       da.id::text, da.name, COALESCE(da.repo_url,''), da.branch,
+		       COALESCE(da.framework,''), da.target_kind, da.status,
+		       COALESCE(da.image_ref,'')
+		FROM deployments d
+		JOIN deployment_apps da ON da.deployment_id = d.id
+		ORDER BY d.created_at DESC, da.created_at ASC
 	`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list deployments")
@@ -141,6 +326,16 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	type appRow struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		RepoURL    string `json:"repo_url"`
+		Branch     string `json:"branch"`
+		Framework  string `json:"framework,omitempty"`
+		TargetKind string `json:"target_kind"`
+		Status     string `json:"status"`
+		ImageRef   string `json:"image_ref,omitempty"`
+	}
 	type row struct {
 		ID         string    `json:"id"`
 		Name       string    `json:"name"`
@@ -152,16 +347,34 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 		ImageRef   string    `json:"image_ref,omitempty"`
 		CreatedAt  time.Time `json:"created_at"`
 		UpdatedAt  time.Time `json:"updated_at"`
+		Apps       []appRow  `json:"apps"`
 	}
 	var results []row
+	index := make(map[string]int)
 	for rows.Next() {
-		var d row
-		if err := rows.Scan(&d.ID, &d.Name, &d.RepoURL, &d.Branch, &d.Framework,
-			&d.TargetType, &d.Status, &d.ImageRef, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		var stackID, stackName string
+		var createdAt, updatedAt time.Time
+		var a appRow
+		if err := rows.Scan(&stackID, &stackName, &createdAt, &updatedAt,
+			&a.ID, &a.Name, &a.RepoURL, &a.Branch, &a.Framework, &a.TargetKind, &a.Status, &a.ImageRef); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan deployment")
 			return
 		}
-		results = append(results, d)
+		i, ok := index[stackID]
+		if !ok {
+			results = append(results, row{ID: stackID, Name: stackName, CreatedAt: createdAt, UpdatedAt: updatedAt})
+			i = len(results) - 1
+			index[stackID] = i
+		}
+		results[i].Apps = append(results[i].Apps, a)
+		if len(results[i].Apps) == 1 {
+			results[i].RepoURL = a.RepoURL
+			results[i].Branch = a.Branch
+			results[i].Framework = a.Framework
+			results[i].TargetType = appTargetType(a.TargetKind)
+			results[i].Status = a.Status
+			results[i].ImageRef = a.ImageRef
+		}
 	}
 	if results == nil {
 		results = []row{}
@@ -179,15 +392,13 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 // the user to paste into GitHub's repo → Settings → Webhooks.
 func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name       string `json:"name"`
-		RepoURL    string `json:"repo_url"`
-		Branch     string `json:"branch"`
-		TargetType string `json:"target_type"`
-		GitAuth    *struct {
-			Type   string `json:"type"`
-			Token  string `json:"token,omitempty"`
-			SSHKey string `json:"ssh_key,omitempty"`
-		} `json:"git_auth,omitempty"`
+		Name             string          `json:"name"`
+		RepoURL          string          `json:"repo_url"`
+		Branch           string          `json:"branch"`
+		TargetType       string          `json:"target_type"`
+		TargetResourceID string          `json:"target_resource_id,omitempty"`
+		Domain           string          `json:"domain,omitempty"`
+		GitAuth          *gitAuthRequest `json:"git_auth,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -197,8 +408,9 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "name and repo_url required")
 		return
 	}
-	if req.TargetType != "k8s" && req.TargetType != "container" && req.TargetType != "vm" {
-		writeError(w, http.StatusBadRequest, `target_type must be "k8s", "container", or "vm"`)
+	targetKind, err := normalizeTargetType(req.TargetType)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.GitAuth != nil && req.GitAuth.Type != deploy.GitAuthToken && req.GitAuth.Type != deploy.GitAuthSSHKey {
@@ -206,65 +418,427 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	branch := req.Branch
-	if branch == "" {
-		branch = "main"
-	}
-
 	ctx := r.Context()
 
-	webhookSecretRaw := make([]byte, 32)
-	if _, err := rand.Read(webhookSecretRaw); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to generate webhook secret")
-		return
-	}
-	webhookSecret := hex.EncodeToString(webhookSecretRaw)
-
-	webhookSecretName := "webhook:" + req.Name
-	if err := s.vault.Put(ctx, webhookSecretName, []byte(webhookSecret)); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to store webhook secret")
-		return
-	}
-
-	var gitCredsSecretName *string
-	if req.GitAuth != nil {
-		raw, err := json.Marshal(map[string]string{
-			"type":    req.GitAuth.Type,
-			"token":   req.GitAuth.Token,
-			"ssh_key": req.GitAuth.SSHKey,
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to encode git credentials")
+	if targetKind == "cloud_vm" {
+		if err := s.validateCloudVMTarget(ctx, req.TargetResourceID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		name := "git-credentials:" + req.Name
-		if err := s.vault.Put(ctx, name, raw); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to store git credentials")
-			return
-		}
-		gitCredsSecretName = &name
 	}
 
 	var deploymentID string
-	err := s.db.QueryRow(ctx, `
-		INSERT INTO deployments (name, repo_url, branch, target_type, webhook_secret_id, git_credentials_secret_id)
-		VALUES (
-			$1, $2, $3, $4,
-			(SELECT id FROM secrets WHERE name = $5),
-			(SELECT id FROM secrets WHERE name = $6)
-		)
-		RETURNING id::text
-	`, req.Name, req.RepoURL, branch, req.TargetType, webhookSecretName, gitCredsSecretName).Scan(&deploymentID)
+	if err := s.db.QueryRow(ctx, `INSERT INTO deployments (name) VALUES ($1) RETURNING id::text`, req.Name).Scan(&deploymentID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create deployment")
+		return
+	}
+
+	appID, webhookSecret, err := s.createApp(ctx, deploymentID, appCreateRequest{
+		Name:             req.Name,
+		RepoURL:          req.RepoURL,
+		Branch:           req.Branch,
+		TargetKind:       targetKind,
+		TargetResourceID: req.TargetResourceID,
+		Domain:           req.Domain,
+		GitAuth:          req.GitAuth,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create deployment")
 		return
 	}
 
+	s.triggerAppIfGit(appID, "git")
+
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":             deploymentID,
-		"webhook_url":    "/webhooks/github/" + deploymentID,
+		"webhook_url":    "/webhooks/github/" + appID,
 		"webhook_secret": webhookSecret,
 	})
+}
+
+// handleAddApp adds a new app to an existing stack, reusing createApp scoped
+// to the stack's existing deployment id — the new app gets its own clone
+// workspace (workDir/<appID>), webhook, and (once triggered) build/deploy/
+// compliance run, alongside any apps already in the stack.
+func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+
+	var exists bool
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM deployments WHERE id = $1)`, deploymentID,
+	).Scan(&exists); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up deployment")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "deployment not found")
+		return
+	}
+
+	var req struct {
+		Name             string            `json:"name"`
+		Kind             string            `json:"kind,omitempty"` // "git" (default) | "image"
+		RepoURL          string            `json:"repo_url,omitempty"`
+		Branch           string            `json:"branch,omitempty"`
+		TargetType       string            `json:"target_type"`
+		TargetResourceID string            `json:"target_resource_id,omitempty"`
+		Domain           string            `json:"domain,omitempty"`
+		GitAuth          *gitAuthRequest   `json:"git_auth,omitempty"`
+		ImageRef         string            `json:"image_ref,omitempty"`
+		Port             int               `json:"port,omitempty"`
+		Env              map[string]string `json:"env,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if req.Kind == "" {
+		req.Kind = "git"
+	}
+	targetKind, err := normalizeTargetType(req.TargetType)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if targetKind == "cloud_vm" {
+		if err := s.validateCloudVMTarget(r.Context(), req.TargetResourceID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	switch req.Kind {
+	case "git":
+		if req.RepoURL == "" {
+			writeError(w, http.StatusBadRequest, "repo_url required")
+			return
+		}
+		if req.GitAuth != nil && req.GitAuth.Type != deploy.GitAuthToken && req.GitAuth.Type != deploy.GitAuthSSHKey {
+			writeError(w, http.StatusBadRequest, `git_auth.type must be "token" or "ssh_key"`)
+			return
+		}
+	case "image":
+		if req.ImageRef == "" {
+			writeError(w, http.StatusBadRequest, "image_ref required")
+			return
+		}
+		if req.Port < 1 || req.Port > 65535 {
+			writeError(w, http.StatusBadRequest, "port must be between 1 and 65535")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, `kind must be "git" or "image"`)
+		return
+	}
+
+	appID, webhookSecret, err := s.createApp(r.Context(), deploymentID, appCreateRequest{
+		Name:       req.Name,
+		Kind:       req.Kind,
+		RepoURL:    req.RepoURL,
+		Branch:     req.Branch,
+		TargetKind: targetKind,
+		Domain:     req.Domain,
+		GitAuth:    req.GitAuth,
+		ImageRef:   req.ImageRef,
+		Port:       req.Port,
+		Env:        req.Env,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, "an app with this name already exists in this deployment")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to add app")
+		return
+	}
+
+	if req.Kind == "image" {
+		go func() {
+			if err := s.deploy.DeployImageApp(context.Background(), appID); err != nil {
+				slog.Error("deploy: image app create", "app_id", appID, "error", err)
+			}
+		}()
+		writeJSON(w, http.StatusCreated, map[string]string{"id": appID})
+		return
+	}
+
+	s.triggerAppIfGit(appID, "git")
+
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"id":             appID,
+		"webhook_url":    "/webhooks/github/" + appID,
+		"webhook_secret": webhookSecret,
+	})
+}
+
+// handleGetDeployment returns a single stack with its full apps[] — powers
+// the deployment-detail page (status, target, domain, namespace, image_ref
+// per app).
+func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var stackName string
+	var createdAt, updatedAt time.Time
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT name, created_at, updated_at FROM deployments WHERE id = $1`, id,
+	).Scan(&stackName, &createdAt, &updatedAt); err != nil {
+		writeError(w, http.StatusNotFound, "deployment not found")
+		return
+	}
+
+	rows, err := s.db.Query(r.Context(), `
+		SELECT id::text, name, kind, COALESCE(role, ''), COALESCE(repo_url, ''), branch,
+		       COALESCE(framework, ''), target_kind, COALESCE(namespace, ''),
+		       COALESCE(image_ref, ''), COALESCE(port, 0), COALESCE(domain, ''), status, created_at, updated_at
+		FROM deployment_apps WHERE deployment_id = $1 ORDER BY created_at ASC
+	`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list apps")
+		return
+	}
+	defer rows.Close()
+
+	type appDetail struct {
+		ID         string    `json:"id"`
+		Name       string    `json:"name"`
+		Kind       string    `json:"kind"`
+		Role       string    `json:"role,omitempty"`
+		RepoURL    string    `json:"repo_url,omitempty"`
+		Branch     string    `json:"branch"`
+		Framework  string    `json:"framework,omitempty"`
+		TargetType string    `json:"target_type"`
+		Namespace  string    `json:"namespace,omitempty"`
+		ImageRef   string    `json:"image_ref,omitempty"`
+		Port       int       `json:"port,omitempty"`
+		Domain     string    `json:"domain,omitempty"`
+		HostPort   uint32    `json:"host_port,omitempty"`
+		Status     string    `json:"status"`
+		CreatedAt  time.Time `json:"created_at"`
+		UpdatedAt  time.Time `json:"updated_at"`
+		Links      []appLink `json:"links"`
+	}
+	var apps []appDetail
+	index := make(map[string]int)
+	for rows.Next() {
+		var a appDetail
+		var targetKind string
+		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Role, &a.RepoURL, &a.Branch,
+			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan app")
+			return
+		}
+		a.TargetType = appTargetType(targetKind)
+		if targetKind == "local_docker" {
+			a.HostPort = docker.AppHostPort(stackName, a.Name)
+		}
+		a.Links = []appLink{}
+		index[a.ID] = len(apps)
+		apps = append(apps, a)
+	}
+	if apps == nil {
+		apps = []appDetail{}
+	}
+
+	linkRows, err := s.db.Query(r.Context(), `
+		SELECT l.id::text, l.app_id::text, l.alias,
+		       COALESCE(l.depends_on_app_id::text, ''), COALESCE(da.name, ''),
+		       COALESCE(l.depends_on_resource_id::text, ''), COALESCE(pr.name, ''),
+		       COALESCE(l.port, 0)
+		FROM deployment_app_links l
+		JOIN deployment_apps owner ON owner.id = l.app_id
+		LEFT JOIN deployment_apps da ON da.id = l.depends_on_app_id
+		LEFT JOIN provisioned_resources pr ON pr.id = l.depends_on_resource_id
+		WHERE owner.deployment_id = $1
+	`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list app links")
+		return
+	}
+	defer linkRows.Close()
+	for linkRows.Next() {
+		var l appLink
+		var appID string
+		if err := linkRows.Scan(&l.ID, &appID, &l.Alias,
+			&l.DependsOnAppID, &l.DependsOnAppName,
+			&l.DependsOnResourceID, &l.DependsOnResourceName, &l.Port); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan app link")
+			return
+		}
+		if i, ok := index[appID]; ok {
+			apps[i].Links = append(apps[i].Links, l)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":         id,
+		"name":       stackName,
+		"created_at": createdAt,
+		"updated_at": updatedAt,
+		"apps":       apps,
+	})
+}
+
+// appLink is one resolved dependency edge from deployment_app_links, joined
+// to the depended-on app's or provisioned resource's name — returned as part
+// of an app's []Links in handleGetDeployment and by the create/delete link
+// handlers below. Exactly one of DependsOn{App,Resource}ID is set, per the
+// table's CHECK constraint; Port is only meaningful for resource links.
+type appLink struct {
+	ID                    string `json:"id"`
+	Alias                 string `json:"alias"`
+	DependsOnAppID        string `json:"depends_on_app_id,omitempty"`
+	DependsOnAppName      string `json:"depends_on_app_name,omitempty"`
+	DependsOnResourceID   string `json:"depends_on_resource_id,omitempty"`
+	DependsOnResourceName string `json:"depends_on_resource_name,omitempty"`
+	Port                  int    `json:"port,omitempty"`
+}
+
+// aliasPattern restricts link aliases to valid AUTODEVOPS_<ALIAS>_* env var
+// name fragments: must start with a letter, then letters/digits/underscores.
+var aliasPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// triggerAppIfGit re-runs ProcessPush for a "git" kind app in the background —
+// the same async path handleTriggerApp uses for manual rebuilds. Called after
+// a link is created or deleted so the app's container picks up the updated
+// AUTODEVOPS_* environment (resolveLinks, T-Phase3). A no-op for "image" kind
+// apps, which have no build/deploy pipeline to re-run.
+func (s *Server) triggerAppIfGit(appID, kind string) {
+	if kind != "git" {
+		return
+	}
+	go func() {
+		if err := s.deploy.ProcessPush(context.Background(), appID); err != nil {
+			slog.Error("deploy: re-trigger after link change", "app_id", appID, "error", err)
+		}
+	}()
+}
+
+// handleCreateAppLink adds a dependency link from one app to either another
+// app in the same stack (deployment_app_links.depends_on_app_id) or an
+// applied provisioned_resource (depends_on_resource_id, e.g. an RDS instance
+// or cloud VM — Phase 5a), with an optional Port for resource links that
+// expose a non-default port. resolveLinks (T-Phase3/5a) turns this into
+// AUTODEVOPS_<ALIAS>_* env vars for appId's container on its next
+// build/deploy, triggered here.
+func (s *Server) handleCreateAppLink(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var appKind string
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT kind FROM deployment_apps WHERE id = $1 AND deployment_id = $2`, appID, deploymentID,
+	).Scan(&appKind); err != nil {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+
+	var req struct {
+		Alias               string `json:"alias"`
+		DependsOnAppID      string `json:"depends_on_app_id"`
+		DependsOnResourceID string `json:"depends_on_resource_id"`
+		Port                int    `json:"port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !aliasPattern.MatchString(req.Alias) {
+		writeError(w, http.StatusBadRequest, "alias must start with a letter and contain only letters, digits, and underscores")
+		return
+	}
+	if (req.DependsOnAppID == "") == (req.DependsOnResourceID == "") {
+		writeError(w, http.StatusBadRequest, "exactly one of depends_on_app_id or depends_on_resource_id is required")
+		return
+	}
+	if req.Port != 0 && (req.Port < 1 || req.Port > 65535) {
+		writeError(w, http.StatusBadRequest, "port must be between 1 and 65535")
+		return
+	}
+
+	var dependsOnName, dependsOnResourceName string
+	if req.DependsOnAppID != "" {
+		if req.DependsOnAppID == appID {
+			writeError(w, http.StatusBadRequest, "an app cannot depend on itself")
+			return
+		}
+		if req.Port != 0 {
+			writeError(w, http.StatusBadRequest, "port is only valid for resource links")
+			return
+		}
+		if err := s.db.QueryRow(r.Context(),
+			`SELECT name FROM deployment_apps WHERE id = $1 AND deployment_id = $2`, req.DependsOnAppID, deploymentID,
+		).Scan(&dependsOnName); err != nil {
+			writeError(w, http.StatusBadRequest, "depends_on_app_id must reference another app in this stack")
+			return
+		}
+	} else {
+		if err := s.db.QueryRow(r.Context(),
+			`SELECT name FROM provisioned_resources WHERE id = $1 AND status = 'applied'`, req.DependsOnResourceID,
+		).Scan(&dependsOnResourceName); err != nil {
+			writeError(w, http.StatusBadRequest, "depends_on_resource_id must reference an applied resource")
+			return
+		}
+	}
+
+	var linkID string
+	err := s.db.QueryRow(r.Context(), `
+		INSERT INTO deployment_app_links (app_id, depends_on_app_id, depends_on_resource_id, alias, port)
+		VALUES ($1, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, NULLIF($5, 0))
+		RETURNING id::text
+	`, appID, req.DependsOnAppID, req.DependsOnResourceID, req.Alias, req.Port).Scan(&linkID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create link")
+		return
+	}
+
+	s.triggerAppIfGit(appID, appKind)
+
+	writeJSON(w, http.StatusCreated, appLink{
+		ID:                    linkID,
+		Alias:                 req.Alias,
+		DependsOnAppID:        req.DependsOnAppID,
+		DependsOnAppName:      dependsOnName,
+		DependsOnResourceID:   req.DependsOnResourceID,
+		DependsOnResourceName: dependsOnResourceName,
+		Port:                  req.Port,
+	})
+}
+
+// handleDeleteAppLink removes a dependency link and re-triggers the app's
+// build/deploy so its container env reflects the change (resolveLinks,
+// T-Phase3).
+func (s *Server) handleDeleteAppLink(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+	linkID := chi.URLParam(r, "linkId")
+
+	var appKind string
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT kind FROM deployment_apps WHERE id = $1 AND deployment_id = $2`, appID, deploymentID,
+	).Scan(&appKind); err != nil {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+
+	tag, err := s.db.Exec(r.Context(),
+		`DELETE FROM deployment_app_links WHERE id = $1 AND app_id = $2`, linkID, appID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete link")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "link not found")
+		return
+	}
+
+	s.triggerAppIfGit(appID, appKind)
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleGitHubWebhook receives GitHub push deliveries for a deployment.
@@ -275,7 +849,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 // ~10s, so this handler verifies, decides, and returns 202 immediately,
 // leaving deploy.Orchestrator.ProcessPush to run in the background.
 func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
-	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "id")
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -285,10 +859,10 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	var branch, webhookSecretID string
 	err = s.db.QueryRow(r.Context(), `
-		SELECT branch, webhook_secret_id::text FROM deployments WHERE id = $1
-	`, deploymentID).Scan(&branch, &webhookSecretID)
+		SELECT branch, webhook_secret_id::text FROM deployment_apps WHERE id = $1
+	`, appID).Scan(&branch, &webhookSecretID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "deployment not found")
+		writeError(w, http.StatusNotFound, "deployment app not found")
 		return
 	}
 
@@ -319,8 +893,8 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		go func() {
-			if err := s.deploy.ProcessPush(context.Background(), deploymentID); err != nil {
-				slog.Error("deploy: process push", "deployment_id", deploymentID, "error", err)
+			if err := s.deploy.ProcessPush(context.Background(), appID); err != nil {
+				slog.Error("deploy: process push", "app_id", appID, "error", err)
 			}
 		}()
 
@@ -495,6 +1069,30 @@ func (s *Server) handleListCloudAccountNetworks(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, networks)
 }
 
+// handleListDockerNetworks lists existing Docker bridge networks for the
+// "Docker network" picker on the local-resource (Docker container) form.
+func (s *Server) handleListDockerNetworks(w http.ResponseWriter, r *http.Request) {
+	if s.dockerMgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "docker daemon unavailable — check server logs")
+		return
+	}
+	networks, err := s.dockerMgr.ListNetworks(r.Context())
+	if err != nil {
+		var notFound *docker.ErrDockerNotFound
+		if errors.As(err, &notFound) {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		slog.Error("api: list docker networks", "error", err)
+		writeError(w, http.StatusBadGateway, "failed to list docker networks")
+		return
+	}
+	if networks == nil {
+		networks = []docker.NetworkInfo{}
+	}
+	writeJSON(w, http.StatusOK, networks)
+}
+
 func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name  string `json:"name"`
@@ -536,12 +1134,12 @@ func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListComplianceFindings(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
-		SELECT cf.id::text, cf.deployment_id::text, d.name,
+		SELECT cf.id::text, cf.app_id::text, da.name,
 		       cf.scanner, cf.severity, cf.rule_id, cf.message,
 		       COALESCE(cf.file_path, ''), COALESCE(cf.line_number, 0),
 		       cf.created_at
 		FROM compliance_findings cf
-		JOIN deployments d ON d.id = cf.deployment_id
+		JOIN deployment_apps da ON da.id = cf.app_id
 		ORDER BY cf.created_at DESC
 		LIMIT 500
 	`)
@@ -1010,6 +1608,17 @@ func (s *Server) createLocalResource(w http.ResponseWriter, r *http.Request, nam
 		writeError(w, http.StatusBadRequest, "resource_opts.container_port must be between 1 and 65535")
 		return
 	}
+	hostPortOpt, err := intOpt(opts, "host_port", 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if hostPortOpt < 0 || hostPortOpt > 65535 {
+		writeError(w, http.StatusBadRequest, "resource_opts.host_port must be between 1 and 65535")
+		return
+	}
+	networkName := strOpt(opts, "network", "")
+	createNetwork := strOpt(opts, "create_network", "") == "true"
 
 	var template string
 	switch resourceType {
@@ -1065,15 +1674,21 @@ func (s *Server) createLocalResource(w http.ResponseWriter, r *http.Request, nam
 		)
 		switch resourceType {
 		case "docker":
-			containerID, hostPort, err := s.dockerMgr.CreateContainer(ctx, name, image, uint16(port), resourceID)
+			containerID, hostPort, err := s.dockerMgr.CreateContainer(ctx, name, image, uint16(port), uint16(hostPortOpt), networkName, createNetwork, resourceID)
 			if err != nil {
 				applyErr = err
 				break
 			}
+			networkUsed := networkName
+			if networkUsed == "" {
+				networkUsed = docker.DefaultNetwork
+			}
 			outputs = map[string]json.RawMessage{
-				"image":        jsonString(image),
-				"container_id": jsonString(containerID),
-				"host_port":    json.RawMessage(strconv.FormatUint(uint64(hostPort), 10)),
+				"image":          jsonString(image),
+				"container_id":   jsonString(containerID),
+				"container_port": json.RawMessage(strconv.Itoa(port)),
+				"host_port":      json.RawMessage(strconv.FormatUint(uint64(hostPort), 10)),
+				"network":        jsonString(networkUsed),
 			}
 			summary = fmt.Sprintf("container %s started on host port %d", containerID, hostPort)
 		case "k8s":
@@ -1084,9 +1699,11 @@ func (s *Server) createLocalResource(w http.ResponseWriter, r *http.Request, nam
 				break
 			}
 			outputs = map[string]json.RawMessage{
-				"image":      jsonString(image),
-				"namespace":  jsonString(namespace),
-				"service_ip": jsonString(serviceIP),
+				"image":       jsonString(image),
+				"namespace":   jsonString(namespace),
+				"service_ip":  jsonString(serviceIP),
+				"port":        json.RawMessage(strconv.Itoa(port)),
+				"expose_http": json.RawMessage(strconv.FormatBool(exposeHTTP)),
 			}
 			if ingressURL != "" {
 				outputs["ingress_url"] = jsonString(ingressURL)
@@ -1110,6 +1727,148 @@ func (s *Server) createLocalResource(w http.ResponseWriter, r *http.Request, nam
 	}()
 
 	writeJSON(w, http.StatusAccepted, rr)
+}
+
+// handleEditResource updates the settings of a "local" Resource (Docker
+// container or K8s workload) — the edit-path counterpart to
+// createLocalResource. Docker edits recreate the container via the
+// already-idempotent CreateContainer (brief restart); K8s edits patch the
+// Deployment/Service/Ingress in place via KubeUpdateResource. AWS/Azure
+// resources are edited by re-planning Terraform (see
+// handlePlanResourceTerraform), not through this endpoint.
+func (s *Server) handleEditResource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	rr, err := s.getResource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if rr.Provider != "local" {
+		writeError(w, http.StatusBadRequest, "editing is only supported for local resources")
+		return
+	}
+	if rr.Status != "applied" && rr.Status != "failed" {
+		writeError(w, http.StatusConflict, fmt.Sprintf("resource is %s — editing is only available for applied or failed resources", rr.Status))
+		return
+	}
+
+	var req struct {
+		ResourceOpts map[string]string `json:"resource_opts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	opts := req.ResourceOpts
+
+	image := strOpt(opts, "image", "")
+	if image == "" {
+		writeError(w, http.StatusBadRequest, "resource_opts.image required")
+		return
+	}
+	port, err := intOpt(opts, "container_port", 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if port <= 0 || port > 65535 {
+		writeError(w, http.StatusBadRequest, "resource_opts.container_port must be between 1 and 65535")
+		return
+	}
+	hostPortOpt, err := intOpt(opts, "host_port", 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if hostPortOpt < 0 || hostPortOpt > 65535 {
+		writeError(w, http.StatusBadRequest, "resource_opts.host_port must be between 1 and 65535")
+		return
+	}
+	networkName := strOpt(opts, "network", "")
+	createNetwork := strOpt(opts, "create_network", "") == "true"
+	exposeHTTP := strOpt(opts, "expose_http", "") == "true"
+
+	switch rr.ResourceType {
+	case "docker":
+		if s.dockerMgr == nil {
+			writeError(w, http.StatusServiceUnavailable, "docker daemon unavailable — check server logs")
+			return
+		}
+	case "k8s":
+		if s.k8sCtrl == nil {
+			writeError(w, http.StatusServiceUnavailable, "kubernetes cluster unavailable — check server logs")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported local resource_type %q", rr.ResourceType))
+		return
+	}
+
+	s.setResourceStatus(r.Context(), id, "applying")
+
+	go func() {
+		ctx := context.Background()
+
+		var (
+			outputs  map[string]json.RawMessage
+			summary  string
+			applyErr error
+		)
+		switch rr.ResourceType {
+		case "docker":
+			containerID, hostPort, err := s.dockerMgr.CreateContainer(ctx, rr.Name, image, uint16(port), uint16(hostPortOpt), networkName, createNetwork, id)
+			if err != nil {
+				applyErr = err
+				break
+			}
+			networkUsed := networkName
+			if networkUsed == "" {
+				networkUsed = docker.DefaultNetwork
+			}
+			outputs = map[string]json.RawMessage{
+				"image":          jsonString(image),
+				"container_id":   jsonString(containerID),
+				"container_port": json.RawMessage(strconv.Itoa(port)),
+				"host_port":      json.RawMessage(strconv.FormatUint(uint64(hostPort), 10)),
+				"network":        jsonString(networkUsed),
+			}
+			summary = fmt.Sprintf("container %s updated, running on host port %d", containerID, hostPort)
+		case "k8s":
+			namespace := k8s.ResourceNamespace(rr.Name)
+			serviceIP, ingressURL, err := s.k8sCtrl.KubeUpdateResource(ctx, rr.Name, namespace, image, int32(port), exposeHTTP)
+			if err != nil {
+				applyErr = err
+				break
+			}
+			outputs = map[string]json.RawMessage{
+				"image":       jsonString(image),
+				"namespace":   jsonString(namespace),
+				"service_ip":  jsonString(serviceIP),
+				"port":        json.RawMessage(strconv.Itoa(port)),
+				"expose_http": json.RawMessage(strconv.FormatBool(exposeHTTP)),
+			}
+			if ingressURL != "" {
+				outputs["ingress_url"] = jsonString(ingressURL)
+			}
+			summary = fmt.Sprintf("deployment %s/%s updated (service %s)", namespace, rr.Name, serviceIP)
+		}
+
+		status := "applied"
+		runStatus := "succeeded"
+		runOutput := summary
+		if applyErr != nil {
+			slog.Error("resources: local edit failed", "id", id, "type", rr.ResourceType, "error", applyErr)
+			status = "failed"
+			runStatus = "failed"
+			runOutput = applyErr.Error()
+		} else {
+			s.setResourceOutputs(ctx, id, outputs)
+		}
+		s.insertSyntheticRun(ctx, id, rr.Template, "update", runStatus, runOutput)
+		s.setResourceStatus(ctx, id, status)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "edit_initiated", "id": id})
 }
 
 // insertSyntheticRun records a completed action for a "local" Resource — no
@@ -1513,53 +2272,179 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 	return nil, fmt.Errorf("unknown provider %q", provider)
 }
 
+// teardownApp removes the live K8s/Docker resources for a single app, shared
+// by handleDeleteApp (per-app) and handleDestroyDeployment (whole-stack,
+// called once per app before any shared namespace/network is removed). For
+// local_k8s, only the app's own Deployment/Service/Ingress are deleted — the
+// stack namespace is shared by sibling apps and is removed separately once
+// the whole stack is torn down. A nil controller/manager (K8s or Docker
+// unavailable) is treated as a no-op so the DB row can still be soft-deleted.
+func (s *Server) teardownApp(ctx context.Context, stackName, appName, targetKind, namespace string) error {
+	switch targetKind {
+	case "local_k8s":
+		if s.k8sCtrl == nil || namespace == "" {
+			return nil
+		}
+		return s.k8sCtrl.KubeDeleteApp(ctx, namespace, appName)
+	case "local_docker":
+		if s.dockerMgr == nil {
+			return nil
+		}
+		return s.dockerMgr.RemoveAppContainer(ctx, stackName, appName)
+	}
+	return nil
+}
+
+// handleDestroyDeployment tears down every live app in the stack (K8s
+// Deployment/Service/Ingress per app, then the shared namespace; Docker
+// containers per app, then the shared network) and removes the deployment
+// record entirely (deployment_apps/deployment_app_links/compliance_findings
+// cascade via FK ON DELETE CASCADE) — so the stack disappears from the
+// deployments list instead of lingering as an empty "idle" entry. Teardown is
+// best-effort per app — failures are logged but don't block the rest of the
+// stack from being torn down and removed.
 func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	tag, err := s.db.Exec(r.Context(),
-		`UPDATE deployments SET status = 'destroyed', updated_at = NOW() WHERE id = $1`, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to destroy deployment")
+
+	var stackName string
+	if err := s.db.QueryRow(r.Context(), `SELECT name FROM deployments WHERE id = $1`, id).Scan(&stackName); err != nil {
+		writeError(w, http.StatusNotFound, "deployment not found")
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "deployment not found")
+
+	rows, err := s.db.Query(r.Context(), `
+		SELECT name, target_kind, COALESCE(namespace, '')
+		FROM deployment_apps WHERE deployment_id = $1 AND status != 'destroyed'
+	`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load apps")
+		return
+	}
+	namespaces := map[string]bool{}
+	hasDocker := false
+	for rows.Next() {
+		var appName, targetKind, namespace string
+		if err := rows.Scan(&appName, &targetKind, &namespace); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to read app row")
+			return
+		}
+		if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace); err != nil {
+			slog.Error("deployments: teardown app failed", "stack", stackName, "app", appName, "error", err)
+		}
+		if targetKind == "local_k8s" && namespace != "" {
+			namespaces[namespace] = true
+		}
+		if targetKind == "local_docker" {
+			hasDocker = true
+		}
+	}
+	rows.Close()
+
+	if s.k8sCtrl != nil {
+		for ns := range namespaces {
+			if err := s.k8sCtrl.KubeDestroyResource(r.Context(), ns); err != nil {
+				slog.Error("deployments: destroy namespace failed", "namespace", ns, "error", err)
+			}
+		}
+	}
+	if hasDocker && s.dockerMgr != nil {
+		s.dockerMgr.RemoveStackNetwork(r.Context(), stackName)
+	}
+
+	if _, err := s.db.Exec(r.Context(), `DELETE FROM deployments WHERE id = $1`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete deployment")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleTriggerDeployment(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	var exists bool
+// handleDeleteApp tears down a single app's live K8s/Docker resources and
+// soft-deletes it (status=destroyed), leaving its siblings untouched — the
+// multi-app counterpart of handleDestroyDeployment, which tears down every
+// app in the stack at once. If teardown fails, the row is left in its current
+// status so the dashboard keeps showing it (and the user can retry) instead
+// of silently hiding an app whose resources are still running.
+func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var stackName, appName, targetKind, namespace string
+	err := s.db.QueryRow(r.Context(), `
+		SELECT d.name, da.name, da.target_kind, COALESCE(da.namespace, '')
+		FROM deployment_apps da
+		JOIN deployments d ON d.id = da.deployment_id
+		WHERE da.id = $1 AND da.deployment_id = $2
+	`, appID, deploymentID).Scan(&stackName, &appName, &targetKind, &namespace)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+
+	if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to remove running resources: %v", err))
+		return
+	}
+
+	tag, err := s.db.Exec(r.Context(),
+		`UPDATE deployment_apps SET status = 'destroyed', updated_at = NOW() WHERE id = $1 AND deployment_id = $2`,
+		appID, deploymentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete app")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTriggerApp triggers a rebuild/redeploy of a single app in a stack.
+func (s *Server) handleTriggerApp(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var kind string
 	if err := s.db.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM deployments WHERE id = $1)`, id,
-	).Scan(&exists); err != nil || !exists {
-		writeError(w, http.StatusNotFound, "deployment not found")
+		`SELECT kind FROM deployment_apps WHERE id = $1 AND deployment_id = $2`, appID, deploymentID,
+	).Scan(&kind); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "app not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to look up app")
 		return
 	}
 	go func() {
-		if err := s.deploy.ProcessPush(context.Background(), id); err != nil {
-			slog.Error("deploy: manual trigger", "deployment_id", id, "error", err)
+		var err error
+		if kind == "image" {
+			err = s.deploy.DeployImageApp(context.Background(), appID)
+		} else {
+			err = s.deploy.ProcessPush(context.Background(), appID)
+		}
+		if err != nil {
+			slog.Error("deploy: manual trigger", "app_id", appID, "error", err)
 		}
 	}()
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "deployment_id": id})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "deployment_id": deploymentID, "app_id": appID})
 }
 
-// handleGetDeploymentWorkflow generates and returns a GitHub Actions workflow
-// YAML for the given deployment. The file is ready to commit verbatim to
+// handleGetAppWorkflow generates and returns a GitHub Actions workflow YAML
+// for a single app in a stack. The file is ready to commit verbatim to
 // .github/workflows/autodevops.yml — credentials are never embedded, only
 // referenced as repository secrets (AUTODEVOPS_WEBHOOK_SECRET, AUTODEVOPS_URL).
-func (s *Server) handleGetDeploymentWorkflow(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) handleGetAppWorkflow(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
 
 	var params cicd.WorkflowParams
-	params.DeploymentID = id
 	err := s.db.QueryRow(r.Context(), `
-		SELECT name, branch, COALESCE(framework, 'unknown')
-		FROM deployments WHERE id = $1
-	`, id).Scan(&params.Name, &params.Branch, &params.Framework)
+		SELECT id::text, name, branch, COALESCE(framework, 'unknown')
+		FROM deployment_apps WHERE id = $1 AND deployment_id = $2
+	`, appID, deploymentID).Scan(&params.AppID, &params.Name, &params.Branch, &params.Framework)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "deployment not found")
+		writeError(w, http.StatusNotFound, "app not found")
 		return
 	}
 

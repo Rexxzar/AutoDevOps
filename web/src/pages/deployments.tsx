@@ -8,11 +8,11 @@ import {
   Filter,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { PageHeader } from '@/components/layout/page-header'
 import { Button } from '@/components/ui/button'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { ProviderTag, targetLabel, frameworkLabel } from '@/components/meta-tags'
-import { DeploymentDrawer } from '@/components/deployment-drawer'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { Deployment, Provider, Target } from '@/lib/mock-data'
@@ -84,8 +84,8 @@ const filters: { label: string; value: 'all' | StatusKind }[] = [
 ]
 
 export function DeploymentsPage() {
+  const navigate = useNavigate()
   const [active, setActive] = useState<'all' | StatusKind>('all')
-  const [selected, setSelected] = useState<Deployment | null>(null)
 
   const { data: raw = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ['deployments'],
@@ -166,7 +166,7 @@ export function DeploymentsPage() {
           {filtered.map((d, i) => (
             <button
               key={d.id}
-              onClick={() => setSelected(d)}
+              onClick={() => navigate(`/deployments/${d.id}`)}
               className={cn(
                 'flex w-full flex-col gap-3 px-4 py-4 text-left transition-colors hover:bg-accent/40 lg:flex-row lg:items-center lg:gap-4 lg:px-5',
                 i !== filtered.length - 1 && 'border-b border-border',
@@ -210,8 +210,6 @@ export function DeploymentsPage() {
           ))}
         </div>
       </div>
-
-      <DeploymentDrawer deployment={selected} onClose={() => setSelected(null)} />
     </div>
   )
 }

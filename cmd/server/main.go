@@ -86,12 +86,16 @@ func main() {
 
 	dockerMgr := startDockerManager(ctx, cfg, pool, hub, reposDir)
 	var dockerDeployer deploy.DockerDeployer
+	var imagePusher deploy.ImagePusher
+	var imageSaver deploy.ImageSaver
 	if dockerMgr != nil {
 		dockerDeployer = dockerMgr
+		imagePusher = dockerMgr
+		imageSaver = dockerMgr
 	}
 
 	complianceScanner := compliance.New(pool, hub, cfg.ComplianceThreshold)
-	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, kubeDeployer, dockerDeployer, complianceScanner)
+	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, cfg.IngressDomain, kubeDeployer, dockerDeployer, imagePusher, imageSaver, complianceScanner)
 
 	var tfRunner *terraform.Runner
 	if tfExecPath != "" {
@@ -107,10 +111,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	consoleManager := console.NewManager(console.NewRegistry(pool, vault))
+	consoleManager := console.NewManager(console.NewRegistry(pool, vault, cfg.KubeconfigPath))
 	go consoleManager.Run(ctx)
 
-	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, k8sCtrl, dockerMgr, cfg.PublicIP)
+	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, k8sCtrl, dockerMgr, cfg.PublicIP, cfg.IngressDomain)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),

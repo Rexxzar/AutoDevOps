@@ -48,6 +48,10 @@ export function Topbar() {
           <Plus className="size-4" />
           <span className="hidden sm:inline">New deployment</span>
         </Button>
+        <Button size="sm" className="gap-1.5" onClick={() => navigate('/new-resource')}>
+          <Plus className="size-4" />
+          <span className="hidden sm:inline">New resource</span>
+        </Button>
         <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label="Toggle theme">
           {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
         </Button>

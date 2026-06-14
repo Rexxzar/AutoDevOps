@@ -6,9 +6,9 @@ import (
 )
 
 var baseParams = WorkflowParams{
-	DeploymentID: "abc123",
-	Name:         "my-app",
-	Branch:       "main",
+	AppID:  "abc123",
+	Name:   "my-app",
+	Branch: "main",
 }
 
 func TestWorkflowContainsRequiredFields(t *testing.T) {
@@ -54,10 +54,10 @@ func TestWorkflowFrameworkSteps(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.framework, func(t *testing.T) {
 			out := Workflow(WorkflowParams{
-				DeploymentID: "dep1",
-				Name:         "svc",
-				Branch:       "main",
-				Framework:    tc.framework,
+				AppID:     "dep1",
+				Name:      "svc",
+				Branch:    "main",
+				Framework: tc.framework,
 			})
 			for _, want := range tc.want {
 				if !strings.Contains(out, want) {
@@ -70,10 +70,10 @@ func TestWorkflowFrameworkSteps(t *testing.T) {
 
 func TestWorkflowBranch(t *testing.T) {
 	out := Workflow(WorkflowParams{
-		DeploymentID: "dep1",
-		Name:         "svc",
-		Branch:       "develop",
-		Framework:    "go",
+		AppID:     "dep1",
+		Name:      "svc",
+		Branch:    "develop",
+		Framework: "go",
 	})
 	if !strings.Contains(out, "branches: [develop]") {
 		t.Error("branch not reflected in trigger")
@@ -83,24 +83,24 @@ func TestWorkflowBranch(t *testing.T) {
 	}
 }
 
-func TestWorkflowDeploymentID(t *testing.T) {
+func TestWorkflowAppID(t *testing.T) {
 	out := Workflow(WorkflowParams{
-		DeploymentID: "unique-deploy-id",
-		Name:         "svc",
-		Branch:       "main",
-		Framework:    "node",
+		AppID:     "unique-app-id",
+		Name:      "svc",
+		Branch:    "main",
+		Framework: "node",
 	})
-	if !strings.Contains(out, "/webhooks/github/unique-deploy-id") {
-		t.Error("deployment ID not in webhook URL")
+	if !strings.Contains(out, "/webhooks/github/unique-app-id") {
+		t.Error("app ID not in webhook URL")
 	}
 }
 
 func TestWorkflowCIBeforeDeploy(t *testing.T) {
 	out := Workflow(WorkflowParams{
-		DeploymentID: "dep1",
-		Name:         "svc",
-		Branch:       "main",
-		Framework:    "go",
+		AppID:     "dep1",
+		Name:      "svc",
+		Branch:    "main",
+		Framework: "go",
 	})
 	// "needs: ci" must appear in the deploy job
 	if !strings.Contains(out, "needs: ci") {
@@ -110,10 +110,10 @@ func TestWorkflowCIBeforeDeploy(t *testing.T) {
 
 func TestWorkflowNoPlaintextSecret(t *testing.T) {
 	out := Workflow(WorkflowParams{
-		DeploymentID: "dep1",
-		Name:         "svc",
-		Branch:       "main",
-		Framework:    "go",
+		AppID:     "dep1",
+		Name:      "svc",
+		Branch:    "main",
+		Framework: "go",
 	})
 	// Secret must only appear as a GitHub Actions secret reference, never as a
 	// literal value that could be committed to the repository.

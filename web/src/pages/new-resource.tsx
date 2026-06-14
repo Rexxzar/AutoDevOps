@@ -1,18 +1,18 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Loader2, CheckCircle2, AlertCircle, AlertTriangle, KeyRound } from 'lucide-react'
+import { ArrowLeft, Loader2, CheckCircle2, AlertCircle, AlertTriangle, KeyRound, Server, Cloud } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { TargetPill, FormField, inputCls, selectCls } from '@/components/deploy-form-fields'
 
-type Step = 'form' | 'preview' | 'success'
+type Step = 'select' | 'form' | 'preview' | 'success'
 type Provider = 'aws' | 'azure' | 'local'
 type AWSResource = 'ecs' | 'vm' | 'rds'
 type AzureResource = 'aci' | 'vm' | 'db'
-type LocalResource = 'docker' | 'k8s'
+export type LocalResource = 'docker' | 'k8s'
 type NetworkMode = 'new' | 'existing'
 
 const LOCAL_IMAGE_PRESETS = ['nginx:latest', 'redis:7-alpine', 'postgres:16', 'busybox']
@@ -306,7 +306,16 @@ function AzureDBFields({ v, set }: { v: Record<string,string>; set: (k: string, 
 }
 
 // ─── Local resource sub-fields ────────────────────────────────────
-function LocalFields({ v, set, resourceType }: { v: Record<string,string>; set: (k: string, val: string) => void; resourceType: LocalResource }) {
+// Exported so resource-detail.tsx's edit dialog can reuse the same fields
+// (image, container port, host port, network, expose-via-ingress) for editing
+// an existing local resource.
+export function LocalFields({ v, set, resourceType }: { v: Record<string,string>; set: (k: string, val: string) => void; resourceType: LocalResource }) {
+  const { data: networks = [] } = useQuery({
+    queryKey: ['docker-networks'],
+    queryFn: () => apiFetch<{ id: string; name: string }[]>('/docker/networks'),
+    enabled: resourceType === 'docker',
+  })
+
   return (
     <>
       <SectionDivider label={resourceType === 'docker' ? 'Docker container options' : 'Kubernetes workload options'} />
@@ -331,6 +340,48 @@ function LocalFields({ v, set, resourceType }: { v: Record<string,string>; set: 
           placeholder="80" required className={inputCls}
         />
       </FormField>
+      {resourceType === 'docker' && (
+        <FormField label="Host port" hint="optional — leave blank for an auto-assigned port (8100-8999)">
+          <input
+            type="number" min={1} max={65535}
+            value={v.host_port ?? ''} onChange={e => set('host_port', e.target.value)}
+            placeholder="auto" className={inputCls}
+          />
+        </FormField>
+      )}
+      {resourceType === 'docker' && (
+        <FormField label="Docker network" hint="which bridge network the container is attached to">
+          <select
+            value={v.create_network === 'true' ? '__new__' : (v.network ?? '')}
+            onChange={e => {
+              const val = e.target.value
+              if (val === '__new__') {
+                set('create_network', 'true')
+                set('network', '')
+              } else {
+                set('create_network', '')
+                set('network', val)
+              }
+            }}
+            className={selectCls}
+          >
+            <option value="">autodevops (default)</option>
+            {networks.filter(n => n.name !== 'autodevops').map(n => (
+              <option key={n.id} value={n.name}>{n.name}</option>
+            ))}
+            <option value="__new__">+ Create new network…</option>
+          </select>
+          {v.create_network === 'true' && (
+            <input
+              value={v.network ?? ''}
+              onChange={e => set('network', e.target.value)}
+              placeholder="my-custom-network"
+              required
+              className={cn(inputCls, 'mt-1.5')}
+            />
+          )}
+        </FormField>
+      )}
       {resourceType === 'k8s' && (
         <label className="flex items-center gap-2 text-sm">
           <input
@@ -350,7 +401,7 @@ function LocalFields({ v, set, resourceType }: { v: Record<string,string>; set: 
 export function NewResourcePage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const [step, setStep] = useState<Step>('form')
+  const [step, setStep] = useState<Step>('select')
 
   const [provider, setProvider] = useState<Provider>('aws')
   const [cloudAccountID, setCloudAccountID] = useState('')
@@ -476,19 +527,77 @@ export function NewResourcePage() {
       <div className="flex h-14 items-center gap-3 border-b border-border px-6">
         <button
           onClick={() => {
-            if (step === 'form') navigate(-1)
+            if (step === 'select') navigate(-1)
+            else if (step === 'form') setStep('select')
             else if (step === 'preview') setStep('form')
-            else navigate('/resources')
+            else navigate(success?.provider === 'local' ? '/local-resources' : '/resources')
           }}
           className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <ArrowLeft className="size-4" />
-          {step === 'form' ? 'Back' : step === 'preview' ? 'Edit' : 'View resources'}
+          {step === 'select' || step === 'form' ? 'Back' : step === 'preview' ? 'Edit' : 'View resources'}
         </button>
         <span className="text-sm font-semibold">New Resource</span>
       </div>
 
       <div className="flex flex-1 items-start justify-center p-8 pt-12">
+
+        {/* ── Select target ── */}
+        {step === 'select' && (
+          <div className="w-full max-w-2xl space-y-6">
+            <div className="space-y-1 text-center">
+              <h1 className="text-xl font-bold">New Resource</h1>
+              <p className="text-sm text-muted-foreground">Choose where this resource should run</p>
+            </div>
+            <div className="flex items-stretch gap-0">
+              <button
+                onClick={() => { setProvider('local'); setStep('form') }}
+                className="group flex flex-1 flex-col items-center gap-5 rounded-2xl border border-border bg-card p-10 text-center transition-all duration-200 hover:scale-[1.03] hover:border-ring/40 hover:shadow-xl"
+              >
+                <div className="flex size-16 items-center justify-center rounded-2xl border border-border bg-background transition-colors group-hover:border-ring/30 group-hover:bg-accent">
+                  <Server className="size-7 text-foreground" />
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-lg font-semibold">Local</p>
+                  <p className="text-xs text-muted-foreground leading-relaxed max-w-[180px]">
+                    Run a standalone Docker container or Kubernetes workload on this machine
+                  </p>
+                </div>
+                <div className="flex gap-2 flex-wrap justify-center">
+                  {['Docker', 'Kubernetes'].map((t) => (
+                    <span key={t} className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">{t}</span>
+                  ))}
+                </div>
+              </button>
+
+              <div className="flex flex-col items-center justify-center px-6 gap-2">
+                <div className="flex-1 w-px bg-border" />
+                <span className="text-[0.65rem] font-medium text-muted-foreground/60 uppercase tracking-widest">or</span>
+                <div className="flex-1 w-px bg-border" />
+              </div>
+
+              <button
+                onClick={() => { setProvider('aws'); setStep('form') }}
+                className="group flex flex-1 flex-col items-center gap-5 rounded-2xl border border-border bg-card p-10 text-center transition-all duration-200 hover:scale-[1.03] hover:border-ring/40 hover:shadow-xl"
+              >
+                <div className="flex size-16 items-center justify-center rounded-2xl border border-border bg-background transition-colors group-hover:border-ring/30 group-hover:bg-accent">
+                  <Cloud className="size-7 text-foreground" />
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-lg font-semibold">Cloud</p>
+                  <p className="text-xs text-muted-foreground leading-relaxed max-w-[180px]">
+                    Provision standalone infrastructure on AWS or Azure via the Terraform engine
+                  </p>
+                </div>
+                <div className="flex gap-2 flex-wrap justify-center">
+                  {['ECS Fargate', 'EC2', 'RDS', 'ACI', 'VM', 'Database'].map((t) => (
+                    <span key={t} className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">{t}</span>
+                  ))}
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── Form ── */}
         {step === 'form' && (
@@ -502,13 +611,14 @@ export function NewResourcePage() {
               </p>
             </div>
             <form onSubmit={handleSubmit} className="space-y-4">
-              <FormField label="Provider">
-                <div className="flex gap-2">
-                  <TargetPill label="AWS" active={provider === 'aws'} onClick={() => { setProvider('aws'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
-                  <TargetPill label="Azure" active={provider === 'azure'} onClick={() => { setProvider('azure'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
-                  <TargetPill label="Local" active={provider === 'local'} onClick={() => { setProvider('local'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
-                </div>
-              </FormField>
+              {provider !== 'local' && (
+                <FormField label="Provider">
+                  <div className="flex gap-2">
+                    <TargetPill label="AWS" active={provider === 'aws'} onClick={() => { setProvider('aws'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
+                    <TargetPill label="Azure" active={provider === 'azure'} onClick={() => { setProvider('azure'); setCloudAccountID(''); clearOpts(); resetNetwork() }} />
+                  </div>
+                </FormField>
+              )}
 
               {provider !== 'local' && (
                 <FormField label="Cloud account">
@@ -686,10 +796,10 @@ export function NewResourcePage() {
                 : 'The Terraform plan is running. Watch the Resources page for live status — apply it once the plan succeeds.'}
             </p>
             <div className="flex gap-3">
-              <Button variant="outline" className="flex-1" onClick={() => { setStep('form'); setName(''); setRegion(''); setCloudAccountID(''); setPreviewConfig(''); clearOpts(); resetNetwork() }}>
+              <Button variant="outline" className="flex-1" onClick={() => { setStep('select'); setName(''); setRegion(''); setCloudAccountID(''); setPreviewConfig(''); clearOpts(); resetNetwork() }}>
                 New resource
               </Button>
-              <Button className="flex-1" onClick={() => navigate('/resources')}>View resources</Button>
+              <Button className="flex-1" onClick={() => navigate(success.provider === 'local' ? '/local-resources' : '/resources')}>View resources</Button>
             </div>
           </div>
         )}

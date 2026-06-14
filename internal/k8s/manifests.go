@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"sort"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -52,18 +53,10 @@ func managedLabels(name string) map[string]string {
 	}
 }
 
-func buildNamespace(deploymentName string) *corev1.Namespace {
-	return &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   namespaceName(deploymentName),
-			Labels: managedLabels(deploymentName),
-		},
-	}
-}
-
-// buildResourceNamespace builds the Namespace for a standalone "local"
-// Resource, using the caller-supplied namespace name (ResourceNamespace(name))
-// rather than the "autodevops-<name>" prefix buildNamespace derives.
+// buildResourceNamespace builds the Namespace for a stack's app or a
+// standalone "local" Resource, using the caller-supplied namespace name
+// (stack-derived for apps via internal/deploy's namespaceName, or
+// ResourceNamespace(name) for standalone Resources).
 func buildResourceNamespace(name, namespace string) *corev1.Namespace {
 	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -73,7 +66,24 @@ func buildResourceNamespace(name, namespace string) *corev1.Namespace {
 	}
 }
 
-func buildDeployment(name, namespace, imageRef string) *appsv1.Deployment {
+// sortedEnvVars converts a map of extra environment variables (T-Phase3
+// resolveLinks output) into a deterministically-ordered []corev1.EnvVar —
+// sorted by key so repeated applies of the same link set produce an
+// identical Deployment spec (avoids spurious diffs/restarts).
+func sortedEnvVars(env map[string]string) []corev1.EnvVar {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	vars := make([]corev1.EnvVar, 0, len(keys))
+	for _, k := range keys {
+		vars = append(vars, corev1.EnvVar{Name: k, Value: env[k]})
+	}
+	return vars
+}
+
+func buildDeployment(name, namespace, imageRef string, extraEnv map[string]string) *appsv1.Deployment {
 	replicas := int32(1)
 	labels := managedLabels(name)
 
@@ -98,9 +108,9 @@ func buildDeployment(name, namespace, imageRef string) *appsv1.Deployment {
 							Ports: []corev1.ContainerPort{
 								{ContainerPort: paketoPort, Protocol: corev1.ProtocolTCP},
 							},
-							Env: []corev1.EnvVar{
+							Env: append([]corev1.EnvVar{
 								{Name: "PORT", Value: "8080"},
-							},
+							}, sortedEnvVars(extraEnv)...),
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -131,7 +141,7 @@ func buildHealthSidecar(appName string) corev1.Container {
 		`sleep 30; done`
 	return corev1.Container{
 		Name:    "health-checker",
-		Image:   "curlimages/curl:8",
+		Image:   "curlimages/curl:8.13.0",
 		Command: []string{"/bin/sh", "-c"},
 		Args:    []string{script},
 		Resources: corev1.ResourceRequirements{
@@ -169,11 +179,14 @@ func buildService(name, namespace string) *corev1.Service {
 }
 
 // buildResourceDeployment is like buildDeployment but for standalone "local"
-// Resources (provider='local', resource_type='k8s'): the container port is
-// caller-supplied (not hardcoded to the Paketo 8080 contract), no PORT env
-// var is injected, and there is no health-checker sidecar — arbitrary public
-// images don't follow either convention.
-func buildResourceDeployment(name, namespace, imageRef string, port int32) *appsv1.Deployment {
+// Resources (provider='local', resource_type='k8s') and Phase-4 "image"-kind
+// apps: the container port is caller-supplied (not hardcoded to the Paketo
+// 8080 contract), no PORT env var is injected, and there is no health-checker
+// sidecar — arbitrary public images don't follow either convention. env is
+// applied as-is (sorted for deterministic re-applies) — e.g. POSTGRES_PASSWORD
+// for a postgres:16 image app; pass nil for standalone Resources, which have
+// no env-var concept.
+func buildResourceDeployment(name, namespace, imageRef string, port int32, env map[string]string) *appsv1.Deployment {
 	replicas := int32(1)
 	labels := managedLabels(name)
 
@@ -198,6 +211,7 @@ func buildResourceDeployment(name, namespace, imageRef string, port int32) *apps
 							Ports: []corev1.ContainerPort{
 								{ContainerPort: port, Protocol: corev1.ProtocolTCP},
 							},
+							Env: sortedEnvVars(env),
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("100m"),

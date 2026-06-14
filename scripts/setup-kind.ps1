@@ -26,13 +26,21 @@ if ($clusters -contains $CLUSTER_NAME) {
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create cluster"; exit 1 }
 }
 
-# 3. Connect registry to kind Docker network
+# 3. Connect registry to kind Docker network with a `registry.local` alias
+# (containerd's registry-mirror config in kind-config.yaml points at
+# registry.local:5000 - without this alias, in-cluster image pulls fail
+# with "no such host")
 $networkJson = docker network inspect kind 2>$null
-if ($networkJson -match $REGISTRY_NAME) {
-    Write-Host "[3/5] Registry already connected to kind network - skipping"
+if ($networkJson -match "registry\.local") {
+    Write-Host "[3/5] Registry already connected to kind network with registry.local alias - skipping"
 } else {
-    Write-Host "[3/5] Connecting registry to kind network..."
-    docker network connect kind $REGISTRY_NAME
+    if ($networkJson -match $REGISTRY_NAME) {
+        Write-Host "[3/5] Re-connecting registry to kind network with registry.local alias..."
+        docker network disconnect kind $REGISTRY_NAME
+    } else {
+        Write-Host "[3/5] Connecting registry to kind network..."
+    }
+    docker network connect --alias registry.local kind $REGISTRY_NAME
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to connect registry to network"; exit 1 }
 }
 

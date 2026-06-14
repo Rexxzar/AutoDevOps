@@ -50,17 +50,19 @@ func TestHostPort(t *testing.T) {
 }
 
 func TestCompose(t *testing.T) {
-	out := Compose("my-app", "localhost:5001/my-app:abc123", 8200)
+	out := Compose("my-stack", "my-app", "localhost:5001/my-app:abc123", 8200)
 
 	checks := []string{
 		"my-app:",
 		"image: localhost:5001/my-app:abc123",
-		"container_name: autodevops-my-app",
+		"container_name: my-stack-my-app",
 		"8200:8080",
 		"PORT=8080",
 		"autodevops.io/managed-by: autodevops",
-		"autodevops.io/deployment: my-app",
-		"networks:\n  autodevops:",
+		"autodevops.io/stack: my-stack",
+		"autodevops.io/app: my-app",
+		"aliases:\n          - my-app",
+		"networks:\n  autodevops-my-stack:",
 		"external: true",
 	}
 	for _, want := range checks {
@@ -86,7 +88,7 @@ func TestErrDockerNotFoundMessage(t *testing.T) {
 }
 
 func TestClassifyRunning(t *testing.T) {
-	h := classify("dep1", "my-app", "deployment", dockertypes.ContainerJSON{
+	h := classify("dep1", "my-app", "deployment", "my-stack-my-app", dockertypes.ContainerJSON{
 		ContainerJSONBase: &dockertypes.ContainerJSONBase{
 			ID:    "abc123def456789",
 			State: &dockertypes.ContainerState{Status: "running"},
@@ -98,13 +100,16 @@ func TestClassifyRunning(t *testing.T) {
 	if h.ContainerID != "abc123def456" {
 		t.Errorf("ContainerID = %q, want abc123def456", h.ContainerID)
 	}
-	if h.DeploymentID != "dep1" || h.Kind != "deployment" {
-		t.Errorf("DeploymentID/Kind = %q/%q, want dep1/deployment", h.DeploymentID, h.Kind)
+	if h.AppID != "dep1" || h.Kind != "deployment" {
+		t.Errorf("AppID/Kind = %q/%q, want dep1/deployment", h.AppID, h.Kind)
+	}
+	if h.ContainerName != "my-stack-my-app" {
+		t.Errorf("ContainerName = %q, want my-stack-my-app", h.ContainerName)
 	}
 }
 
 func TestClassifyExited(t *testing.T) {
-	h := classify("dep1", "my-app", "deployment", dockertypes.ContainerJSON{
+	h := classify("dep1", "my-app", "deployment", "my-stack-my-app", dockertypes.ContainerJSON{
 		ContainerJSONBase: &dockertypes.ContainerJSONBase{
 			ID:    "abc123def456789",
 			State: &dockertypes.ContainerState{Status: "exited", ExitCode: 1},
@@ -120,14 +125,14 @@ func TestClassifyExited(t *testing.T) {
 
 func TestClassifyNotFound(t *testing.T) {
 	notFoundErr := &notFoundError{}
-	h := classify("dep1", "my-app", "deployment", dockertypes.ContainerJSON{}, notFoundErr)
+	h := classify("dep1", "my-app", "deployment", "my-stack-my-app", dockertypes.ContainerJSON{}, notFoundErr)
 	if h.Status != "missing" {
 		t.Errorf("classify not found = %q, want missing", h.Status)
 	}
 }
 
 func TestClassifyResourceKind(t *testing.T) {
-	h := classify("res1", "my-resource", "resource", dockertypes.ContainerJSON{
+	h := classify("res1", "my-resource", "resource", "autodevops-my-resource", dockertypes.ContainerJSON{
 		ContainerJSONBase: &dockertypes.ContainerJSONBase{
 			ID:    "abc123def456789",
 			State: &dockertypes.ContainerState{Status: "running"},
@@ -136,8 +141,8 @@ func TestClassifyResourceKind(t *testing.T) {
 	if h.ResourceID != "res1" || h.Kind != "resource" {
 		t.Errorf("ResourceID/Kind = %q/%q, want res1/resource", h.ResourceID, h.Kind)
 	}
-	if h.DeploymentID != "" {
-		t.Errorf("DeploymentID = %q, want empty for resource kind", h.DeploymentID)
+	if h.AppID != "" {
+		t.Errorf("AppID = %q, want empty for resource kind", h.AppID)
 	}
 }
 

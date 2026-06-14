@@ -20,17 +20,18 @@ import (
 
 // ContainerHealth is the classified state of a managed container, published
 // via SSE as "container.health" after every poll tick — mirrors k8s.PodHealth.
-// Kind distinguishes which entity Name/DeploymentID/ResourceID refers to:
-// "deployment" (git-deploy, internal/deploy) or "resource" (standalone local
-// Resource, provider='local' resource_type='docker').
+// Kind distinguishes which entity Name/AppID/ResourceID refers to: "deployment"
+// (git-deploy app, internal/deploy) or "resource" (standalone local Resource,
+// provider='local' resource_type='docker').
 type ContainerHealth struct {
-	DeploymentID string `json:"deployment_id,omitempty"`
-	ResourceID   string `json:"resource_id,omitempty"`
-	Kind         string `json:"kind"` // "deployment" | "resource"
-	Name         string `json:"name"` // deployment/resource name, not container name
-	ContainerID  string `json:"container_id,omitempty"`
-	Status       string `json:"status"` // "running" | "stopped" | "failed" | "missing" | "unknown"
-	Reason       string `json:"reason,omitempty"`
+	AppID         string `json:"app_id,omitempty"`
+	ResourceID    string `json:"resource_id,omitempty"`
+	Kind          string `json:"kind"`           // "deployment" | "resource"
+	Name          string `json:"name"`           // app/resource name, not container name
+	ContainerName string `json:"container_name,omitempty"`
+	ContainerID   string `json:"container_id,omitempty"`
+	Status        string `json:"status"` // "running" | "stopped" | "failed" | "missing" | "unknown"
+	Reason        string `json:"reason,omitempty"`
 }
 
 // ErrDockerNotFound is returned by DockerDeploy when the daemon is unreachable.
@@ -108,19 +109,21 @@ func (m *Manager) Run(ctx context.Context) error {
 
 func (m *Manager) checkAll(ctx context.Context) {
 	rows, err := m.pool.Query(ctx, `
-		SELECT id::text, name FROM deployments
-		WHERE target_type = 'container' AND status = 'running'
+		SELECT da.id::text, d.name, da.name
+		FROM deployment_apps da
+		JOIN deployments d ON d.id = da.deployment_id
+		WHERE da.target_kind = 'local_docker' AND da.status = 'running'
 	`)
 	if err != nil {
-		slog.Error("docker: query running container deployments", "error", err)
+		slog.Error("docker: query running container apps", "error", err)
 	} else {
 		for rows.Next() {
-			var depID, name string
-			if err := rows.Scan(&depID, &name); err != nil {
-				slog.Error("docker: scan deployment row", "error", err)
+			var appID, stackName, appName string
+			if err := rows.Scan(&appID, &stackName, &appName); err != nil {
+				slog.Error("docker: scan app row", "error", err)
 				continue
 			}
-			m.checkContainer(ctx, depID, name, "deployment")
+			m.checkContainer(ctx, appID, appName, "deployment", appContainerName(stackName, appName))
 		}
 		rows.Close()
 	}
@@ -142,32 +145,58 @@ func (m *Manager) checkAll(ctx context.Context) {
 			slog.Error("docker: scan resource row", "error", err)
 			continue
 		}
-		m.checkContainer(ctx, resID, name, "resource")
+		m.checkContainer(ctx, resID, name, "resource", containerName(name))
 	}
 }
 
-func (m *Manager) checkContainer(ctx context.Context, id, name, kind string) {
-	inspect, err := m.client.ContainerInspect(ctx, containerName(name))
-	h := classify(id, name, kind, inspect, err)
+func (m *Manager) checkContainer(ctx context.Context, id, name, kind, cname string) {
+	inspect, err := m.client.ContainerInspect(ctx, cname)
+	h := classify(id, name, kind, cname, inspect, err)
 	m.hub.Publish(sse.Event{Type: "container.health", Payload: h})
 	m.healer.handle(ctx, h)
 }
 
-// containerName returns the deterministic Docker container name for a deployment:
-// "autodevops-<name>" with underscores→hyphens and lower-cased.
-func containerName(deploymentName string) string {
-	return "autodevops-" + strings.ToLower(strings.ReplaceAll(deploymentName, "_", "-"))
+// sanitizeDockerName lower-cases and replaces underscores with hyphens, the
+// shared transform behind containerName, stackNetworkName, and appContainerName.
+func sanitizeDockerName(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+}
+
+// containerName returns the deterministic Docker container name for a
+// standalone "local" Resource: "autodevops-<name>" with underscores→hyphens
+// and lower-cased.
+func containerName(name string) string {
+	return "autodevops-" + sanitizeDockerName(name)
+}
+
+// stackNetworkName returns the deterministic per-stack Docker bridge network
+// name: "autodevops-<stackName>" with underscores→hyphens and lower-cased.
+// Shared by every app in the stack that targets local Docker.
+func stackNetworkName(stackName string) string {
+	return "autodevops-" + sanitizeDockerName(stackName)
+}
+
+// appContainerName returns the deterministic Docker container name for an app
+// within a stack: "<stackName>-<appName>" with underscores→hyphens and
+// lower-cased. Docker container names are global, so the stack name keeps
+// same-named apps in different stacks from colliding; the app's network alias
+// (just appName, set at container-create time) is what other apps in the
+// stack use for short-name resolution.
+func appContainerName(stackName, appName string) string {
+	return sanitizeDockerName(stackName) + "-" + sanitizeDockerName(appName)
 }
 
 // classify converts a ContainerInspect result into a ContainerHealth value.
-// Pure function — no I/O. id is the deployment or resource UUID depending on
-// kind ("deployment" | "resource").
-func classify(id, name, kind string, inspect dockertypes.ContainerJSON, inspectErr error) ContainerHealth {
-	h := ContainerHealth{Name: name, Kind: kind}
+// Pure function — no I/O. id is the app or resource UUID depending on kind
+// ("deployment" | "resource"); cname is the container's Docker name, already
+// resolved by the caller (appContainerName for apps, containerName for
+// resources).
+func classify(id, name, kind, cname string, inspect dockertypes.ContainerJSON, inspectErr error) ContainerHealth {
+	h := ContainerHealth{Name: name, Kind: kind, ContainerName: cname}
 	if kind == "resource" {
 		h.ResourceID = id
 	} else {
-		h.DeploymentID = id
+		h.AppID = id
 	}
 	if inspectErr != nil {
 		if dockerclient.IsErrNotFound(inspectErr) {

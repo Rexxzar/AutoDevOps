@@ -62,12 +62,12 @@ func headSHA12(repoPath string) (string, error) {
 //
 // The pack client is initialised per call — cheap (just an HTTP client to the
 // Docker daemon) and safe across daemon restarts between deployments.
-func (o *Orchestrator) buildImage(ctx context.Context, deploymentID, deploymentName, repoPath string) (retErr error) {
+func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath string, extraEnv map[string]string) (retErr error) {
 	// On any error path, persist "failed" so status never stays stuck at "building".
 	defer func() {
 		if retErr != nil {
-			if dep, err := o.persistStatus(ctx, deploymentID, "failed"); err != nil {
-				slog.Error("deploy: persist failed status", "deployment_id", deploymentID, "error", err)
+			if dep, err := o.persistStatus(ctx, appID, "failed"); err != nil {
+				slog.Error("deploy: persist failed status", "app_id", appID, "error", err)
 			} else {
 				o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			}
@@ -79,37 +79,61 @@ func (o *Orchestrator) buildImage(ctx context.Context, deploymentID, deploymentN
 		return err
 	}
 
-	pushRef, pullRef := o.imageRefs(deploymentName, sha12)
+	pushRef, pullRef := o.imageRefs(appName, sha12)
 
 	slog.Info("deploy: starting pack build",
-		"deployment_id", deploymentID,
+		"app_id", appID,
 		"push_ref", pushRef,
 		"builder", o.builderImage,
 	)
+
+	if o.pusher == nil {
+		return fmt.Errorf("deploy: no image pusher configured (Docker daemon unavailable)")
+	}
 
 	packClient, err := packclient.NewClient(packclient.WithLogger(&slogPackLogger{}))
 	if err != nil {
 		return fmt.Errorf("deploy: init pack client: %w", err)
 	}
 
+	// Publish: false builds into the host Docker daemon's local image store
+	// instead of pushing directly from pack's lifecycle containers — those run
+	// in their own network namespace and can't reach the registry via its
+	// host-mapped "localhost:<port>" address. o.pusher.PushImage below pushes
+	// from the host daemon instead, which resolves localhost registries fine.
+	//
+	// TrustBuilder: pack's default IsKnownTrustedBuilder does an exact string
+	// match against builder image names with NO tag, so our configured
+	// "paketobuildpacks/builder-jammy-full:latest" (with tag) doesn't match and
+	// pack falls back to the untrusted 5-phase flow — which hits a
+	// "/layers/group.toml: permission denied" error on this Docker setup.
+	// builderImage is server config (not user input) and is one of pack's
+	// officially trusted Paketo builders, so trusting it here is safe and
+	// restores the single-container "creator" flow.
 	if err := packClient.Build(ctx, packclient.BuildOptions{
-		Image:      pushRef,
-		Builder:    o.builderImage,
-		AppPath:    repoPath,
-		Publish:    true,
-		PullPolicy: image.PullIfNotPresent,
+		Image:        pushRef,
+		Builder:      o.builderImage,
+		AppPath:      repoPath,
+		Publish:      false,
+		PullPolicy:   image.PullIfNotPresent,
+		TrustBuilder: func(string) bool { return true },
+		Env:          extraEnv,
 	}); err != nil {
 		return fmt.Errorf("deploy: pack build %s: %w", pushRef, err)
 	}
 
-	dep, err := o.persistImageRef(ctx, deploymentID, pullRef)
+	if err := o.pusher.PushImage(ctx, pushRef); err != nil {
+		return fmt.Errorf("deploy: push %s: %w", pushRef, err)
+	}
+
+	dep, err := o.persistImageRef(ctx, appID, pullRef)
 	if err != nil {
 		return err
 	}
 	// Success: clear deferred "failed" path by publishing the deploying event here.
 	o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 	slog.Info("deploy: image built and pushed",
-		"deployment_id", deploymentID,
+		"app_id", appID,
 		"image_ref", pullRef,
 	)
 	return nil

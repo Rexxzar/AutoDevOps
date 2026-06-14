@@ -351,9 +351,7 @@ func seedDeployment(t *testing.T, pool *pgxpool.Pool) string {
 
 	var id string
 	err := pool.QueryRow(ctx, `
-		INSERT INTO deployments (name, repo_url, target_type)
-		VALUES ($1, 'https://example.invalid/runner-test.git', 'container')
-		RETURNING id
+		INSERT INTO deployments (name) VALUES ($1) RETURNING id
 	`, fmt.Sprintf("tf-runner-test-%d", time.Now().UnixNano())).Scan(&id)
 	if err != nil {
 		t.Fatalf("seed test deployment: %v", err)

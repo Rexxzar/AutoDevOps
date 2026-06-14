@@ -1,25 +1,19 @@
-import { Fragment, useState, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Cloud, RefreshCw, Server, Database, Plus, Play, Trash2, ChevronDown, ChevronRight, Loader2, X, AlertTriangle } from 'lucide-react'
+import { Cloud, RefreshCw, Server, Database, Plus, X } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ProviderTag } from '@/components/meta-tags'
-import { StatusBadge, type StatusKind } from '@/components/ui/status'
+import { ProvisionedTable } from '@/components/provisioned-table'
 import { apiFetch } from '@/lib/api'
 import { useSSE } from '@/lib/use-sse'
 import { useAuth } from '@/lib/auth'
+import { useProvisionedResources } from '@/lib/use-provisioned-resources'
 import { cn } from '@/lib/utils'
 import type { Provider } from '@/lib/mock-data'
-import {
-  type ProvisionedResource,
-  type TerraformRun,
-  provisionedTypeLabel,
-  provisionedStatusMeta,
-  formatRelativeTime,
-  friendlyTerraformError,
-} from '@/lib/resources'
+import { formatRelativeTime } from '@/lib/resources'
 
 interface CloudResource {
   id: string
@@ -86,10 +80,11 @@ export function ResourcesPage() {
   const qc = useQueryClient()
   const [filter, setFilter] = useState<'all' | 'aws' | 'azure'>('all')
   const [resources, setResources] = useState<CloudResource[]>([])
-  const [provisioned, setProvisioned] = useState<ProvisionedResource[]>([])
-  const [runs, setRuns] = useState<TerraformRun[]>([])
-  const [expanded, setExpanded] = useState<string | null>(null)
-  const [actingOn, setActingOn] = useState<Record<string, 'apply' | 'destroy'>>({})
+
+  const {
+    provisioned, runs, expanded, setExpanded, actingOn, provisionedLoading,
+    handleApply, handleDestroy, handleDismiss,
+  } = useProvisionedResources()
 
   const { isLoading, refetch, isFetching } = useQuery({
     queryKey: ['cloud-resources'],
@@ -101,82 +96,13 @@ export function ResourcesPage() {
     refetchInterval: 60_000,
   })
 
-  const { isLoading: provisionedLoading } = useQuery({
-    queryKey: ['resources'],
-    queryFn: async () => {
-      const data = await apiFetch<ProvisionedResource[]>('/resources')
-      setProvisioned(data)
-      return data
-    },
-    refetchInterval: 30_000,
-  })
-
-  useQuery({
-    queryKey: ['terraform-runs'],
-    queryFn: async () => {
-      const data = await apiFetch<TerraformRun[]>('/terraform/runs')
-      setRuns(data)
-      return data
-    },
-    refetchInterval: 30_000,
-  })
-
-  useSSE(token, useCallback((type: string, data: unknown) => {
+  useSSE(token, useCallback((type: string) => {
     if (type === 'cloud.resource') {
       // Poller payloads don't carry the DB row id, account name, or
       // dedupe info that the table needs — just refetch the inventory.
       qc.invalidateQueries({ queryKey: ['cloud-resources'] })
-    } else if (type === 'resource') {
-      const r = data as ProvisionedResource
-      setProvisioned((prev) => {
-        const idx = prev.findIndex((x) => x.id === r.id)
-        if (idx >= 0) {
-          const next = [...prev]
-          next[idx] = r
-          return next
-        }
-        return [r, ...prev]
-      })
-    } else if (type === 'terraform.run') {
-      const run = data as TerraformRun
-      setRuns((prev) => {
-        const idx = prev.findIndex((x) => x.id === run.id)
-        if (idx >= 0) {
-          const next = [...prev]
-          next[idx] = run
-          return next
-        }
-        return [run, ...prev]
-      })
     }
   }, [qc]))
-
-  async function handleApply(id: string) {
-    setActingOn((prev) => ({ ...prev, [id]: 'apply' }))
-    try {
-      await apiFetch(`/resources/${id}/apply`, { method: 'POST' })
-    } catch { /* status surfaces via "resource" SSE event */ }
-    finally {
-      setActingOn((prev) => { const next = { ...prev }; delete next[id]; return next })
-    }
-  }
-
-  async function handleDestroy(id: string) {
-    setActingOn((prev) => ({ ...prev, [id]: 'destroy' }))
-    try {
-      await apiFetch(`/resources/${id}/destroy`, { method: 'POST' })
-    } catch { /* status surfaces via "resource" SSE event */ }
-    finally {
-      setActingOn((prev) => { const next = { ...prev }; delete next[id]; return next })
-    }
-  }
-
-  async function handleDismissResource(id: string) {
-    try {
-      await apiFetch(`/resources/${id}/dismiss`, { method: 'POST' })
-      setProvisioned((prev) => prev.filter((p) => p.id !== id))
-    } catch { /* leave it listed if the dismiss failed */ }
-  }
 
   async function handleDismissCloudResource(id: string) {
     try {
@@ -186,11 +112,12 @@ export function ResourcesPage() {
   }
 
   const filtered = filter === 'all' ? resources : resources.filter((r) => r.provider === filter)
+  const cloudProvisioned = provisioned.filter((r) => r.provider !== 'local')
 
   return (
     <div>
       <PageHeader
-        title="Resources"
+        title="Cloud Resources"
         description="Provision standalone cloud infrastructure and view live AWS + Azure inventory."
       >
         <Button size="sm" className="gap-1.5" onClick={() => navigate('/new-resource')}>
@@ -200,148 +127,22 @@ export function ResourcesPage() {
       </PageHeader>
 
       <div className="p-4 lg:p-6 space-y-6">
-        {/* ── Provisioned Resources ── */}
+        {/* ── Provisioned Cloud Resources ── */}
         <div className="space-y-3">
-          <h2 className="text-sm font-semibold">Provisioned Resources</h2>
-          <Card className="overflow-hidden">
-            {provisionedLoading && (
-              <div className="py-12 text-center text-sm text-muted-foreground">Loading resources…</div>
-            )}
-            {!provisionedLoading && provisioned.length === 0 && (
-              <div className="flex flex-col items-center gap-3 py-16 text-center">
-                <div className="flex size-10 items-center justify-center rounded-lg border border-border bg-card">
-                  <Cloud className="size-4 text-muted-foreground" />
-                </div>
-                <p className="text-sm text-muted-foreground max-w-xs text-pretty">
-                  No provisioned resources yet. Click New Resource to plan and apply standalone infrastructure.
-                </p>
-              </div>
-            )}
-            {provisioned.length > 0 && (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border">
-                    {['', 'Provider', 'Name', 'Type', 'Region', 'Status', 'Updated', 'Actions'].map((h) => (
-                      <th key={h} className="px-4 py-3 text-left text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {provisioned.map((res) => {
-                    const meta = provisionedStatusMeta[res.status] ?? { kind: 'unknown' as StatusKind, label: res.status }
-                    const action = actingOn[res.id]
-                    const isTransitional = res.status === 'pending' || res.status === 'applying' || res.status === 'destroying'
-                    const latestRun = runs.find((r) => r.resource_id === res.id)
-                    const isExpanded = expanded === res.id
-                    return (
-                      <Fragment key={res.id}>
-                        <tr className="hover:bg-accent/30 transition-colors">
-                          <td className="px-2 py-3 w-8">
-                            <button
-                              onClick={() => setExpanded(isExpanded ? null : res.id)}
-                              className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                              aria-label="Toggle plan output"
-                            >
-                              {isExpanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                            </button>
-                          </td>
-                          <td className="px-4 py-3">
-                            <ProviderTag provider={res.provider as Provider} />
-                          </td>
-                          <td className="px-4 py-3 font-medium">
-                            <button
-                              onClick={() => navigate(`/resources/${res.id}`)}
-                              className="hover:underline hover:text-primary transition-colors"
-                            >
-                              {res.name}
-                            </button>
-                          </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">
-                            {provisionedTypeLabel[res.provider]?.[res.resource_type] ?? res.resource_type}
-                          </td>
-                          <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{res.region}</td>
-                          <td className="px-4 py-3">
-                            <StatusBadge status={meta.kind} label={meta.label} pulse={meta.pulse} />
-                          </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground" title={new Date(res.updated_at).toLocaleString()}>
-                            {formatRelativeTime(res.updated_at)}
-                          </td>
-                          <td className="px-4 py-3">
-                            {isTransitional ? (
-                              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                <Loader2 className="size-3.5 animate-spin" />
-                                {meta.label}…
-                              </span>
-                            ) : (
-                              <div className="flex items-center gap-2">
-                                {res.status === 'planned' && (
-                                  <Button
-                                    size="sm" variant="outline" className="gap-1.5 h-7 px-2 text-xs"
-                                    disabled={!!action}
-                                    onClick={() => handleApply(res.id)}
-                                  >
-                                    {action === 'apply' ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}
-                                    Apply
-                                  </Button>
-                                )}
-                                {(res.status === 'applied' || res.status === 'planned' || res.status === 'failed') && (
-                                  <Button
-                                    size="sm" variant="destructive" className="gap-1.5 h-7 px-2 text-xs"
-                                    disabled={!!action}
-                                    onClick={() => handleDestroy(res.id)}
-                                  >
-                                    {action === 'destroy' ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
-                                    Destroy
-                                  </Button>
-                                )}
-                                {res.status === 'destroyed' && (
-                                  <Button
-                                    size="sm" variant="ghost" className="gap-1.5 h-7 px-2 text-xs text-muted-foreground"
-                                    onClick={() => handleDismissResource(res.id)}
-                                  >
-                                    <X className="size-3" />
-                                    Dismiss
-                                  </Button>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                        {isExpanded && (
-                          <tr>
-                            <td colSpan={8} className="bg-background px-4 py-3">
-                              {latestRun ? (
-                                <div className="space-y-2">
-                                  <p className="text-xs text-muted-foreground">
-                                    Last run: <span className="font-mono">{latestRun.action}</span> ·{' '}
-                                    <span className="font-mono">{latestRun.status}</span> ·{' '}
-                                    {new Date(latestRun.created_at).toLocaleString()}
-                                  </p>
-                                  {latestRun.status === 'failed' && friendlyTerraformError(latestRun.plan_output) && (
-                                    <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2.5 text-sm text-warning">
-                                      <AlertTriangle className="size-4 shrink-0 mt-0.5" />
-                                      <span>{friendlyTerraformError(latestRun.plan_output)}</span>
-                                    </div>
-                                  )}
-                                  <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-card p-3 text-xs whitespace-pre-wrap">
-                                    {latestRun.plan_output || 'No output recorded.'}
-                                  </pre>
-                                </div>
-                              ) : (
-                                <p className="text-xs text-muted-foreground">No terraform runs yet for this resource.</p>
-                              )}
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    )
-                  })}
-                </tbody>
-              </table>
-            )}
-          </Card>
+          <h2 className="text-sm font-semibold">Cloud Resources</h2>
+          <ProvisionedTable
+            items={cloudProvisioned}
+            loading={provisionedLoading}
+            emptyMessage="No provisioned cloud resources yet. Click New Resource to plan and apply standalone AWS/Azure infrastructure."
+            runs={runs}
+            expanded={expanded}
+            setExpanded={setExpanded}
+            actingOn={actingOn}
+            onApply={handleApply}
+            onDestroy={handleDestroy}
+            onDismiss={handleDismiss}
+            navigate={navigate}
+          />
         </div>
 
         {/* ── Cloud Resources (live inventory) ── */}

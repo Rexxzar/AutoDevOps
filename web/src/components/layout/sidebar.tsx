@@ -4,6 +4,7 @@ import {
   Rocket,
   Boxes,
   Cloud,
+  Server,
   ShieldCheck,
   KeyRound,
   Settings,
@@ -17,6 +18,7 @@ const nav = [
   { to: '/deployments', label: 'Deployments', icon: Rocket, badge: 'live' },
   { to: '/clusters', label: 'Clusters', icon: Boxes, badge: 'live' },
   { to: '/resources', label: 'Cloud Resources', icon: Cloud },
+  { to: '/local-resources', label: 'Local Resources', icon: Server },
   { to: '/compliance', label: 'Compliance', icon: ShieldCheck },
   { to: '/secrets', label: 'Secrets', icon: KeyRound },
 ]

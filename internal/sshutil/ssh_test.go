@@ -1,4 +1,4 @@
-package console
+package sshutil
 
 import (
 	"bytes"
@@ -16,8 +16,8 @@ import (
 // startTestSSHServer starts a minimal in-process SSH server on a random
 // localhost port that accepts only authorizedKey for auth. exec requests are
 // answered by execHandler; shell sessions become an echo loop (anything
-// written to the channel is written back) — enough to exercise sshExec and
-// dialSSHShell/sshPTYSession without a real EC2/Azure target.
+// written to the channel is written back) — enough to exercise Exec and
+// DialShell/PTYSession without a real EC2/Azure target.
 func startTestSSHServer(t *testing.T, authorizedKey ssh.PublicKey, execHandler func(cmd string) (stdout, stderr string, exitCode uint32)) string {
 	t.Helper()
 
@@ -119,9 +119,9 @@ func handleTestSSHSession(channel ssh.Channel, requests <-chan *ssh.Request, exe
 }
 
 func TestEphemeralKeyPair(t *testing.T) {
-	signer, authorizedKey, err := ephemeralKeyPair()
+	signer, authorizedKey, err := EphemeralKeyPair()
 	if err != nil {
-		t.Fatalf("ephemeralKeyPair: %v", err)
+		t.Fatalf("EphemeralKeyPair: %v", err)
 	}
 	if signer.PublicKey() == nil {
 		t.Fatal("signer has no public key")
@@ -136,10 +136,10 @@ func TestEphemeralKeyPair(t *testing.T) {
 	}
 }
 
-func TestSSHExec(t *testing.T) {
-	signer, _, err := ephemeralKeyPair()
+func TestExec(t *testing.T) {
+	signer, _, err := EphemeralKeyPair()
 	if err != nil {
-		t.Fatalf("ephemeralKeyPair: %v", err)
+		t.Fatalf("EphemeralKeyPair: %v", err)
 	}
 
 	addr := startTestSSHServer(t, signer.PublicKey(), func(cmd string) (string, string, uint32) {
@@ -149,34 +149,34 @@ func TestSSHExec(t *testing.T) {
 		return "hello " + cmd + "\n", "", 0
 	})
 
-	result, err := sshExec(context.Background(), addr, "testuser", signer, "world")
+	result, err := Exec(context.Background(), addr, "testuser", signer, "world")
 	if err != nil {
-		t.Fatalf("sshExec: %v", err)
+		t.Fatalf("Exec: %v", err)
 	}
 	if result.Stdout != "hello world\n" || result.ExitCode != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 
-	result, err = sshExec(context.Background(), addr, "testuser", signer, "fail")
+	result, err = Exec(context.Background(), addr, "testuser", signer, "fail")
 	if err != nil {
-		t.Fatalf("sshExec: %v", err)
+		t.Fatalf("Exec: %v", err)
 	}
 	if result.ExitCode != 1 || result.Stderr != "boom\n" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
 
-func TestDialSSHShell(t *testing.T) {
-	signer, _, err := ephemeralKeyPair()
+func TestDialShell(t *testing.T) {
+	signer, _, err := EphemeralKeyPair()
 	if err != nil {
-		t.Fatalf("ephemeralKeyPair: %v", err)
+		t.Fatalf("EphemeralKeyPair: %v", err)
 	}
 
 	addr := startTestSSHServer(t, signer.PublicKey(), nil)
 
-	sess, err := dialSSHShell(context.Background(), addr, "testuser", signer, 24, 80)
+	sess, err := DialShell(context.Background(), addr, "testuser", signer, 24, 80)
 	if err != nil {
-		t.Fatalf("dialSSHShell: %v", err)
+		t.Fatalf("DialShell: %v", err)
 	}
 	defer sess.Close()
 

@@ -48,18 +48,18 @@ func newHealer(client *dockerclient.Client, hub *sse.Hub) *healer {
 func (h *healer) handle(ctx context.Context, ch ContainerHealth) {
 	switch ch.Status {
 	case "running":
-		h.reset(ch.Name)
+		h.reset(ch.ContainerName)
 		return
 	case "stopped", "failed":
 		// fall through to heal logic
 	case "missing":
 		// container was removed externally — can't recreate without image ref
 		h.mu.Lock()
-		rec := h.getOrCreate(ch.Name)
+		rec := h.getOrCreate(ch.ContainerName)
 		if !rec.gaveUp {
 			rec.gaveUp = true
 			h.mu.Unlock()
-			slog.Warn("docker: container missing, giving up", "name", ch.Name)
+			slog.Warn("docker: container missing, giving up", "container", ch.ContainerName)
 			h.hub.Publish(sse.Event{Type: "container.heal.gaveup", Payload: ch})
 			return
 		}
@@ -70,7 +70,7 @@ func (h *healer) handle(ctx context.Context, ch ContainerHealth) {
 	}
 
 	h.mu.Lock()
-	rec := h.getOrCreate(ch.Name)
+	rec := h.getOrCreate(ch.ContainerName)
 
 	if rec.gaveUp {
 		h.mu.Unlock()
@@ -79,7 +79,7 @@ func (h *healer) handle(ctx context.Context, ch ContainerHealth) {
 	if rec.attempts >= healMaxAttempts {
 		rec.gaveUp = true
 		h.mu.Unlock()
-		slog.Warn("docker: heal gave up", "name", ch.Name, "attempts", healMaxAttempts)
+		slog.Warn("docker: heal gave up", "container", ch.ContainerName, "attempts", healMaxAttempts)
 		h.hub.Publish(sse.Event{Type: "container.heal.gaveup", Payload: ch})
 		return
 	}
@@ -95,24 +95,23 @@ func (h *healer) handle(ctx context.Context, ch ContainerHealth) {
 
 	slog.Info("docker: restarting container",
 		"name", ch.Name,
-		"container", containerName(ch.Name),
+		"container", ch.ContainerName,
 		"attempt", attempt+1,
 		"reason", ch.Reason,
 	)
 
 	go func() {
-		cname := containerName(ch.Name)
-		if err := h.client.ContainerStart(ctx, cname, container.StartOptions{}); err != nil {
-			slog.Error("docker: restart container", "container", cname, "error", err)
+		if err := h.client.ContainerStart(ctx, ch.ContainerName, container.StartOptions{}); err != nil {
+			slog.Error("docker: restart container", "container", ch.ContainerName, "error", err)
 			return
 		}
 		h.hub.Publish(sse.Event{Type: "container.heal.restart", Payload: map[string]any{
-			"deployment_id": ch.DeploymentID,
-			"resource_id":   ch.ResourceID,
-			"kind":          ch.Kind,
-			"name":          ch.Name,
-			"attempt":       attempt + 1,
-			"reason":        ch.Reason,
+			"app_id":      ch.AppID,
+			"resource_id": ch.ResourceID,
+			"kind":        ch.Kind,
+			"name":        ch.Name,
+			"attempt":     attempt + 1,
+			"reason":      ch.Reason,
 		}})
 	}()
 }

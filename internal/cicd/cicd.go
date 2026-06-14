@@ -16,10 +16,10 @@ import (
 // WorkflowParams carries the deployment metadata required to generate the CI/CD
 // workflow. Framework must be one of the constants from internal/deploy.
 type WorkflowParams struct {
-	DeploymentID string // UUID, embedded in the notify step's webhook URL
-	Name         string // human label used in job names
-	Branch       string // branch that triggers the workflow
-	Framework    string // node | python | go | java | ruby | php | unknown
+	AppID     string // UUID, embedded in the notify step's webhook URL
+	Name      string // human label used in job names
+	Branch    string // branch that triggers the workflow
+	Framework string // node | python | go | java | ruby | php | unknown
 }
 
 // Workflow returns a complete GitHub Actions workflow YAML string for the given
@@ -76,7 +76,7 @@ jobs:
             -H "X-Hub-Signature-256: $SIG" \
             -d "$PAYLOAD" \
             "${AUTODEVOPS_URL}/webhooks/github/%s"
-`, p.Branch, p.DeploymentID)
+`, p.Branch, p.AppID)
 
 	return b.String()
 }

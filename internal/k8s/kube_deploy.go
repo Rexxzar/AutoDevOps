@@ -25,15 +25,15 @@ var (
 // cert-manager ClusterIssuer + Certificate (best-effort — silently skipped if
 // cert-manager CRDs are not installed), and Ingress. Blocks until at least one
 // pod reports Available or the context deadline is reached.
-func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef string) error {
+func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef string, extraEnv map[string]string) error {
 	host := name + "." + c.ingressDomain
 
 	slog.Info("k8s: deploying", "name", name, "namespace", namespace, "image", imageRef, "host", host)
 
-	if err := c.applyNamespace(ctx, buildNamespace(name)); err != nil {
+	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
 		return fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
 	}
-	if err := c.applyDeployment(ctx, buildDeployment(name, namespace, imageRef)); err != nil {
+	if err := c.applyDeployment(ctx, buildDeployment(name, namespace, imageRef, extraEnv)); err != nil {
 		return fmt.Errorf("k8s: apply deployment %s: %w", name, err)
 	}
 	if err := c.applyService(ctx, buildService(name, namespace)); err != nil {
@@ -75,7 +75,7 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
 		return "", "", fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
 	}
-	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port)); err != nil {
+	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, nil)); err != nil {
 		return "", "", fmt.Errorf("k8s: apply deployment %s: %w", name, err)
 	}
 	if err := c.applyService(ctx, buildResourceService(name, namespace, port)); err != nil {
@@ -114,12 +114,94 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 	return serviceIP, ingressURL, nil
 }
 
+// KubeDeployImageApp applies the K8s resources for a Phase-4 "image"-kind app
+// (e.g. a postgres:16 db container) within a stack's existing namespace:
+// Deployment (buildResourceDeployment — caller-supplied port + env, no
+// sidecar) and Service (buildResourceService — port 80 -> the container's
+// port, so resolveLinks' local_k8s->local_k8s case needs no special-casing
+// for image apps). No Ingress is created — image apps are link targets for
+// sibling apps, not externally exposed. Blocks until at least one pod reports
+// Available.
+func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string) error {
+	slog.Info("k8s: deploying image app", "name", name, "namespace", namespace, "image", imageRef, "port", port)
+
+	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
+		return fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
+	}
+	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, env)); err != nil {
+		return fmt.Errorf("k8s: apply deployment %s: %w", name, err)
+	}
+	if err := c.applyService(ctx, buildResourceService(name, namespace, port)); err != nil {
+		return fmt.Errorf("k8s: apply service %s: %w", name, err)
+	}
+
+	slog.Info("k8s: waiting for image app deployment to become available", "name", name, "namespace", namespace)
+	if err := c.waitForDeployment(ctx, namespace, name); err != nil {
+		return fmt.Errorf("k8s: wait for deployment %s/%s: %w", namespace, name, err)
+	}
+
+	slog.Info("k8s: image app deployment available", "name", name, "namespace", namespace)
+	return nil
+}
+
+// KubeDeleteApp removes a single app's Deployment, Service, Ingress, and
+// cert-manager Certificate from a shared stack namespace — the namespace
+// itself is left intact since sibling apps in the same stack may still be
+// using it (whole-stack teardown calls KubeDestroyResource on the namespace
+// separately, once every app has been removed). Missing resources are
+// treated as already-removed, not an error.
+func (c *Controller) KubeDeleteApp(ctx context.Context, namespace, name string) error {
+	if err := c.clientset.AppsV1().Deployments(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("k8s: delete deployment %s/%s: %w", namespace, name, err)
+	}
+	if err := c.clientset.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("k8s: delete service %s/%s: %w", namespace, name, err)
+	}
+	if err := c.removeIngress(ctx, namespace, name); err != nil {
+		return fmt.Errorf("k8s: %w", err)
+	}
+	return nil
+}
+
 // KubeDestroyResource deletes the namespace for a standalone "local" Resource,
 // cascading to its Deployment/Service/Ingress/Certificate. A missing namespace
 // is treated as already-removed, not an error.
 func (c *Controller) KubeDestroyResource(ctx context.Context, namespace string) error {
 	if err := c.clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
 		return fmt.Errorf("k8s: delete namespace %s: %w", namespace, err)
+	}
+	return nil
+}
+
+// KubeUpdateResource edits a standalone "local" Resource in place — it's a
+// thin wrapper over KubeDeployResource, which already create-or-updates the
+// Namespace/Deployment/Service/Ingress idempotently. The one thing
+// KubeDeployResource never does is remove resources, so if exposeHTTP has
+// been toggled off since the last apply, the previously-created Ingress and
+// Certificate are deleted here.
+func (c *Controller) KubeUpdateResource(ctx context.Context, name, namespace, imageRef string, port int32, exposeHTTP bool) (serviceIP, ingressURL string, err error) {
+	serviceIP, ingressURL, err = c.KubeDeployResource(ctx, name, namespace, imageRef, port, exposeHTTP)
+	if err != nil {
+		return "", "", err
+	}
+	if !exposeHTTP {
+		if err := c.removeIngress(ctx, namespace, name); err != nil {
+			slog.Warn("k8s: remove ingress after expose_http disabled", "name", name, "namespace", namespace, "error", err)
+		}
+	}
+	return serviceIP, ingressURL, nil
+}
+
+// removeIngress deletes the Ingress and cert-manager Certificate (named
+// name+"-tls", per buildCertificate) for a standalone "local" Resource —
+// used by KubeUpdateResource when expose_http is toggled off. Missing
+// resources are treated as already-removed, not an error.
+func (c *Controller) removeIngress(ctx context.Context, namespace, name string) error {
+	if err := c.clientset.NetworkingV1().Ingresses(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("delete ingress %s: %w", name, err)
+	}
+	if err := c.dynClient.Resource(certGVR).Namespace(namespace).Delete(ctx, name+"-tls", metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("delete certificate %s: %w", name+"-tls", err)
 	}
 	return nil
 }

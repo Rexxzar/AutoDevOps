@@ -8,6 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2instanceconnect"
+
+	"github.com/Rexxzar/autodevops/internal/sshutil"
 )
 
 // ec2InstanceConnectUser is the SSH login user for EC2 Instance Connect.
@@ -39,7 +41,7 @@ var errKeyPushNotReady = errors.New("console: ec2 instance connect: key push did
 // push, as opposed to a permanent error (bad credentials, unknown instance,
 // wrong username).
 func shouldRetryKeyPush(err error) bool {
-	return err != nil && (errors.Is(err, errKeyPushNotReady) || isAuthFailure(err))
+	return err != nil && (errors.Is(err, errKeyPushNotReady) || sshutil.IsAuthFailure(err))
 }
 
 // withKeyPushRetry calls fn — which should push a fresh ephemeral key and
@@ -112,9 +114,9 @@ func (c *ec2Connector) Open(ctx context.Context, res Resource, rows, cols uint16
 		return nil, err
 	}
 
-	var sess *sshPTYSession
+	var sess *sshutil.PTYSession
 	if err := withKeyPushRetry(ctx, func() error {
-		signer, pub, err := ephemeralKeyPair()
+		signer, pub, err := sshutil.EphemeralKeyPair()
 		if err != nil {
 			return err
 		}
@@ -122,7 +124,7 @@ func (c *ec2Connector) Open(ctx context.Context, res Resource, rows, cols uint16
 			return err
 		}
 		var dialErr error
-		sess, dialErr = dialSSHShell(ctx, publicIP+":22", ec2InstanceConnectUser, signer, rows, cols)
+		sess, dialErr = sshutil.DialShell(ctx, publicIP+":22", ec2InstanceConnectUser, signer, rows, cols)
 		return dialErr
 	}); err != nil {
 		return nil, err
@@ -138,7 +140,7 @@ func (c *ec2Connector) Exec(ctx context.Context, res Resource, command string) (
 
 	var result ExecResult
 	err = withKeyPushRetry(ctx, func() error {
-		signer, pub, err := ephemeralKeyPair()
+		signer, pub, err := sshutil.EphemeralKeyPair()
 		if err != nil {
 			return err
 		}
@@ -146,7 +148,7 @@ func (c *ec2Connector) Exec(ctx context.Context, res Resource, command string) (
 			return err
 		}
 		var execErr error
-		result, execErr = sshExec(ctx, publicIP+":22", ec2InstanceConnectUser, signer, command)
+		result, execErr = sshutil.Exec(ctx, publicIP+":22", ec2InstanceConnectUser, signer, command)
 		return execErr
 	})
 	return result, err

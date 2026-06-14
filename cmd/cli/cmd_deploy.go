@@ -68,7 +68,7 @@ func deployCmd() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Deployment name")
 	cmd.Flags().StringVar(&repoURL, "repo", "", "Git repository URL")
 	cmd.Flags().StringVar(&branch, "branch", "main", "Branch to deploy")
-	cmd.Flags().StringVar(&target, "target", "k8s", "Deployment target: k8s, container, vm")
+	cmd.Flags().StringVar(&target, "target", "k8s", "Deployment target: k8s, container")
 	cmd.Flags().BoolVar(&trigger, "trigger", false, "Trigger a build immediately after registration")
 	cmd.MarkFlagRequired("name")
 	cmd.MarkFlagRequired("repo")

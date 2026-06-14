@@ -33,7 +33,7 @@ func (s *Server) consoleResource(ctx context.Context, id string) (console.Resour
 	if rr.Status != "applied" {
 		return console.Resource{}, fmt.Errorf("resource is not applied (status: %s) — apply it before opening a console", rr.Status)
 	}
-	if rr.CloudAccountID == "" {
+	if rr.CloudAccountID == "" && rr.Provider != "local" {
 		return console.Resource{}, fmt.Errorf("resource has no associated cloud account")
 	}
 

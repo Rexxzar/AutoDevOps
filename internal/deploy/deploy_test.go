@@ -28,8 +28,11 @@ func testOrchestrator(pool *pgxpool.Pool, vault *secrets.Vault, hub *sse.Hub, wo
 		"paketobuildpacks/builder-jammy-full:latest",
 		"localhost:5001",
 		"registry.local:5000",
+		"apps.127.0.0.1.sslip.io",
 		nil, // no KubeDeployer
 		nil, // no DockerDeployer
+		nil, // no ImagePusher
+		nil, // no ImageSaver
 		nil, // no ComplianceGate
 	)
 }
@@ -238,7 +241,7 @@ func TestProcessPushLifecycle(t *testing.T) {
 	workDir := t.TempDir()
 	orchestrator := testOrchestrator(pool, vault, hub, workDir)
 
-	deploymentID := seedDeployment(t, pool, vault, "https://github.com/octocat/Hello-World.git", "master")
+	appID := seedDeployment(t, pool, vault, "https://github.com/octocat/Hello-World.git", "master")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -246,24 +249,24 @@ func TestProcessPushLifecycle(t *testing.T) {
 	// ProcessPush clones, detects framework, then attempts a pack build.
 	// octocat/Hello-World has no buildpack-detectable language, so the build
 	// will fail and status will land on "failed" — log but don't fatal.
-	buildErr := orchestrator.ProcessPush(ctx, deploymentID)
+	buildErr := orchestrator.ProcessPush(ctx, appID)
 	if buildErr != nil {
 		t.Logf("ProcessPush returned error (expected build failure for unknown framework): %v", buildErr)
 	}
 
-	repoPath := filepath.Join(workDir, deploymentID)
+	repoPath := filepath.Join(workDir, appID)
 	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
 		t.Errorf("expected a git workspace at %s: %v", repoPath, err)
 	}
 
 	var framework, status string
 	if err := pool.QueryRow(ctx,
-		"SELECT COALESCE(framework,''), status FROM deployments WHERE id = $1", deploymentID,
+		"SELECT COALESCE(framework,''), status FROM deployment_apps WHERE id = $1", appID,
 	).Scan(&framework, &status); err != nil {
 		t.Fatalf("look up persisted row: %v", err)
 	}
 	if framework == "" {
-		t.Error("expected deployments.framework to be populated after ProcessPush")
+		t.Error("expected deployment_apps.framework to be populated after ProcessPush")
 	}
 	t.Logf("framework=%q status=%q", framework, status)
 
@@ -275,7 +278,7 @@ func TestProcessPushLifecycle(t *testing.T) {
 	}
 
 	// Second run: ensureClone must converge an existing workspace (idempotent).
-	buildErr2 := orchestrator.ProcessPush(ctx, deploymentID)
+	buildErr2 := orchestrator.ProcessPush(ctx, appID)
 	if buildErr2 != nil {
 		t.Logf("ProcessPush (second run) returned error (expected): %v", buildErr2)
 	}
@@ -311,9 +314,10 @@ func testPostgres(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// seedDeployment registers a deployment exactly like handleCreateDeployment
-// does (webhook secret stored through the Vault, row inserted with the
-// resolved secret UUID), returning its ID. Cleanup removes both.
+// seedDeployment registers a stack with one app exactly like
+// handleCreateDeployment does (webhook secret stored through the Vault, rows
+// inserted with the resolved secret UUID), returning the app's ID — the ID
+// ProcessPush expects. Cleanup removes the stack (cascades to the app).
 func seedDeployment(t *testing.T, pool *pgxpool.Pool, vault *secrets.Vault, repoURL, branch string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -324,12 +328,16 @@ func seedDeployment(t *testing.T, pool *pgxpool.Pool, vault *secrets.Vault, repo
 		t.Fatalf("vault.Put webhook secret: %v", err)
 	}
 
-	var deploymentID string
+	var deploymentID, appID string
 	err := pool.QueryRow(ctx, `
-		INSERT INTO deployments (name, repo_url, branch, target_type, webhook_secret_id)
-		SELECT $1, $2, $3, 'container', id FROM secrets WHERE name = $4
-		RETURNING id::text
-	`, name, repoURL, branch, secretName).Scan(&deploymentID)
+		WITH stack AS (
+			INSERT INTO deployments (name) VALUES ($1) RETURNING id
+		)
+		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, webhook_secret_id)
+		SELECT stack.id, $1, $2, $3, 'local_docker', secrets.id
+		FROM stack, secrets WHERE secrets.name = $4
+		RETURNING deployment_id::text, id::text
+	`, name, repoURL, branch, secretName).Scan(&deploymentID, &appID)
 	if err != nil {
 		t.Fatalf("seed test deployment: %v", err)
 	}
@@ -343,5 +351,5 @@ func seedDeployment(t *testing.T, pool *pgxpool.Pool, vault *secrets.Vault, repo
 			t.Logf("cleanup test webhook secret %s: %v", secretName, err)
 		}
 	})
-	return deploymentID
+	return appID
 }

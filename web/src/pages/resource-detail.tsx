@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useState, useCallback, useEffect } from 'react'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Play, Trash2, X, Loader2, Copy, Check, AlertTriangle, FileCode, Download, Pencil, SquareTerminal } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
@@ -13,6 +13,7 @@ import { apiFetch } from '@/lib/api'
 import { useSSE } from '@/lib/use-sse'
 import { useAuth } from '@/lib/auth'
 import type { Provider } from '@/lib/mock-data'
+import { LocalFields, type LocalResource } from '@/pages/new-resource'
 import {
   type ProvisionedResource,
   type TerraformRun,
@@ -88,10 +89,95 @@ function podHealthKind(status: string): StatusKind {
   }
 }
 
+// EditResourceDialog lets the user change a local resource's settings (image,
+// container port, host port/network for Docker; expose-via-ingress for K8s)
+// after creation — reuses new-resource.tsx's LocalFields for the same fields
+// shown at creation time, pre-filled from the resource's current outputs.
+// Docker edits recreate the container (brief restart); K8s edits patch the
+// Deployment/Service/Ingress in place (see internal/api's handleEditResource).
+function EditResourceDialog({
+  resourceId, resourceType, outputs, open, onClose,
+}: {
+  resourceId: string
+  resourceType: LocalResource
+  outputs: Record<string, string>
+  open: boolean
+  onClose: () => void
+}) {
+  const [opts, setOpts] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setError('')
+    setOpts({
+      image: outputs.image ?? '',
+      container_port: outputs.container_port ?? outputs.port ?? '',
+      host_port: outputs.host_port ?? '',
+      network: outputs.network && outputs.network !== 'autodevops' ? outputs.network : '',
+      expose_http: outputs.expose_http ?? 'false',
+    })
+  }, [open, outputs])
+
+  function set(k: string, val: string) {
+    setOpts((prev) => ({ ...prev, [k]: val }))
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setLoading(true); setError('')
+    try {
+      await apiFetch(`/resources/${resourceId}/edit`, {
+        method: 'POST',
+        body: JSON.stringify({ resource_opts: opts }),
+      })
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update resource')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} title="Edit resource">
+      <form onSubmit={handleSubmit} className="p-4 space-y-4">
+        <LocalFields v={opts} set={set} resourceType={resourceType} />
+        {resourceType === 'docker' && (
+          <p className="text-xs text-muted-foreground">
+            Saving recreates the container with the new settings — it will be briefly unavailable.
+          </p>
+        )}
+        {error && (
+          <div className="flex items-start gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
+            <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={onClose} disabled={loading}>
+            Cancel
+          </Button>
+          <Button type="submit" size="sm" className="gap-1.5" disabled={loading}>
+            {loading && <Loader2 className="size-3.5 animate-spin" />}
+            {loading ? 'Saving…' : 'Save changes'}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  )
+}
+
 export function ResourceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { token } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  // Local resources are listed (and linked back to) under /local-resources, so
+  // returning there keeps the sidebar's "Local Resources" tab highlighted
+  // instead of falling back to /resources ("Cloud Resources").
+  const basePath = location.pathname.startsWith('/local-resources') ? '/local-resources' : '/resources'
   const [resource, setResource] = useState<ProvisionedResource | null>(null)
   const [runs, setRuns] = useState<TerraformRun[]>([])
   const [acting, setActing] = useState<'apply' | 'destroy' | null>(null)
@@ -99,6 +185,7 @@ export function ResourceDetailPage() {
   const [podHealths, setPodHealths] = useState<Record<string, { status: string; reason?: string; restart_count: number }>>({})
 
   const [consoleOpen, setConsoleOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
 
   const [tfOpen, setTfOpen] = useState(false)
   const [tfLoading, setTfLoading] = useState(false)
@@ -231,7 +318,7 @@ export function ResourceDetailPage() {
     if (!id) return
     try {
       await apiFetch(`/resources/${id}/dismiss`, { method: 'POST' })
-      navigate('/resources')
+      navigate(basePath)
     } catch { /* leave on the page if dismiss failed */ }
   }
 
@@ -241,7 +328,7 @@ export function ResourceDetailPage() {
   if (error || !resource) {
     return (
       <div className="p-6 space-y-3">
-        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => navigate('/resources')}>
+        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => navigate(basePath)}>
           <ArrowLeft className="size-3.5" />
           Back to Resources
         </Button>
@@ -255,16 +342,20 @@ export function ResourceDetailPage() {
   const latestRun = [...runs].filter((r) => r.resource_id === id).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
   const typeLabel = provisionedTypeLabel[resource.provider]?.[resource.resource_type] ?? resource.resource_type
   const hasOutputs = Object.keys(outputs).length > 0
-  // Mirrors internal/console/registry.go's Connector dispatch: aws:vm, azure:vm, aws:ecs, azure:aci.
+  // Mirrors internal/console/registry.go's Connector dispatch: aws:vm, azure:vm, aws:ecs, azure:aci, local:docker, local:k8s.
   const consoleSupported =
     resource.resource_type === 'vm' ||
     (resource.provider === 'aws' && resource.resource_type === 'ecs') ||
-    (resource.provider === 'azure' && resource.resource_type === 'aci')
+    (resource.provider === 'azure' && resource.resource_type === 'aci') ||
+    (resource.provider === 'local' && (resource.resource_type === 'docker' || resource.resource_type === 'k8s'))
+  // Mirrors handleEditResource's provider/resource_type + status checks (applied or failed only).
+  const editSupported = resource.provider === 'local' && (resource.resource_type === 'docker' || resource.resource_type === 'k8s')
+  const canEdit = editSupported && (resource.status === 'applied' || resource.status === 'failed')
 
   return (
     <div>
       <PageHeader title={resource.name} description={`${typeLabel} · ${resource.region}`}>
-        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => navigate('/resources')}>
+        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => navigate(basePath)}>
           <ArrowLeft className="size-3.5" />
           Back
         </Button>
@@ -274,6 +365,12 @@ export function ResourceDetailPage() {
               <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setConsoleOpen(true)}>
                 <SquareTerminal className="size-3.5" />
                 Connect
+              </Button>
+            )}
+            {canEdit && (
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setEditOpen(true)}>
+                <Pencil className="size-3.5" />
+                Edit
               </Button>
             )}
             {resource.provider !== 'local' && (
@@ -352,6 +449,14 @@ export function ResourceDetailPage() {
               {outputs.image && <CopyField label="Image" value={outputs.image} />}
               {outputs.container_id && <CopyField label="Container ID" value={outputs.container_id} />}
               {outputs.host_port && <CopyField label="Host Port" value={outputs.host_port} />}
+              {outputs.network && <CopyField label="Docker network" value={outputs.network} />}
+              {outputs.host_port && (
+                <CopyField
+                  label="URL"
+                  value={`http://localhost:${outputs.host_port}`}
+                  href={`http://localhost:${outputs.host_port}`}
+                />
+              )}
               {outputs.host_port && (
                 <CopyField label="Test command" value={`curl http://localhost:${outputs.host_port}`} />
               )}
@@ -539,6 +644,16 @@ export function ResourceDetailPage() {
         open={consoleOpen}
         onClose={() => setConsoleOpen(false)}
       />
+
+      {editSupported && (
+        <EditResourceDialog
+          resourceId={id!}
+          resourceType={resource.resource_type as LocalResource}
+          outputs={outputs}
+          open={editOpen}
+          onClose={() => setEditOpen(false)}
+        />
+      )}
 
       <Dialog open={tfOpen} onClose={() => setTfOpen(false)} title="Terraform configuration" className="max-w-3xl">
         <div className="p-4 space-y-3">

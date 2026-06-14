@@ -113,3 +113,11 @@ output "rds_port" {
 output "rds_username" {
   value = aws_db_instance.main.username
 }
+
+output "rds_engine" {
+  value = aws_db_instance.main.engine
+}
+
+output "rds_master_user_secret_arn" {
+  value = aws_db_instance.main.master_user_secret[0].secret_arn
+}

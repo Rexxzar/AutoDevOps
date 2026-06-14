@@ -20,21 +20,22 @@ import (
 )
 
 type Server struct {
-	db        *pgxpool.Pool
-	auth      *auth.Auth
-	hub       *sse.Hub
-	vault     *secrets.Vault
-	deploy    *deploy.Orchestrator
-	tfRunner  *terraform.Runner
-	tfEngine  *terraform.Engine
-	console   *console.Manager
-	k8sCtrl   *k8s.Controller
-	dockerMgr *docker.Manager
-	publicIP  string
+	db            *pgxpool.Pool
+	auth          *auth.Auth
+	hub           *sse.Hub
+	vault         *secrets.Vault
+	deploy        *deploy.Orchestrator
+	tfRunner      *terraform.Runner
+	tfEngine      *terraform.Engine
+	console       *console.Manager
+	k8sCtrl       *k8s.Controller
+	dockerMgr     *docker.Manager
+	publicIP      string
+	ingressDomain string
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, k8sCtrl *k8s.Controller, dockerMgr *docker.Manager, publicIP string) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, k8sCtrl: k8sCtrl, dockerMgr: dockerMgr, publicIP: publicIP}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, k8sCtrl *k8s.Controller, dockerMgr *docker.Manager, publicIP, ingressDomain string) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, k8sCtrl: k8sCtrl, dockerMgr: dockerMgr, publicIP: publicIP, ingressDomain: ingressDomain}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -46,9 +47,9 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 	r.Post("/auth/login", s.handleLogin)
 	r.Get("/dns/check", s.handleDNSCheck)
 
-	// GitHub can't present a JWT — security here is the per-deployment HMAC
-	// webhook secret instead (see handleGitHubWebhook), so this route stays
-	// outside the authenticated group.
+	// GitHub can't present a JWT — security here is the per-app HMAC webhook
+	// secret instead (see handleGitHubWebhook), so this route stays outside
+	// the authenticated group. {id} is a deployment_apps.id, not a stack id.
 	r.Post("/webhooks/github/{id}", s.handleGitHubWebhook)
 
 	r.Group(func(r chi.Router) {
@@ -56,15 +57,21 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Get("/events", hub.Handler())
 		r.Get("/deployments", s.handleListDeployments)
 		r.Post("/deployments", s.handleCreateDeployment)
+		r.Get("/deployments/{id}", s.handleGetDeployment)
 		r.Delete("/deployments/{id}", s.handleDestroyDeployment)
-		r.Post("/deployments/{id}/trigger", s.handleTriggerDeployment)
-		r.Get("/deployments/{id}/workflow", s.handleGetDeploymentWorkflow)
+		r.Post("/deployments/{id}/apps", s.handleAddApp)
+		r.Delete("/deployments/{id}/apps/{appId}", s.handleDeleteApp)
+		r.Post("/deployments/{id}/apps/{appId}/trigger", s.handleTriggerApp)
+		r.Post("/deployments/{id}/apps/{appId}/links", s.handleCreateAppLink)
+		r.Delete("/deployments/{id}/apps/{appId}/links/{linkId}", s.handleDeleteAppLink)
+		r.Get("/deployments/{id}/apps/{appId}/workflow", s.handleGetAppWorkflow)
 		r.Get("/clusters", s.handleListClusters)
 		r.Get("/cloud/accounts", s.handleListCloudAccounts)
 		r.Post("/cloud/accounts", s.handleCreateCloudAccount)
 		r.Delete("/cloud/accounts/{id}", s.handleDeleteCloudAccount)
 		r.Get("/cloud/accounts/{id}/networks", s.handleListCloudAccountNetworks)
 		r.Get("/cloud/resources", s.handleListCloudResources)
+		r.Get("/docker/networks", s.handleListDockerNetworks)
 		r.Post("/cloud/resources/{id}/dismiss", s.handleDismissCloudResource)
 		r.Get("/compliance/findings", s.handleListComplianceFindings)
 		r.Post("/clusters", s.handleCreateCluster)
@@ -77,6 +84,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Get("/resources/{id}/terraform", s.handleGetResourceTerraform)
 		r.Post("/resources/{id}/terraform/plan", s.handlePlanResourceTerraform)
 		r.Post("/resources/{id}/apply", s.handleApplyResource)
+		r.Post("/resources/{id}/edit", s.handleEditResource)
 		r.Post("/resources/{id}/destroy", s.handleDestroyResource)
 		r.Post("/resources/{id}/dismiss", s.handleDismissResource)
 		r.Post("/resources/{id}/console/sessions", s.handleOpenConsoleSession)

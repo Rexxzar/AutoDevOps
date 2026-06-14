@@ -36,12 +36,20 @@ else
   rm -f "$TMPCONFIG"
 fi
 
-# 3. Connect registry to kind Docker network
-if docker network inspect kind 2>/dev/null | grep -q "$REGISTRY_NAME"; then
-  echo "[3/5] Registry already connected to kind network — skipping"
+# 3. Connect registry to kind Docker network with a `registry.local` alias
+# (containerd's registry-mirror config in kind-config.yaml points at
+# registry.local:5000 — without this alias, in-cluster image pulls fail
+# with "no such host")
+if docker network inspect kind 2>/dev/null | grep -q '"registry.local"'; then
+  echo "[3/5] Registry already connected to kind network with registry.local alias — skipping"
 else
-  echo "[3/5] Connecting registry to kind network..."
-  docker network connect kind "$REGISTRY_NAME"
+  if docker network inspect kind 2>/dev/null | grep -q "$REGISTRY_NAME"; then
+    echo "[3/5] Re-connecting registry to kind network with registry.local alias..."
+    docker network disconnect kind "$REGISTRY_NAME"
+  else
+    echo "[3/5] Connecting registry to kind network..."
+  fi
+  docker network connect --alias registry.local kind "$REGISTRY_NAME"
 fi
 
 # 4. Nginx ingress controller

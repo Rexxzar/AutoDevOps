@@ -92,7 +92,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, threshold string) *Scanner {
 // of severity. Returns a non-nil error only when the gate blocks (one or more
 // findings meet or exceed the configured threshold). Scanner-level failures
 // (binary absent, registry unreachable) are logged and skipped.
-func (s *Scanner) RunAll(ctx context.Context, deploymentID, repoPath, imageRef string) error {
+func (s *Scanner) RunAll(ctx context.Context, appID, repoPath, imageRef string) error {
 	var all []Finding
 
 	if findings, err := runGitleaks(ctx, repoPath); err != nil {
@@ -120,12 +120,12 @@ func (s *Scanner) RunAll(ctx context.Context, deploymentID, repoPath, imageRef s
 	}
 
 	for _, f := range all {
-		if err := s.persist(ctx, deploymentID, f); err != nil {
+		if err := s.persist(ctx, appID, f); err != nil {
 			slog.Warn("compliance: persist finding", "scanner", f.Scanner, "rule", f.RuleID, "error", err)
 		}
 	}
 
-	slog.Info("compliance: scan complete", "deployment_id", deploymentID, "total_findings", len(all))
+	slog.Info("compliance: scan complete", "app_id", appID, "total_findings", len(all))
 	return Gate(all, s.threshold)
 }
 
@@ -145,12 +145,12 @@ func Gate(findings []Finding, threshold Severity) error {
 	return nil
 }
 
-func (s *Scanner) persist(ctx context.Context, deploymentID string, f Finding) error {
+func (s *Scanner) persist(ctx context.Context, appID string, f Finding) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO compliance_findings
-		  (deployment_id, scanner, severity, rule_id, message, file_path, line_number)
+		  (app_id, scanner, severity, rule_id, message, file_path, line_number)
 		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7, 0))
-	`, deploymentID, f.Scanner, f.Severity.String(), f.RuleID, f.Message, f.FilePath, f.LineNumber)
+	`, appID, f.Scanner, f.Severity.String(), f.RuleID, f.Message, f.FilePath, f.LineNumber)
 	if err != nil {
 		return fmt.Errorf("compliance: persist: %w", err)
 	}

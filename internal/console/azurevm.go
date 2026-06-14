@@ -6,6 +6,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v7"
+
+	"github.com/Rexxzar/autodevops/internal/sshutil"
 )
 
 // azureVMConnector opens shells / runs commands on Azure Linux VMs via VM Run
@@ -70,14 +72,14 @@ func (c *azureVMConnector) Open(ctx context.Context, res Resource, rows, cols ui
 	if err != nil {
 		return nil, err
 	}
-	signer, pub, err := ephemeralKeyPair()
+	signer, pub, err := sshutil.EphemeralKeyPair()
 	if err != nil {
 		return nil, err
 	}
 	if err := c.pushKey(ctx, res, rgName, vmName, username, pub); err != nil {
 		return nil, err
 	}
-	return dialSSHShell(ctx, publicIP+":22", username, signer, rows, cols)
+	return sshutil.DialShell(ctx, publicIP+":22", username, signer, rows, cols)
 }
 
 func (c *azureVMConnector) Exec(ctx context.Context, res Resource, command string) (ExecResult, error) {
@@ -85,12 +87,12 @@ func (c *azureVMConnector) Exec(ctx context.Context, res Resource, command strin
 	if err != nil {
 		return ExecResult{}, err
 	}
-	signer, pub, err := ephemeralKeyPair()
+	signer, pub, err := sshutil.EphemeralKeyPair()
 	if err != nil {
 		return ExecResult{}, err
 	}
 	if err := c.pushKey(ctx, res, rgName, vmName, username, pub); err != nil {
 		return ExecResult{}, err
 	}
-	return sshExec(ctx, publicIP+":22", username, signer, command)
+	return sshutil.Exec(ctx, publicIP+":22", username, signer, command)
 }

@@ -2,28 +2,32 @@ package docker
 
 import "fmt"
 
-// Compose generates a docker-compose.yml string for a deployment.
+// Compose generates a docker-compose.yml string for an app within a stack.
 // Written to disk as a human-readable reference artifact; actual deployment
 // is driven by the Docker SDK (no docker-compose CLI dependency).
-func Compose(name, imageRef string, port uint32) string {
+func Compose(stackName, appName, imageRef string, port uint32) string {
+	netName := stackNetworkName(stackName)
 	return fmt.Sprintf(`version: "3.8"
 services:
   %s:
     image: %s
-    container_name: autodevops-%s
+    container_name: %s
     restart: unless-stopped
     networks:
-      - autodevops
+      %s:
+        aliases:
+          - %s
     ports:
       - "%d:8080"
     environment:
       - PORT=8080
     labels:
       autodevops.io/managed-by: autodevops
-      autodevops.io/deployment: %s
+      autodevops.io/stack: %s
+      autodevops.io/app: %s
 
 networks:
-  autodevops:
+  %s:
     external: true
-`, name, imageRef, name, port, name)
+`, appName, imageRef, appContainerName(stackName, appName), netName, appName, port, stackName, appName, netName)
 }

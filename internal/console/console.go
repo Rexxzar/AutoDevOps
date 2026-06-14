@@ -8,6 +8,8 @@ package console
 import (
 	"context"
 	"io"
+
+	"github.com/Rexxzar/autodevops/internal/sshutil"
 )
 
 // Session is a live interactive shell to a remote resource. EC2/Azure VM
@@ -23,11 +25,7 @@ type Session interface {
 
 // ExecResult is the result of a one-shot command, returned by
 // POST /resources/{id}/console/exec.
-type ExecResult struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
-}
+type ExecResult = sshutil.ExecResult
 
 // Resource is the subset of a provisioned_resources row a Connector needs to
 // open a session or run a command — built by the API layer from

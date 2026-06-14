@@ -31,18 +31,8 @@ func TestNamespaceNameLengthCap(t *testing.T) {
 	}
 }
 
-func TestBuildNamespace(t *testing.T) {
-	ns := buildNamespace("my-app")
-	if ns.Name != "autodevops-my-app" {
-		t.Errorf("namespace name = %q, want %q", ns.Name, "autodevops-my-app")
-	}
-	if ns.Labels["autodevops.io/managed-by"] != "autodevops" {
-		t.Error("missing autodevops.io/managed-by label")
-	}
-}
-
 func TestBuildDeployment(t *testing.T) {
-	dep := buildDeployment("svc", "autodevops-svc", "registry.local:5000/svc:abc123")
+	dep := buildDeployment("svc", "autodevops-svc", "registry.local:5000/svc:abc123", nil)
 
 	if dep.Name != "svc" {
 		t.Errorf("deployment name = %q, want %q", dep.Name, "svc")
@@ -71,8 +61,42 @@ func TestBuildDeployment(t *testing.T) {
 	if sidecar.Name != "health-checker" {
 		t.Errorf("sidecar name = %q, want health-checker", sidecar.Name)
 	}
-	if sidecar.Image != "curlimages/curl:8" {
-		t.Errorf("sidecar image = %q, want curlimages/curl:8", sidecar.Image)
+	if sidecar.Image != "curlimages/curl:8.13.0" {
+		t.Errorf("sidecar image = %q, want curlimages/curl:8.13.0", sidecar.Image)
+	}
+}
+
+func TestBuildDeploymentExtraEnv(t *testing.T) {
+	dep := buildDeployment("frontend", "autodevops-stack", "registry.local:5000/frontend:abc123", map[string]string{
+		"AUTODEVOPS_BACKEND_URL":  "http://backend",
+		"AUTODEVOPS_BACKEND_HOST": "backend",
+	})
+
+	app := dep.Spec.Template.Spec.Containers[0]
+	if app.Env[0].Name != "PORT" || app.Env[0].Value != "8080" {
+		t.Fatalf("env[0] = %+v, want PORT=8080 first", app.Env[0])
+	}
+
+	want := map[string]string{
+		"AUTODEVOPS_BACKEND_URL":  "http://backend",
+		"AUTODEVOPS_BACKEND_HOST": "backend",
+	}
+	got := make(map[string]string)
+	for _, e := range app.Env[1:] {
+		got[e.Name] = e.Value
+	}
+	if len(got) != len(want) {
+		t.Fatalf("env = %+v, want %+v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("env[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+
+	// Sorted order: AUTODEVOPS_BACKEND_HOST < AUTODEVOPS_BACKEND_URL.
+	if app.Env[1].Name != "AUTODEVOPS_BACKEND_HOST" || app.Env[2].Name != "AUTODEVOPS_BACKEND_URL" {
+		t.Errorf("env order = [%s, %s], want sorted by key", app.Env[1].Name, app.Env[2].Name)
 	}
 }
 
@@ -120,7 +144,7 @@ func TestBuildResourceNamespace(t *testing.T) {
 }
 
 func TestBuildResourceDeployment(t *testing.T) {
-	dep := buildResourceDeployment("my-resource", "resource-my-resource", "nginx:latest", 80)
+	dep := buildResourceDeployment("my-resource", "resource-my-resource", "nginx:latest", 80, nil)
 
 	if dep.Name != "my-resource" || dep.Namespace != "resource-my-resource" {
 		t.Errorf("deployment name/namespace = %q/%q", dep.Name, dep.Namespace)

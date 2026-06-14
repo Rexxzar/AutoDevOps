@@ -15,19 +15,19 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 )
 
-// ensureClone makes workDir/<deploymentID> match origin/<branch>'s latest
+// ensureClone makes workDir/<appID> match origin/<branch>'s latest
 // commit: cloning fresh if the workspace doesn't exist yet, or fetching +
 // hard-resetting if it does. This idempotent "converge to desired state"
 // approach avoids accumulating stale clones across repeated pushes — mirrors
 // Runner.Plan's "always regenerate the full desired state" philosophy. Returns
 // the workspace path on success.
-func (o *Orchestrator) ensureClone(ctx context.Context, deploymentID, repoURL, branch string, creds *gitCredentials) (string, error) {
+func (o *Orchestrator) ensureClone(ctx context.Context, appID, repoURL, branch string, creds *gitCredentials) (string, error) {
 	auth, err := buildAuth(creds)
 	if err != nil {
 		return "", fmt.Errorf("deploy: build git auth: %w", err)
 	}
 
-	path := filepath.Join(o.workDir, deploymentID)
+	path := filepath.Join(o.workDir, appID)
 	refName := plumbing.NewBranchReferenceName(branch)
 
 	repo, err := git.PlainOpen(path)

@@ -64,6 +64,21 @@ resource "azurerm_network_security_group" "vm" {
     destination_address_prefix = "*"
   }
 
+  security_rule {
+    # internal/deploy's cloud_vm SSH deployer publishes app containers on a
+    # deterministic port in this range (FNV-32a hash of the container name,
+    # see internal/docker.hostPort).
+    name                       = "AutoDevOpsAppContainers"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "8100-8999"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
   tags = {
     Name = "demo-vm"
   }
@@ -117,6 +132,18 @@ resource "azurerm_linux_virtual_machine" "main" {
     username   = "azureuser"
     public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILWSPQrVP9waYpuXgeULzDf6qni7GWmZISD6J2Sy8Qkb demo@example.com"
   }
+
+  # Installs Docker so the SSH deployer (internal/deploy cloud_vm target) can
+  # "docker load"/"docker run" Paketo-built images without a separate
+  # provisioning step.
+  custom_data = base64encode(<<-EOF
+    #!/bin/bash
+    apt-get update
+    apt-get install -y docker.io
+    systemctl enable --now docker
+    usermod -aG docker azureuser
+  EOF
+  )
 
   os_disk {
     caching              = "ReadWrite"

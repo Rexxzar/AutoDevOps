@@ -14,6 +14,10 @@ func (reg *Registry) Connector(provider, resourceType string) (Connector, bool) 
 		return &ecsConnector{registry: reg}, true
 	case "azure:aci":
 		return &aciConnector{registry: reg}, true
+	case "local:docker":
+		return &dockerConnector{registry: reg}, true
+	case "local:k8s":
+		return &k8sConnector{registry: reg}, true
 	default:
 		return nil, false
 	}
