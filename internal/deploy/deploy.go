@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/Rexxzar/autodevops/internal/secrets"
@@ -116,6 +117,9 @@ type Orchestrator struct {
 	imageSaver      ImageSaver     // nil when Docker daemon is not available — required for cloud_vm targets
 	aciRedeployer   ACIRedeployer  // nil when terraform is not available — required for cloud_aci targets
 	complianceGate  ComplianceGate // nil disables compliance scanning
+
+	stepsMu sync.RWMutex
+	steps   map[string]map[string]StepEvent // appID -> step -> latest StepEvent, for hydrating dashboard pages that load mid-deploy (deploy.step SSE events aren't replayed on reconnect)
 }
 
 // New builds an Orchestrator. workDir is the base directory under which each
@@ -145,6 +149,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builde
 		imageSaver:     saver,
 		aciRedeployer:  aci,
 		complianceGate: gate,
+		steps:          make(map[string]map[string]StepEvent),
 	}
 }
 

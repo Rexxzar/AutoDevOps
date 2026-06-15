@@ -42,9 +42,49 @@ type LogEvent struct {
 	Line  string `json:"line"`
 }
 
-// publishStep broadcasts a pipeline-step transition for appID.
+// publishStep broadcasts a pipeline-step transition for appID and records it
+// as that app's current step state (see CurrentSteps).
 func (o *Orchestrator) publishStep(appID, step, status string) {
-	o.hub.Publish(sse.Event{Type: "deploy.step", Payload: StepEvent{AppID: appID, Step: step, Status: status, At: time.Now()}})
+	e := StepEvent{AppID: appID, Step: step, Status: status, At: time.Now()}
+	o.recordStep(e)
+	o.hub.Publish(sse.Event{Type: "deploy.step", Payload: e})
+}
+
+// recordStep updates appID's current step state. A fresh "clone: active"
+// marks the start of a new pipeline run and clears any prior run's state
+// first, mirroring the frontend's isFreshRun reset.
+func (o *Orchestrator) recordStep(e StepEvent) {
+	o.stepsMu.Lock()
+	defer o.stepsMu.Unlock()
+	if e.Step == StepClone && e.Status == StepActive {
+		o.steps[e.AppID] = nil
+	}
+	if o.steps[e.AppID] == nil {
+		o.steps[e.AppID] = make(map[string]StepEvent)
+	}
+	o.steps[e.AppID][e.Step] = e
+}
+
+// CurrentSteps returns appID's latest recorded step states, ordered per
+// STEP_ORDER (web/src/pages/deployment-detail.tsx). It lets a dashboard page
+// that loads (or reconnects its SSE stream) mid-deploy hydrate its pipeline
+// view, since deploy.step events aren't replayed on reconnect. Returns nil
+// if no pipeline run has been recorded for appID since server start.
+func (o *Orchestrator) CurrentSteps(appID string) []StepEvent {
+	o.stepsMu.RLock()
+	defer o.stepsMu.RUnlock()
+	steps := o.steps[appID]
+	if len(steps) == 0 {
+		return nil
+	}
+	order := []string{StepClone, StepDetect, StepBuild, StepPush, StepCompliance, StepDeploy}
+	out := make([]StepEvent, 0, len(steps))
+	for _, name := range order {
+		if e, ok := steps[name]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // publishLog broadcasts a single build-output line for appID.

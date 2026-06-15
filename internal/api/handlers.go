@@ -45,9 +45,11 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // handleHealth doubles as a tiny unauthenticated bootstrap endpoint: the
 // frontend reads ingress_domain here so generated app URLs
 // (web/src/pages/deployment-detail.tsx) match the server's actual
-// INGRESS_DOMAIN instead of a hardcoded guess.
+// INGRESS_DOMAIN instead of a hardcoded guess, and public_host so
+// container-target app links point at this server's real address instead
+// of a hardcoded "localhost".
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "ingress_domain": s.ingressDomain})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "ingress_domain": s.ingressDomain, "public_host": s.serverIP(r)})
 }
 
 func (s *Server) handleDNSCheck(w http.ResponseWriter, r *http.Request) {
@@ -699,6 +701,10 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt  time.Time `json:"updated_at"`
 		VolumePath string    `json:"volume_path,omitempty"`
 		Links      []appLink `json:"links"`
+		// Steps hydrates the deploy-progress pipeline for pages that load (or
+		// reconnect their SSE stream) mid-deploy — deploy.step events aren't
+		// replayed on reconnect, so the frontend seeds stepsByApp from here.
+		Steps []deploy.StepEvent `json:"steps,omitempty"`
 	}
 	var apps []appDetail
 	index := make(map[string]int)
@@ -714,6 +720,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		if targetKind == "local_docker" {
 			a.HostPort = docker.AppHostPort(stackName, a.Name)
 		}
+		a.Steps = s.deploy.CurrentSteps(a.ID)
 		a.Links = []appLink{}
 		index[a.ID] = len(apps)
 		apps = append(apps, a)

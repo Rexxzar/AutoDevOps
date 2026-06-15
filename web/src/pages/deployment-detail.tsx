@@ -48,6 +48,9 @@ interface AppDetail {
   updated_at: string
   volume_path?: string
   links: AppLink[]
+  // Hydrates the deploy-progress pipeline on page load / SSE reconnect — see
+  // DeployStepEvent and internal/api/handlers.go's handleGetDeployment.
+  steps?: DeployStepEvent[]
 }
 
 interface StackDetail {
@@ -109,6 +112,20 @@ const STEP_LABELS: Record<string, string> = {
 
 function initialPipelineStages(): PipelineStage[] {
   return STEP_ORDER.map((step) => ({ name: STEP_LABELS[step], status: 'pending' }))
+}
+
+// Builds pipeline stages from a snapshot of deploy.step events (AppDetail.steps),
+// applying the same per-step status mapping as the live deploy.step SSE handler —
+// used to hydrate stepsByApp when a page loads (or its SSE stream reconnects)
+// mid-deploy, since deploy.step events aren't replayed on reconnect.
+function stagesFromStepEvents(events: DeployStepEvent[]): PipelineStage[] {
+  const stages = initialPipelineStages()
+  for (const e of events) {
+    const idx = STEP_ORDER.indexOf(e.step as (typeof STEP_ORDER)[number])
+    if (idx === -1) continue
+    stages[idx] = { ...stages[idx], status: e.status }
+  }
+  return stages
 }
 
 // MAX_LOG_LINES caps the in-memory deploy.log buffer per app — enough for a
@@ -177,6 +194,18 @@ export function DeploymentDetailPage() {
     queryFn: async () => {
       const data = await apiFetch<StackDetail>(`/deployments/${id}`)
       setStack(data)
+      // Hydrate the pipeline for apps with a recorded step snapshot, but only
+      // the first time — once live deploy.step SSE events start arriving for
+      // an app, those take over and this snapshot must not overwrite them.
+      setStepsByApp((prev) => {
+        let next = prev
+        for (const app of data.apps) {
+          if (!app.steps?.length || prev[app.id]) continue
+          if (next === prev) next = { ...prev }
+          next[app.id] = stagesFromStepEvents(app.steps)
+        }
+        return next
+      })
       return data
     },
     enabled: !!id,
@@ -191,11 +220,12 @@ export function DeploymentDetailPage() {
 
   // ingress_domain is server config (INGRESS_DOMAIN) — fetched once and
   // reused to build app URLs below, so they match whatever domain the
-  // backend actually generated Ingress hosts for (see internal/api/handlers.go
-  // handleHealth).
+  // backend actually generated Ingress hosts for. public_host is the
+  // server's PUBLIC_IP (or request-derived address) for container-target
+  // app links (see internal/api/handlers.go handleHealth).
   const { data: health } = useQuery({
     queryKey: ['healthz'],
-    queryFn: () => apiFetch<{ ingress_domain: string }>('/healthz'),
+    queryFn: () => apiFetch<{ ingress_domain: string; public_host: string }>('/healthz'),
     staleTime: Infinity,
   })
 
@@ -399,6 +429,7 @@ export function DeploymentDetailPage() {
             allApps={apps}
             resources={linkableResources}
             ingressDomain={health?.ingress_domain}
+            publicHost={health?.public_host}
             findings={findings.filter((f) => f.deployment_id === app.id)}
             acting={actingId === app.id}
             steps={stepsByApp[app.id]}
@@ -449,13 +480,14 @@ export function DeploymentDetailPage() {
 }
 
 function AppCard({
-  app, stackId, allApps, resources, ingressDomain, findings, acting, steps, logs, onRedeploy, onDelete, onDownloadWorkflow, onLinksChanged,
+  app, stackId, allApps, resources, ingressDomain, publicHost, findings, acting, steps, logs, onRedeploy, onDelete, onDownloadWorkflow, onLinksChanged,
 }: {
   app: AppDetail
   stackId: string
   allApps: AppDetail[]
   resources: ProvisionedResource[]
   ingressDomain?: string
+  publicHost?: string
   findings: ComplianceFinding[]
   acting: boolean
   steps?: PipelineStage[]
@@ -485,12 +517,17 @@ function AppCard({
     }
   }, [logs, showLogs])
 
+  // Loopback addresses aren't reachable from a browser on another machine —
+  // fall back to "localhost" (the historical default, still correct for
+  // local dev) rather than showing a meaningless ::1/127.0.0.1 link.
+  const containerHost = publicHost && publicHost !== '::1' && publicHost !== '127.0.0.1' ? publicHost : 'localhost'
+
   const url = app.domain
     ? `https://${app.domain}`
     : app.target_type === 'k8s' && app.namespace && ingressDomain
       ? `https://${app.name}.${ingressDomain}`
       : app.target_type === 'container' && app.host_port
-        ? `http://localhost:${app.host_port}`
+        ? `http://${containerHost}:${app.host_port}`
         : null
 
   async function handleDeleteLink(linkId: string) {
