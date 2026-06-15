@@ -3,6 +3,7 @@ package terraform
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 )
 
@@ -49,6 +50,9 @@ type AzureStackParams struct {
 	// ACI provisions a single containerized service on Azure Container
 	// Instances. Nil means no container service was selected.
 	ACI *AzureACIParams
+	// ACR provisions a container registry alongside this deployment's other
+	// Azure resources. Nil means no ACR registry was selected.
+	ACR *ACRParams
 }
 
 // Validate checks that all fields needed to render a valid Azure stack are
@@ -81,6 +85,11 @@ func (p AzureStackParams) Validate() error {
 	if p.ACI != nil {
 		if err := p.ACI.Validate(); err != nil {
 			return fmt.Errorf("aci: %w", err)
+		}
+	}
+	if p.ACR != nil {
+		if err := p.ACR.Validate(); err != nil {
+			return fmt.Errorf("acr: %w", err)
 		}
 	}
 	return nil
@@ -233,6 +242,28 @@ func (p AzureACIParams) Validate() error {
 	}
 	if p.MemoryGB <= 0 {
 		return fmt.Errorf("memory_gb must be greater than zero")
+	}
+	return nil
+}
+
+// acrNamePattern matches Azure Container Registry's naming rules:
+// alphanumeric only (no hyphens/underscores/periods), 5-50 characters.
+var acrNamePattern = regexp.MustCompile(`^[a-zA-Z0-9]{5,50}$`)
+
+// ACRParams is an opt-in marker for provisioning an Azure Container Registry
+// alongside this deployment's other Azure resources — bundled into the same
+// combined stack/state, per the Phase 8 ECR/ACR design.
+type ACRParams struct {
+	// Name is the globally-unique registry name, precomputed by the caller
+	// (ACR names are unique across all of Azure, alphanumeric only, 5-50
+	// characters — e.g. the deployment name plus a hex suffix).
+	Name string
+}
+
+// Validate checks Name meets Azure Container Registry's naming rules.
+func (p ACRParams) Validate() error {
+	if !acrNamePattern.MatchString(p.Name) {
+		return fmt.Errorf("name %q: must be 5-50 alphanumeric characters", p.Name)
 	}
 	return nil
 }

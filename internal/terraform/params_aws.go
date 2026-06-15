@@ -41,6 +41,10 @@ type AWSStackParams struct {
 	// wired to the deployment's VPC. Nil means no container service was
 	// selected.
 	ECS *ECSParams
+	// ECR provisions a container image repository alongside this
+	// deployment's other AWS resources. Nil means no ECR repository was
+	// selected.
+	ECR *ECRParams
 }
 
 // Validate checks that all fields needed to render a valid AWS stack are
@@ -71,6 +75,11 @@ func (p AWSStackParams) Validate() error {
 	if p.ECS != nil {
 		if err := p.ECS.Validate(); err != nil {
 			return fmt.Errorf("ecs: %w", err)
+		}
+	}
+	if p.ECR != nil {
+		if err := p.ECR.Validate(); err != nil {
+			return fmt.Errorf("ecr: %w", err)
 		}
 	}
 	return nil
@@ -243,5 +252,17 @@ func (p ECSParams) Validate() error {
 	if err := validateSubnets(p.Subnets, 2); err != nil {
 		return fmt.Errorf("subnets: %w", err)
 	}
+	return nil
+}
+
+// ECRParams is an opt-in marker for provisioning an ECR repository alongside
+// this deployment's other AWS resources — bundled into the same combined
+// stack/state rather than a separate provisioned_resources row, per the
+// Phase 8 ECR/ACR design. It carries no fields; a non-nil value is the only
+// signal the template checks.
+type ECRParams struct{}
+
+// Validate is a no-op — ECRParams carries no fields to check.
+func (p ECRParams) Validate() error {
 	return nil
 }

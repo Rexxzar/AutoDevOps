@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/Rexxzar/autodevops/internal/sse"
@@ -62,6 +63,8 @@ func namespaceName(stackName string) string {
 //   - target_kind="local_k8s":    KubeDeployer   → status=running|failed
 //   - target_kind="local_docker": DockerDeployer → status=running|failed
 //   - target_kind="cloud_vm":     SSH deployer   → status=running|failed
+//   - target_kind="cloud_ecs":    ECR push + ECS task redeploy → status=running|failed
+//   - target_kind="cloud_aci":    ACR push + ACI terraform redeploy → status=running|failed
 //   - other / no deployer wired:  stays at status=deploying
 func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 	var (
@@ -72,13 +75,14 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		targetKind       string
 		targetResourceID *string
 		gitCredsSecretID *string
+		buildContext     string
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text
+		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, '')
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1
-	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID)
+	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext)
 	if err != nil {
 		return fmt.Errorf("deploy: look up app %s: %w", appID, err)
 	}
@@ -96,15 +100,21 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		creds = &c
 	}
 
+	o.publishStep(appID, StepClone, StepActive)
 	repoPath, err := o.ensureClone(ctx, appID, repoURL, branch, creds)
 	if err != nil {
+		o.publishStep(appID, StepClone, StepFailed)
 		return fmt.Errorf("deploy: clone %s: %w", repoURL, err)
 	}
+	o.publishStep(appID, StepClone, StepDone)
 
+	o.publishStep(appID, StepDetect, StepActive)
 	framework, err := DetectFramework(repoPath)
 	if err != nil {
+		o.publishStep(appID, StepDetect, StepFailed)
 		return fmt.Errorf("deploy: detect framework for %s: %w", repoPath, err)
 	}
+	o.publishStep(appID, StepDetect, StepDone)
 
 	// Persist framework + transition to building in a single UPDATE so the
 	// dashboard sees the framework and the building status simultaneously.
@@ -116,11 +126,16 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 
 	extraEnv, err := o.resolveLinks(ctx, appID, stackName, targetKind)
 	if err != nil {
+		o.publishStep(appID, StepBuild, StepFailed)
 		return fmt.Errorf("deploy: resolve links for %s: %w", appID, err)
 	}
 
-	if err := o.buildImage(ctx, appID, appName, repoPath, extraEnv); err != nil {
-		return err // buildImage already persisted status=failed and published SSE
+	contextDir := repoPath
+	if buildContext != "" {
+		contextDir = filepath.Join(repoPath, buildContext)
+	}
+	if err := o.buildImage(ctx, appID, appName, repoPath, contextDir, extraEnv); err != nil {
+		return err // buildImage already persisted status=failed, published SSE, and marked its step failed
 	}
 
 	// Fetch the image_ref that buildImage persisted — both deploy branches need it.
@@ -132,17 +147,24 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 	}
 
 	if o.complianceGate != nil {
+		o.publishStep(appID, StepCompliance, StepActive)
 		if err := o.complianceGate.RunAll(ctx, appID, repoPath, imageRef); err != nil {
+			o.publishStep(appID, StepCompliance, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			return fmt.Errorf("deploy: %w", err)
 		}
+		o.publishStep(appID, StepCompliance, StepDone)
+	} else {
+		o.publishStep(appID, StepCompliance, StepSkipped)
 	}
 
+	o.publishStep(appID, StepDeploy, StepActive)
 	switch {
 	case targetKind == "local_k8s" && o.kubeDeployer != nil:
 		namespace := namespaceName(stackName)
 		if err := o.kubeDeployer.KubeDeploy(ctx, appName, namespace, imageRef, extraEnv); err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			return fmt.Errorf("deploy: k8s deploy %s: %w", appName, err)
@@ -152,9 +174,11 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 			return err
 		}
 		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+		o.publishStep(appID, StepDeploy, StepDone)
 
 	case targetKind == "local_docker" && o.dockerDeployer != nil:
 		if err := o.dockerDeployer.DockerDeploy(ctx, stackName, appName, imageRef, extraEnv); err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			return fmt.Errorf("deploy: docker deploy %s: %w", appName, err)
@@ -164,27 +188,32 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 			return err
 		}
 		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+		o.publishStep(appID, StepDeploy, StepDone)
 
 	case targetKind == "cloud_vm":
 		if targetResourceID == nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			return fmt.Errorf("deploy: app %s has target_kind cloud_vm but no target_resource_id", appID)
 		}
 		res, err := o.loadCloudVMResource(ctx, *targetResourceID)
 		if err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			return fmt.Errorf("deploy: %w", err)
 		}
 		sha12, err := headSHA12(repoPath)
 		if err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			return fmt.Errorf("deploy: %w", err)
 		}
 		pushRef, _ := o.imageRefs(appName, sha12)
 		if err := o.deployToVM(ctx, stackName, appName, pushRef, extraEnv, res); err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 			return fmt.Errorf("deploy: vm deploy %s: %w", appName, err)
@@ -194,6 +223,80 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 			return err
 		}
 		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+		o.publishStep(appID, StepDeploy, StepDone)
+
+	case targetKind == "cloud_ecs":
+		if targetResourceID == nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
+			dep, _ := o.persistStatus(ctx, appID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: app %s has target_kind cloud_ecs but no target_resource_id", appID)
+		}
+		res, err := o.loadECSResource(ctx, *targetResourceID)
+		if err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
+			dep, _ := o.persistStatus(ctx, appID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: %w", err)
+		}
+		sha12, err := headSHA12(repoPath)
+		if err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
+			dep, _ := o.persistStatus(ctx, appID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: %w", err)
+		}
+		pushRef, _ := o.imageRefs(appName, sha12)
+		if err := o.deployToECS(ctx, pushRef, extraEnv, res); err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
+			dep, _ := o.persistStatus(ctx, appID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: ecs deploy %s: %w", appName, err)
+		}
+		dep, err := o.persistStatus(ctx, appID, "running")
+		if err != nil {
+			return err
+		}
+		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+		o.publishStep(appID, StepDeploy, StepDone)
+
+	case targetKind == "cloud_aci":
+		if targetResourceID == nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
+			dep, _ := o.persistStatus(ctx, appID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: app %s has target_kind cloud_aci but no target_resource_id", appID)
+		}
+		res, err := o.loadACIResource(ctx, *targetResourceID)
+		if err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
+			dep, _ := o.persistStatus(ctx, appID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: %w", err)
+		}
+		sha12, err := headSHA12(repoPath)
+		if err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
+			dep, _ := o.persistStatus(ctx, appID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: %w", err)
+		}
+		pushRef, _ := o.imageRefs(appName, sha12)
+		if err := o.deployToACI(ctx, appName, pushRef, extraEnv, res); err != nil {
+			o.publishStep(appID, StepDeploy, StepFailed)
+			dep, _ := o.persistStatus(ctx, appID, "failed")
+			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+			return fmt.Errorf("deploy: aci deploy %s: %w", appName, err)
+		}
+		dep, err := o.persistStatus(ctx, appID, "running")
+		if err != nil {
+			return err
+		}
+		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
+		o.publishStep(appID, StepDeploy, StepDone)
+
+	default:
+		o.publishStep(appID, StepDeploy, StepSkipped)
 	}
 
 	return nil

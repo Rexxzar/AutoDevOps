@@ -25,11 +25,15 @@ func (m *Manager) SaveImage(ctx context.Context, ref string) (io.ReadCloser, err
 
 // PushImage pushes an image already present in the host Docker daemon's
 // store to its registry, implementing internal/deploy.ImagePusher. RegistryAuth
-// is required by the daemon API even for unauthenticated registries, so an
-// empty AuthConfig is base64-encoded and sent — the local registry has no
-// auth configured.
-func (m *Manager) PushImage(ctx context.Context, ref string) error {
-	authJSON, err := json.Marshal(registry.AuthConfig{})
+// is required by the daemon API even for unauthenticated registries, so when
+// auth is nil an empty AuthConfig is base64-encoded and sent — the local
+// registry has no auth configured. A non-nil auth is used for authenticated
+// pushes to ECR/ACR.
+func (m *Manager) PushImage(ctx context.Context, ref string, auth *registry.AuthConfig) error {
+	if auth == nil {
+		auth = &registry.AuthConfig{}
+	}
+	authJSON, err := json.Marshal(auth)
 	if err != nil {
 		return fmt.Errorf("docker: encode push auth: %w", err)
 	}
@@ -57,4 +61,14 @@ func (m *Manager) PushImage(ctx context.Context, ref string) error {
 			return fmt.Errorf("docker: push %s: %s", ref, msg.Error)
 		}
 	}
+}
+
+// TagImage applies an additional tag to an image already present in the host
+// Docker daemon's store, implementing internal/deploy.ImagePusher — used to
+// retag a locally-built image for an ECR/ACR repository before pushing.
+func (m *Manager) TagImage(ctx context.Context, source, target string) error {
+	if err := m.client.ImageTag(ctx, source, target); err != nil {
+		return fmt.Errorf("docker: tag image %s as %s: %w", source, target, err)
+	}
+	return nil
 }

@@ -32,10 +32,11 @@ type Server struct {
 	dockerMgr     *docker.Manager
 	publicIP      string
 	ingressDomain string
+	registryHost  string
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, k8sCtrl *k8s.Controller, dockerMgr *docker.Manager, publicIP, ingressDomain string) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, k8sCtrl: k8sCtrl, dockerMgr: dockerMgr, publicIP: publicIP, ingressDomain: ingressDomain}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, k8sCtrl *k8s.Controller, dockerMgr *docker.Manager, publicIP, ingressDomain, registryHost string) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, k8sCtrl: k8sCtrl, dockerMgr: dockerMgr, publicIP: publicIP, ingressDomain: ingressDomain, registryHost: registryHost}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -57,6 +58,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Get("/events", hub.Handler())
 		r.Get("/deployments", s.handleListDeployments)
 		r.Post("/deployments", s.handleCreateDeployment)
+		r.Post("/deployments/import/preview", s.handleImportComposePreview)
 		r.Get("/deployments/{id}", s.handleGetDeployment)
 		r.Delete("/deployments/{id}", s.handleDestroyDeployment)
 		r.Post("/deployments/{id}/apps", s.handleAddApp)
@@ -72,6 +74,9 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Get("/cloud/accounts/{id}/networks", s.handleListCloudAccountNetworks)
 		r.Get("/cloud/resources", s.handleListCloudResources)
 		r.Get("/docker/networks", s.handleListDockerNetworks)
+		r.Get("/registry/images", s.handleListRegistryImages)
+		r.Delete("/registry/images", s.handleDeleteRegistryImage)
+		r.Post("/registry/images/import", s.handleImportRegistryImage)
 		r.Post("/cloud/resources/{id}/dismiss", s.handleDismissCloudResource)
 		r.Get("/compliance/findings", s.handleListComplianceFindings)
 		r.Post("/clusters", s.handleCreateCluster)

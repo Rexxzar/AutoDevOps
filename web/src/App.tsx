@@ -6,6 +6,7 @@ import { ClustersPage } from '@/pages/clusters'
 import { OverviewPage } from '@/pages/overview'
 import { ResourcesPage } from '@/pages/resources'
 import { LocalResourcesPage } from '@/pages/local-resources'
+import { ImageRegistryPage } from '@/pages/image-registry'
 import { ResourceDetailPage } from '@/pages/resource-detail'
 import { DeploymentDetailPage } from '@/pages/deployment-detail'
 import { CompliancePage } from '@/pages/compliance'
@@ -38,6 +39,7 @@ function DashboardLayout() {
             <Route path="/local-resources" element={<LocalResourcesPage />} />
             <Route path="/resources/:id" element={<ResourceDetailPage />} />
             <Route path="/local-resources/:id" element={<ResourceDetailPage />} />
+            <Route path="/image-registry" element={<ImageRegistryPage />} />
             <Route path="/compliance" element={<CompliancePage />} />
             <Route
               path="/secrets"

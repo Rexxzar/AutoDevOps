@@ -94,13 +94,17 @@ func main() {
 		imageSaver = dockerMgr
 	}
 
-	complianceScanner := compliance.New(pool, hub, cfg.ComplianceThreshold)
-	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, cfg.IngressDomain, kubeDeployer, dockerDeployer, imagePusher, imageSaver, complianceScanner)
-
 	var tfRunner *terraform.Runner
 	if tfExecPath != "" {
 		tfRunner = terraform.NewRunner(tfExecPath, filepath.Join(cfg.DataDir, "terraform", "workspaces"), pool, hub, vault)
 	}
+	var aciRedeployer deploy.ACIRedeployer
+	if tfRunner != nil {
+		aciRedeployer = tfRunner
+	}
+
+	complianceScanner := compliance.New(pool, hub, cfg.ComplianceThreshold)
+	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, cfg.IngressDomain, kubeDeployer, dockerDeployer, imagePusher, imageSaver, aciRedeployer, complianceScanner)
 
 	tfEngine, err := terraform.New([]terraform.Definition{
 		{ID: terraform.AWSStackID, Provider: terraform.ProviderAWS, Path: "templates/aws/stack.tf.tmpl"},
@@ -114,7 +118,7 @@ func main() {
 	consoleManager := console.NewManager(console.NewRegistry(pool, vault, cfg.KubeconfigPath))
 	go consoleManager.Run(ctx)
 
-	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, k8sCtrl, dockerMgr, cfg.PublicIP, cfg.IngressDomain)
+	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, k8sCtrl, dockerMgr, cfg.PublicIP, cfg.IngressDomain, cfg.RegistryPush)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),

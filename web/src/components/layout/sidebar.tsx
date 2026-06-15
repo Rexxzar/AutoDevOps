@@ -10,6 +10,7 @@ import {
   Settings,
   Activity,
   Terminal,
+  Package,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -19,6 +20,7 @@ const nav = [
   { to: '/clusters', label: 'Clusters', icon: Boxes, badge: 'live' },
   { to: '/resources', label: 'Cloud Resources', icon: Cloud },
   { to: '/local-resources', label: 'Local Resources', icon: Server },
+  { to: '/image-registry', label: 'Image Registry', icon: Package },
   { to: '/compliance', label: 'Compliance', icon: ShieldCheck },
   { to: '/secrets', label: 'Secrets', icon: KeyRound },
 ]

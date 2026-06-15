@@ -3,6 +3,8 @@ package k8s
 import (
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestNamespaceName(t *testing.T) {
@@ -144,7 +146,7 @@ func TestBuildResourceNamespace(t *testing.T) {
 }
 
 func TestBuildResourceDeployment(t *testing.T) {
-	dep := buildResourceDeployment("my-resource", "resource-my-resource", "nginx:latest", 80, nil)
+	dep := buildResourceDeployment("my-resource", "resource-my-resource", "nginx:latest", 80, nil, "")
 
 	if dep.Name != "my-resource" || dep.Namespace != "resource-my-resource" {
 		t.Errorf("deployment name/namespace = %q/%q", dep.Name, dep.Namespace)
@@ -166,6 +168,37 @@ func TestBuildResourceDeployment(t *testing.T) {
 		if e.Name == "PORT" {
 			t.Error("PORT env var should not be injected for resource deployments")
 		}
+	}
+}
+
+func TestBuildResourceDeploymentWithVolume(t *testing.T) {
+	dep := buildResourceDeployment("pg", "autodevops-stack", "postgres:16", 5432, nil, "/var/lib/postgresql/data")
+
+	pod := dep.Spec.Template.Spec
+	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != "pg-data" {
+		t.Fatalf("expected volume %q, got %v", "pg-data", pod.Volumes)
+	}
+	if pod.Volumes[0].PersistentVolumeClaim == nil || pod.Volumes[0].PersistentVolumeClaim.ClaimName != "pg-data" {
+		t.Errorf("volume %v missing PVC source pg-data", pod.Volumes[0])
+	}
+
+	mounts := pod.Containers[0].VolumeMounts
+	if len(mounts) != 1 || mounts[0].Name != "pg-data" || mounts[0].MountPath != "/var/lib/postgresql/data" {
+		t.Errorf("volume mounts = %v, want pg-data at /var/lib/postgresql/data", mounts)
+	}
+}
+
+func TestBuildResourcePVC(t *testing.T) {
+	pvc := buildResourcePVC("pg", "autodevops-stack")
+
+	if pvc.Name != "pg-data" || pvc.Namespace != "autodevops-stack" {
+		t.Errorf("pvc name/namespace = %q/%q", pvc.Name, pvc.Namespace)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "standard" {
+		t.Errorf("storage class = %v, want \"standard\"", pvc.Spec.StorageClassName)
+	}
+	if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteOnce {
+		t.Errorf("access modes = %v, want [ReadWriteOnce]", pvc.Spec.AccessModes)
 	}
 }
 

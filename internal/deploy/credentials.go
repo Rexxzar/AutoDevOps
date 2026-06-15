@@ -6,11 +6,19 @@ import (
 	"fmt"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 )
+
+// azurePostgresScope is the OAuth scope for Azure Database for PostgreSQL
+// Flexible Server's AAD authentication — Azure Postgres uses the resulting
+// access token directly as the connecting user's password (the "password" in
+// a normal connection string), per stack.tf.tmpl's
+// authentication.password_auth_enabled = false (AAD-only).
+const azurePostgresScope = "https://ossrdbms-aad.database.windows.net/.default"
 
 // awsCredentials mirrors the unexported credential shape in internal/cloud,
 // internal/terraform and internal/console (internal/deploy must not import
@@ -93,4 +101,19 @@ func (o *Orchestrator) loadAzureCredential(ctx context.Context, cloudAccountID s
 		return nil, "", fmt.Errorf("deploy: build azure credential: %w", err)
 	}
 	return cred, creds.SubscriptionID, nil
+}
+
+// azureAADToken fetches an AAD access token for cloudAccountID scoped to Azure
+// Database for PostgreSQL, suitable for use directly as the connecting user's
+// password under password_auth_enabled = false.
+func (o *Orchestrator) azureAADToken(ctx context.Context, cloudAccountID string) (string, error) {
+	cred, _, err := o.loadAzureCredential(ctx, cloudAccountID)
+	if err != nil {
+		return "", err
+	}
+	token, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{azurePostgresScope}})
+	if err != nil {
+		return "", fmt.Errorf("deploy: fetch azure postgres aad token: %w", err)
+	}
+	return token.Token, nil
 }

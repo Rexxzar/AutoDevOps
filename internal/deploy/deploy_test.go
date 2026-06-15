@@ -33,6 +33,7 @@ func testOrchestrator(pool *pgxpool.Pool, vault *secrets.Vault, hub *sse.Hub, wo
 		nil, // no DockerDeployer
 		nil, // no ImagePusher
 		nil, // no ImageSaver
+		nil, // no ACIRedeployer
 		nil, // no ComplianceGate
 	)
 }
@@ -90,6 +91,31 @@ func TestHeadSHA12(t *testing.T) {
 	}
 	if sha != hash.String()[:12] {
 		t.Errorf("headSHA12 = %q, want %q", sha, hash.String()[:12])
+	}
+}
+
+func TestHasDockerfile(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []string
+		want  bool
+	}{
+		{"dockerfile present", []string{"Dockerfile"}, true},
+		{"no dockerfile, other files", []string{"go.mod", "main.go"}, false},
+		{"empty dir", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, f := range tc.files {
+				if err := os.WriteFile(filepath.Join(dir, f), []byte(""), 0o644); err != nil {
+					t.Fatalf("seed %s: %v", f, err)
+				}
+			}
+			if got := hasDockerfile(dir); got != tc.want {
+				t.Errorf("hasDockerfile(%v) = %v, want %v", tc.files, got, tc.want)
+			}
+		})
 	}
 }
 

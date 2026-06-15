@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -11,12 +11,13 @@ import { Dialog } from '@/components/ui/dialog'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { targetLabel, frameworkLabel } from '@/components/meta-tags'
 import { TargetPill, FormField, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { Pipeline } from '@/components/pipeline'
 import { apiFetch } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { useSSE } from '@/lib/use-sse'
 import { formatRelativeTime, provisionedTypeLabel, type ProvisionedResource } from '@/lib/resources'
 import { cn } from '@/lib/utils'
-import type { Target } from '@/lib/mock-data'
+import type { Target, PipelineStage } from '@/lib/mock-data'
 
 interface AppLink {
   id: string
@@ -45,6 +46,7 @@ interface AppDetail {
   status: string
   created_at: string
   updated_at: string
+  volume_path?: string
   links: AppLink[]
 }
 
@@ -79,6 +81,39 @@ interface DeployStatusEvent {
   namespace?: string
   updated_at: string
 }
+
+// deploy.step / deploy.log SSE payloads (internal/deploy.StepEvent / LogEvent).
+interface DeployStepEvent {
+  deployment_app_id: string
+  step: string
+  status: 'active' | 'done' | 'failed' | 'skipped'
+  at: string
+}
+
+interface DeployLogEvent {
+  deployment_app_id: string
+  line: string
+}
+
+// STEP_ORDER mirrors internal/deploy/progress.go's Step* consts, in the order
+// ProcessPush walks them — the deploy-progress Pipeline for "git"-kind apps.
+const STEP_ORDER = ['clone', 'detect', 'build', 'push', 'compliance', 'deploy'] as const
+const STEP_LABELS: Record<string, string> = {
+  clone: 'Clone',
+  detect: 'Detect',
+  build: 'Build',
+  push: 'Push',
+  compliance: 'Compliance',
+  deploy: 'Deploy',
+}
+
+function initialPipelineStages(): PipelineStage[] {
+  return STEP_ORDER.map((step) => ({ name: STEP_LABELS[step], status: 'pending' }))
+}
+
+// MAX_LOG_LINES caps the in-memory deploy.log buffer per app — enough for a
+// "show verbose" scrollback without unbounded growth on long builds.
+const MAX_LOG_LINES = 500
 
 const appStatusMap: Record<string, StatusKind> = {
   pending: 'pending',
@@ -132,6 +167,10 @@ export function DeploymentDetailPage() {
   const [confirmTarget, setConfirmTarget] = useState<{ kind: 'app'; app: AppDetail } | { kind: 'stack' } | null>(null)
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [actionError, setActionError] = useState('')
+  // Per-app live deploy-progress state, keyed by deployment_app_id — fed by
+  // deploy.step/deploy.log SSE events, rendered as <Pipeline> in AppCard.
+  const [stepsByApp, setStepsByApp] = useState<Record<string, PipelineStage[]>>({})
+  const [logsByApp, setLogsByApp] = useState<Record<string, string[]>>({})
 
   const { isLoading, error, refetch } = useQuery({
     queryKey: ['deployment', id],
@@ -172,25 +211,61 @@ export function DeploymentDetailPage() {
   // AddAppDialog (Phase 5b). resource_type "vm" only exists for the aws/azure
   // providers (see provisionedTypeLabel), so no provider check is needed.
   const vmResources = linkableResources.filter((r) => r.resource_type === 'vm')
+  // Applied ECS Fargate / ACI container-group resources — offered as the
+  // cloud_ecs/cloud_aci target pickers in AddAppDialog (Phase 8g). resource_type
+  // "ecs"/"aci" are provider-specific (aws/azure respectively), so no provider
+  // check is needed.
+  const ecsResources = linkableResources.filter((r) => r.resource_type === 'ecs')
+  const aciResources = linkableResources.filter((r) => r.resource_type === 'aci')
 
   useSSE(token, useCallback((type: string, data: unknown) => {
-    if (type !== 'deploy.status') return
-    const d = data as DeployStatusEvent
-    if (d.deployment_id !== id) return
-    setStack((prev) => {
-      if (!prev) return prev
-      const idx = prev.apps.findIndex((a) => a.id === d.id)
-      if (idx === -1) return prev
-      const next = [...prev.apps]
-      next[idx] = {
-        ...next[idx],
-        status: d.status,
-        image_ref: d.image_ref || next[idx].image_ref,
-        namespace: d.namespace || next[idx].namespace,
-        updated_at: d.updated_at,
+    if (type === 'deploy.status') {
+      const d = data as DeployStatusEvent
+      if (d.deployment_id !== id) return
+      setStack((prev) => {
+        if (!prev) return prev
+        const idx = prev.apps.findIndex((a) => a.id === d.id)
+        if (idx === -1) return prev
+        const next = [...prev.apps]
+        next[idx] = {
+          ...next[idx],
+          status: d.status,
+          image_ref: d.image_ref || next[idx].image_ref,
+          namespace: d.namespace || next[idx].namespace,
+          updated_at: d.updated_at,
+        }
+        return { ...prev, apps: next }
+      })
+      return
+    }
+
+    if (type === 'deploy.step') {
+      const e = data as DeployStepEvent
+      const idx = STEP_ORDER.indexOf(e.step as (typeof STEP_ORDER)[number])
+      if (idx === -1) return
+      // A new "clone: active" marks the start of a fresh pipeline run — reset
+      // this app's stages and log buffer so a redeploy doesn't show stale state.
+      const isFreshRun = e.step === 'clone' && e.status === 'active'
+      setStepsByApp((prev) => {
+        const stages = isFreshRun ? initialPipelineStages() : [...(prev[e.deployment_app_id] ?? initialPipelineStages())]
+        stages[idx] = { ...stages[idx], status: e.status }
+        return { ...prev, [e.deployment_app_id]: stages }
+      })
+      if (isFreshRun) {
+        setLogsByApp((prev) => ({ ...prev, [e.deployment_app_id]: [] }))
       }
-      return { ...prev, apps: next }
-    })
+      return
+    }
+
+    if (type === 'deploy.log') {
+      const e = data as DeployLogEvent
+      setLogsByApp((prev) => {
+        const lines = [...(prev[e.deployment_app_id] ?? []), e.line]
+        if (lines.length > MAX_LOG_LINES) lines.splice(0, lines.length - MAX_LOG_LINES)
+        return { ...prev, [e.deployment_app_id]: lines }
+      })
+      return
+    }
   }, [id]))
 
   async function handleRedeploy(appId: string) {
@@ -326,6 +401,8 @@ export function DeploymentDetailPage() {
             ingressDomain={health?.ingress_domain}
             findings={findings.filter((f) => f.deployment_id === app.id)}
             acting={actingId === app.id}
+            steps={stepsByApp[app.id]}
+            logs={logsByApp[app.id]}
             onRedeploy={() => handleRedeploy(app.id)}
             onDelete={() => requestDeleteApp(app)}
             onDownloadWorkflow={() => handleDownloadWorkflow(app)}
@@ -337,6 +414,8 @@ export function DeploymentDetailPage() {
       <AddAppDialog
         stackId={stack.id}
         vmResources={vmResources}
+        ecsResources={ecsResources}
+        aciResources={aciResources}
         open={addOpen}
         onClose={() => setAddOpen(false)}
         onCreated={() => refetch()}
@@ -370,7 +449,7 @@ export function DeploymentDetailPage() {
 }
 
 function AppCard({
-  app, stackId, allApps, resources, ingressDomain, findings, acting, onRedeploy, onDelete, onDownloadWorkflow, onLinksChanged,
+  app, stackId, allApps, resources, ingressDomain, findings, acting, steps, logs, onRedeploy, onDelete, onDownloadWorkflow, onLinksChanged,
 }: {
   app: AppDetail
   stackId: string
@@ -379,6 +458,8 @@ function AppCard({
   ingressDomain?: string
   findings: ComplianceFinding[]
   acting: boolean
+  steps?: PipelineStage[]
+  logs?: string[]
   onRedeploy: () => void
   onDelete: () => void
   onDownloadWorkflow: () => void
@@ -387,10 +468,23 @@ function AppCard({
   const [linkOpen, setLinkOpen] = useState(false)
   const [deletingLinkId, setDeletingLinkId] = useState<string | null>(null)
   const [linkError, setLinkError] = useState('')
+  const [showLogs, setShowLogs] = useState(false)
+  const logRef = useRef<HTMLPreElement>(null)
   const siblings = allApps.filter((a) => a.id !== app.id)
 
   const statusKind = appStatusMap[app.status] ?? 'unknown'
   const isTransitional = app.status === 'building' || app.status === 'deploying'
+  // Show the live pipeline while a deploy is in flight, or after a failure so
+  // the user can see which step broke — hidden once a redeploy is started
+  // (deploy.step resets the stages back to "pending" first).
+  const showPipeline = app.kind === 'git' && !!steps?.some((s) => s.status !== 'pending') && (isTransitional || app.status === 'failed')
+
+  useEffect(() => {
+    if (showLogs && logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight
+    }
+  }, [logs, showLogs])
+
   const url = app.domain
     ? `https://${app.domain}`
     : app.target_type === 'k8s' && app.namespace && ingressDomain
@@ -433,6 +527,9 @@ function AppCard({
             {!!app.port && (
               <InfoRow label="Port" value={<span className="font-mono text-xs">{app.port}</span>} />
             )}
+            {app.volume_path && (
+              <InfoRow label="Volume" value={<span className="font-mono text-xs">{app.volume_path}</span>} />
+            )}
           </>
         ) : (
           <>
@@ -460,6 +557,28 @@ function AppCard({
           />
         )}
         <InfoRow label="Updated" value={formatRelativeTime(app.updated_at)} />
+
+        {showPipeline && (
+          <div className="space-y-1.5 pt-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Pipeline</p>
+              {!!logs?.length && (
+                <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setShowLogs((v) => !v)}>
+                  {showLogs ? 'Hide logs' : 'Show logs'}
+                </Button>
+              )}
+            </div>
+            <Pipeline stages={steps!} compact />
+            {showLogs && !!logs?.length && (
+              <pre
+                ref={logRef}
+                className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background px-3 py-2 font-mono text-[0.65rem] text-muted-foreground"
+              >
+                {logs.join('\n')}
+              </pre>
+            )}
+          </div>
+        )}
 
         {app.kind === 'git' && (siblings.length > 0 || resources.length > 0 || app.links.length > 0) && (
           <div className="space-y-1.5 pt-2">
@@ -682,10 +801,12 @@ function AddLinkDialog({
 }
 
 function AddAppDialog({
-  stackId, vmResources, open, onClose, onCreated,
+  stackId, vmResources, ecsResources, aciResources, open, onClose, onCreated,
 }: {
   stackId: string
   vmResources: ProvisionedResource[]
+  ecsResources: ProvisionedResource[]
+  aciResources: ProvisionedResource[]
   open: boolean
   onClose: () => void
   onCreated: () => void
@@ -695,31 +816,38 @@ function AddAppDialog({
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
   const [gitToken, setGitToken] = useState('')
-  const [target, setTarget] = useState<'k8s' | 'container' | 'vm'>('k8s')
+  const [target, setTarget] = useState<'k8s' | 'container' | 'vm' | 'ecs' | 'aci'>('k8s')
   const [vmResourceId, setVmResourceId] = useState('')
+  const [ecsResourceId, setEcsResourceId] = useState('')
+  const [aciResourceId, setAciResourceId] = useState('')
   const [domain, setDomain] = useState('')
   const [imageRef, setImageRef] = useState('')
   const [port, setPort] = useState('')
+  const [volumePath, setVolumePath] = useState('')
   const [envRows, setEnvRows] = useState<{ key: string; value: string }[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ webhookURL: string; webhookSecret: string } | null>(null)
 
   const effectiveVmResourceId = vmResourceId || vmResources[0]?.id || ''
+  const effectiveEcsResourceId = ecsResourceId || ecsResources[0]?.id || ''
+  const effectiveAciResourceId = aciResourceId || aciResources[0]?.id || ''
 
   function reset() {
     setKind('git')
     setName(''); setRepo(''); setBranch('main'); setGitToken(''); setTarget('k8s'); setVmResourceId(''); setDomain('')
-    setImageRef(''); setPort(''); setEnvRows([])
+    setEcsResourceId(''); setAciResourceId('')
+    setImageRef(''); setPort(''); setVolumePath(''); setEnvRows([])
     setError(''); setSuccess(null)
   }
 
-  // "Cloud VM" target is only offered for git apps with at least one applied
-  // EC2/Azure VM resource (Phase 4's image-kind deploy path doesn't support
-  // cloud_vm — see internal/deploy.DeployImageApp's default case).
+  // "Cloud VM"/"AWS ECS"/"Azure ACI" targets are only offered for git apps with
+  // at least one applied matching resource (Phase 4/8's image-kind deploy path
+  // doesn't support cloud_vm/cloud_ecs/cloud_aci — see
+  // internal/deploy.DeployImageApp's default case).
   function selectKind(next: 'git' | 'image') {
     setKind(next)
-    if (next === 'image' && target === 'vm') setTarget('k8s')
+    if (next === 'image' && (target === 'vm' || target === 'ecs' || target === 'aci')) setTarget('k8s')
   }
 
   function handleClose() {
@@ -740,6 +868,7 @@ function AddAppDialog({
           name, kind: 'image', image_ref: imageRef, port: Number(port), target_type: target,
         }
         if (Object.keys(env).length > 0) body.env = env
+        if (volumePath) body.volume_path = volumePath
         await apiFetch<{ id: string }>(`/deployments/${stackId}/apps`, {
           method: 'POST', body: JSON.stringify(body),
         })
@@ -750,6 +879,8 @@ function AddAppDialog({
 
       const body: Record<string, unknown> = { name, kind: 'git', repo_url: repo, branch, target_type: target }
       if (target === 'vm') body.target_resource_id = effectiveVmResourceId
+      if (target === 'ecs') body.target_resource_id = effectiveEcsResourceId
+      if (target === 'aci') body.target_resource_id = effectiveAciResourceId
       if (gitToken) body.git_auth = { type: 'token', token: gitToken }
       if (domain) body.domain = domain
       const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>(`/deployments/${stackId}/apps`, {
@@ -871,6 +1002,9 @@ function AddAppDialog({
                   </Button>
                 </div>
               </FormField>
+              <FormField label="Persistent storage path" hint="optional — e.g. /var/lib/postgresql/data">
+                <input value={volumePath} onChange={(e) => setVolumePath(e.target.value)} placeholder="/var/lib/postgresql/data" className={cn(inputCls, 'font-mono text-xs')} />
+              </FormField>
             </>
           )}
           <FormField label="Target">
@@ -880,12 +1014,40 @@ function AddAppDialog({
               {kind === 'git' && vmResources.length > 0 && (
                 <TargetPill label="Cloud VM" sub="SSH deploy" active={target === 'vm'} onClick={() => setTarget('vm')} />
               )}
+              {kind === 'git' && ecsResources.length > 0 && (
+                <TargetPill label="AWS ECS" sub="Fargate service" active={target === 'ecs'} onClick={() => setTarget('ecs')} />
+              )}
+              {kind === 'git' && aciResources.length > 0 && (
+                <TargetPill label="Azure ACI" sub="container group" active={target === 'aci'} onClick={() => setTarget('aci')} />
+              )}
             </div>
           </FormField>
           {target === 'vm' && (
             <FormField label="VM resource" hint="from the Resources page">
               <select value={effectiveVmResourceId} onChange={(e) => setVmResourceId(e.target.value)} className={selectCls} required>
                 {vmResources.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          )}
+          {target === 'ecs' && (
+            <FormField label="ECS service" hint="from the Resources page">
+              <select value={effectiveEcsResourceId} onChange={(e) => setEcsResourceId(e.target.value)} className={selectCls} required>
+                {ecsResources.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          )}
+          {target === 'aci' && (
+            <FormField label="ACI container group" hint="from the Resources page">
+              <select value={effectiveAciResourceId} onChange={(e) => setAciResourceId(e.target.value)} className={selectCls} required>
+                {aciResources.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
                   </option>

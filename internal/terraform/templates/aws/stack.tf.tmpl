@@ -244,6 +244,10 @@ output "rds_engine" {
 output "rds_master_user_secret_arn" {
   value = aws_db_instance.main.master_user_secret[0].secret_arn
 }
+
+output "rds_security_group_id" {
+  value = aws_security_group.rds.id
+}
 {{- end }}
 {{- if .ECS }}
 {{ range $i, $s := .ECS.Subnets }}
@@ -501,5 +505,24 @@ output "ecs_alb_dns_name" {
 
 output "ecs_cluster_name" {
   value = aws_ecs_cluster.main.name
+}
+{{- end }}
+{{- if .ECR }}
+
+resource "aws_ecr_repository" "main" {
+  name                 = lower("{{ .Name }}")
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    Name = "{{ .Name }}"
+  }
+}
+
+output "ecr_repository_url" {
+  value = aws_ecr_repository.main.repository_url
 }
 {{- end }}

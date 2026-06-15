@@ -27,6 +27,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/docker"
 	"github.com/Rexxzar/autodevops/internal/k8s"
+	"github.com/Rexxzar/autodevops/internal/registry"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/Rexxzar/autodevops/internal/terraform"
 )
@@ -145,14 +146,18 @@ func appTargetType(targetKind string) string {
 		return "container"
 	case "cloud_vm":
 		return "vm"
+	case "cloud_ecs":
+		return "ecs"
+	case "cloud_aci":
+		return "aci"
 	default:
 		return targetKind
 	}
 }
 
-// normalizeTargetType maps the legacy "k8s"/"container"/"vm" target_type
-// vocabulary (still used by the frontend) to a deployment_apps.target_kind
-// value, rejecting anything else.
+// normalizeTargetType maps the legacy "k8s"/"container"/"vm"/"ecs"/"aci"
+// target_type vocabulary (still used by the frontend) to a
+// deployment_apps.target_kind value, rejecting anything else.
 func normalizeTargetType(targetType string) (string, error) {
 	switch targetType {
 	case "k8s":
@@ -161,18 +166,40 @@ func normalizeTargetType(targetType string) (string, error) {
 		return "local_docker", nil
 	case "vm":
 		return "cloud_vm", nil
+	case "ecs":
+		return "cloud_ecs", nil
+	case "aci":
+		return "cloud_aci", nil
 	default:
-		return "", fmt.Errorf(`target_type must be "k8s", "container", or "vm"`)
+		return "", fmt.Errorf(`target_type must be "k8s", "container", "vm", "ecs", or "aci"`)
 	}
 }
 
-// validateCloudVMTarget checks that resourceID refers to an applied "vm"
-// provisioned_resources row — required when targetKind == "cloud_vm" (the
-// cloud_vm SSH deployer in internal/deploy dials this resource at deploy
-// time and fails if it's missing or not yet provisioned).
-func (s *Server) validateCloudVMTarget(ctx context.Context, resourceID string) error {
+// containerTargetType maps a deployment_apps.target_kind to the
+// provisioned_resources.resource_type validateContainerTarget should require,
+// and reports whether targetKind needs that validation at all (local_k8s and
+// local_docker don't reference a provisioned resource).
+func containerTargetType(targetKind string) (string, bool) {
+	switch targetKind {
+	case "cloud_vm":
+		return "vm", true
+	case "cloud_ecs":
+		return "ecs", true
+	case "cloud_aci":
+		return "aci", true
+	default:
+		return "", false
+	}
+}
+
+// validateContainerTarget checks that resourceID refers to an applied
+// provisioned_resources row of type wantType ("vm", "ecs", or "aci") —
+// required when targetKind is cloud_vm/cloud_ecs/cloud_aci (the corresponding
+// connector in internal/deploy dials/redeploys this resource at deploy time
+// and fails if it's missing or not yet provisioned).
+func (s *Server) validateContainerTarget(ctx context.Context, resourceID, wantType string) error {
 	if resourceID == "" {
-		return fmt.Errorf(`target_resource_id required for target_type "vm"`)
+		return fmt.Errorf("target_resource_id required for target_type %q", wantType)
 	}
 	var resourceType, status string
 	if err := s.db.QueryRow(ctx,
@@ -180,8 +207,8 @@ func (s *Server) validateCloudVMTarget(ctx context.Context, resourceID string) e
 	).Scan(&resourceType, &status); err != nil {
 		return fmt.Errorf("target_resource_id must reference an existing resource")
 	}
-	if resourceType != "vm" {
-		return fmt.Errorf("target_resource_id must reference a vm resource (got %q)", resourceType)
+	if resourceType != wantType {
+		return fmt.Errorf("target_resource_id must reference a %s resource (got %q)", wantType, resourceType)
 	}
 	if status != "applied" {
 		return fmt.Errorf("target_resource_id must reference an applied resource (status=%q)", status)
@@ -211,9 +238,11 @@ type appCreateRequest struct {
 	TargetResourceID string // cloud_vm: provisioned_resources.id (a "vm" resource)
 	Domain           string
 	GitAuth          *gitAuthRequest
+	BuildContext     string            // kind == "git", optional — see Phase 9 build_context
 	ImageRef         string            // kind == "image"
 	Port             int               // kind == "image"
 	Env              map[string]string // kind == "image", optional
+	VolumePath       string            // kind == "image", optional — see Phase 4 volume_path
 }
 
 // createApp generates a per-app webhook secret and (optionally) stores git
@@ -264,12 +293,13 @@ func (s *Server) createApp(ctx context.Context, deploymentID string, req appCrea
 	}
 
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id)
+		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context)
 		SELECT $1, $2, $3, $4, $5, NULLIF($6, '')::uuid, NULLIF($7, ''),
 		       (SELECT id FROM secrets WHERE name = $8),
-		       (SELECT id FROM secrets WHERE name = $9)
+		       (SELECT id FROM secrets WHERE name = $9),
+		       NULLIF($10, '')
 		RETURNING id::text
-	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName).Scan(&appID)
+	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext).Scan(&appID)
 	if err != nil {
 		return "", "", fmt.Errorf("insert app: %w", err)
 	}
@@ -296,10 +326,10 @@ func (s *Server) createImageApp(ctx context.Context, deploymentID string, req ap
 	}
 
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO deployment_apps (deployment_id, name, kind, image_ref, port, target_kind, target_resource_id, image_env_secret_id)
-		SELECT $1, $2, 'image', $3, $4, $5, NULLIF($6, '')::uuid, (SELECT id FROM secrets WHERE name = $7)
+		INSERT INTO deployment_apps (deployment_id, name, kind, image_ref, port, target_kind, target_resource_id, image_env_secret_id, volume_path)
+		SELECT $1, $2, 'image', $3, $4, $5, NULLIF($6, '')::uuid, (SELECT id FROM secrets WHERE name = $7), NULLIF($8, '')
 		RETURNING id::text
-	`, deploymentID, req.Name, req.ImageRef, req.Port, req.TargetKind, req.TargetResourceID, envSecretName).Scan(&appID)
+	`, deploymentID, req.Name, req.ImageRef, req.Port, req.TargetKind, req.TargetResourceID, envSecretName, req.VolumePath).Scan(&appID)
 	if err != nil {
 		return "", fmt.Errorf("insert image app: %w", err)
 	}
@@ -399,6 +429,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		TargetResourceID string          `json:"target_resource_id,omitempty"`
 		Domain           string          `json:"domain,omitempty"`
 		GitAuth          *gitAuthRequest `json:"git_auth,omitempty"`
+		BuildContext     string          `json:"build_context,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -420,8 +451,8 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 
 	ctx := r.Context()
 
-	if targetKind == "cloud_vm" {
-		if err := s.validateCloudVMTarget(ctx, req.TargetResourceID); err != nil {
+	if wantType, ok := containerTargetType(targetKind); ok {
+		if err := s.validateContainerTarget(ctx, req.TargetResourceID, wantType); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -441,6 +472,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		TargetResourceID: req.TargetResourceID,
 		Domain:           req.Domain,
 		GitAuth:          req.GitAuth,
+		BuildContext:     req.BuildContext,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create deployment")
@@ -454,6 +486,45 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		"webhook_url":    "/webhooks/github/" + appID,
 		"webhook_secret": webhookSecret,
 	})
+}
+
+// handleImportComposePreview clones repoURL@branch and parses any
+// docker-compose file at its root into a deploy.ComposePlan (Phase 9) — a
+// read-only preview for the "Import from docker-compose" flow. No
+// deployment_apps rows are created here; the frontend re-POSTs the
+// user-confirmed plan through handleCreateDeployment/handleAddApp/
+// handleCreateAppLink.
+func (s *Server) handleImportComposePreview(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RepoURL string          `json:"repo_url"`
+		Branch  string          `json:"branch"`
+		GitAuth *gitAuthRequest `json:"git_auth,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.RepoURL == "" {
+		writeError(w, http.StatusBadRequest, "repo_url required")
+		return
+	}
+	if req.GitAuth != nil && req.GitAuth.Type != deploy.GitAuthToken && req.GitAuth.Type != deploy.GitAuthSSHKey {
+		writeError(w, http.StatusBadRequest, `git_auth.type must be "token" or "ssh_key"`)
+		return
+	}
+
+	var authType, token, sshKey string
+	if req.GitAuth != nil {
+		authType, token, sshKey = req.GitAuth.Type, req.GitAuth.Token, req.GitAuth.SSHKey
+	}
+
+	plan, err := s.deploy.PreviewCompose(r.Context(), req.RepoURL, req.Branch, authType, token, sshKey)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, plan)
 }
 
 // handleAddApp adds a new app to an existing stack, reusing createApp scoped
@@ -484,9 +555,11 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 		TargetResourceID string            `json:"target_resource_id,omitempty"`
 		Domain           string            `json:"domain,omitempty"`
 		GitAuth          *gitAuthRequest   `json:"git_auth,omitempty"`
+		BuildContext     string            `json:"build_context,omitempty"`
 		ImageRef         string            `json:"image_ref,omitempty"`
 		Port             int               `json:"port,omitempty"`
 		Env              map[string]string `json:"env,omitempty"`
+		VolumePath       string            `json:"volume_path,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -504,8 +577,8 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if targetKind == "cloud_vm" {
-		if err := s.validateCloudVMTarget(r.Context(), req.TargetResourceID); err != nil {
+	if wantType, ok := containerTargetType(targetKind); ok {
+		if err := s.validateContainerTarget(r.Context(), req.TargetResourceID, wantType); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -536,16 +609,19 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appID, webhookSecret, err := s.createApp(r.Context(), deploymentID, appCreateRequest{
-		Name:       req.Name,
-		Kind:       req.Kind,
-		RepoURL:    req.RepoURL,
-		Branch:     req.Branch,
-		TargetKind: targetKind,
-		Domain:     req.Domain,
-		GitAuth:    req.GitAuth,
-		ImageRef:   req.ImageRef,
-		Port:       req.Port,
-		Env:        req.Env,
+		Name:             req.Name,
+		Kind:             req.Kind,
+		RepoURL:          req.RepoURL,
+		Branch:           req.Branch,
+		TargetKind:       targetKind,
+		TargetResourceID: req.TargetResourceID,
+		Domain:           req.Domain,
+		GitAuth:          req.GitAuth,
+		BuildContext:     req.BuildContext,
+		ImageRef:         req.ImageRef,
+		Port:             req.Port,
+		Env:              req.Env,
+		VolumePath:       req.VolumePath,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -594,7 +670,8 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
 		SELECT id::text, name, kind, COALESCE(role, ''), COALESCE(repo_url, ''), branch,
 		       COALESCE(framework, ''), target_kind, COALESCE(namespace, ''),
-		       COALESCE(image_ref, ''), COALESCE(port, 0), COALESCE(domain, ''), status, created_at, updated_at
+		       COALESCE(image_ref, ''), COALESCE(port, 0), COALESCE(domain, ''), status, created_at, updated_at,
+		       COALESCE(volume_path, '')
 		FROM deployment_apps WHERE deployment_id = $1 ORDER BY created_at ASC
 	`, id)
 	if err != nil {
@@ -620,6 +697,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		Status     string    `json:"status"`
 		CreatedAt  time.Time `json:"created_at"`
 		UpdatedAt  time.Time `json:"updated_at"`
+		VolumePath string    `json:"volume_path,omitempty"`
 		Links      []appLink `json:"links"`
 	}
 	var apps []appDetail
@@ -628,7 +706,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		var a appDetail
 		var targetKind string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Role, &a.RepoURL, &a.Branch,
-			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan app")
 			return
 		}
@@ -1091,6 +1169,86 @@ func (s *Server) handleListDockerNetworks(w http.ResponseWriter, r *http.Request
 		networks = []docker.NetworkInfo{}
 	}
 	writeJSON(w, http.StatusOK, networks)
+}
+
+// handleListRegistryImages lists every (repo, tag) in the local registry
+// (config.RegistryPush, host-accessible from this process) for the Image
+// Registry dashboard page.
+func (s *Server) handleListRegistryImages(w http.ResponseWriter, r *http.Request) {
+	images, err := registry.ListImages(r.Context(), s.registryHost)
+	if err != nil {
+		slog.Error("api: list registry images", "error", err)
+		writeError(w, http.StatusBadGateway, "failed to list registry images")
+		return
+	}
+	if images == nil {
+		images = []registry.ImageInfo{}
+	}
+	writeJSON(w, http.StatusOK, images)
+}
+
+// handleDeleteRegistryImage removes repo:tag from the local registry.
+func (s *Server) handleDeleteRegistryImage(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	tag := r.URL.Query().Get("tag")
+	if repo == "" || tag == "" {
+		writeError(w, http.StatusBadRequest, "repo and tag query parameters are required")
+		return
+	}
+
+	if err := registry.DeleteImage(r.Context(), s.registryHost, repo, tag); err != nil {
+		slog.Error("api: delete registry image", "repo", repo, "tag", tag, "error", err)
+		writeError(w, http.StatusBadGateway, "failed to delete image: "+err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type registryImportRequest struct {
+	Source string `json:"source"`
+	Repo   string `json:"repo"`
+	Tag    string `json:"tag"`
+}
+
+// handleImportRegistryImage pulls an image from an external reference (e.g.
+// "postgres:16") and pushes it into the local registry, optionally under a
+// caller-chosen repo/tag.
+func (s *Server) handleImportRegistryImage(w http.ResponseWriter, r *http.Request) {
+	var req registryImportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	req.Source = strings.TrimSpace(req.Source)
+	if req.Source == "" {
+		writeError(w, http.StatusBadRequest, "source is required")
+		return
+	}
+
+	repo, tag := strings.TrimSpace(req.Repo), strings.TrimSpace(req.Tag)
+	if repo == "" || tag == "" {
+		defRepo, defTag := registry.DefaultRepoTag(req.Source)
+		if repo == "" {
+			repo = defRepo
+		}
+		if tag == "" {
+			tag = defTag
+		}
+	}
+	if repo == "" {
+		writeError(w, http.StatusBadRequest, "could not determine a repo name for this source — specify repo explicitly")
+		return
+	}
+
+	if err := registry.ImportImage(r.Context(), s.registryHost, req.Source, repo, tag); err != nil {
+		slog.Error("api: import registry image", "source", req.Source, "repo", repo, "tag", tag, "error", err)
+		writeError(w, http.StatusBadGateway, "failed to import image: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"repo": repo, "tag": tag})
 }
 
 func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
@@ -2114,6 +2272,28 @@ func floatOpt(opts map[string]string, key string, def float64) (float64, error) 
 	return n, nil
 }
 
+// acrNameSanitizer strips everything but lowercase letters and digits from a
+// resource name to satisfy Azure Container Registry's alphanumeric-only
+// naming rule (internal/terraform.ACRParams.Validate enforces 5-50 chars).
+var acrNameSanitizer = regexp.MustCompile(`[^a-z0-9]`)
+
+// generateACRName derives a globally-unique Azure Container Registry name
+// from the resource's name plus an 8-hex-char random suffix — ACR names must
+// be unique across all of Azure, alphanumeric only, 5-50 characters
+// (internal/terraform.ACRParams.Validate). The suffix alone satisfies the
+// 5-char minimum even if name sanitizes to empty.
+func generateACRName(name string) (string, error) {
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", fmt.Errorf("generate acr name: %w", err)
+	}
+	base := acrNameSanitizer.ReplaceAllString(strings.ToLower(name), "")
+	if len(base) > 42 {
+		base = base[:42]
+	}
+	return base + hex.EncodeToString(suffix), nil
+}
+
 // awsZonalSubnets builds the two-AZ subnet pair RDS and ECS both require for
 // their subnet groups / ALB placement, derived from the stack's region — the
 // wizard doesn't collect subnet placement directly, so AutoDevOps carves out
@@ -2203,6 +2383,9 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 				DesiredCount:   desiredCount,
 				Subnets:        awsZonalSubnets(region),
 			}
+			if strOpt(opts, "create_registry", "") == "true" {
+				params.ECR = &terraform.ECRParams{}
+			}
 		default:
 			return nil, fmt.Errorf("unsupported aws resource type %q", resourceType)
 		}
@@ -2239,6 +2422,13 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 				ContainerPort:  port,
 				CPU:            cpu,
 				MemoryGB:       memoryGB,
+			}
+			if strOpt(opts, "create_registry", "") == "true" {
+				acrName, err := generateACRName(name)
+				if err != nil {
+					return nil, err
+				}
+				params.ACR = &terraform.ACRParams{Name: acrName}
 			}
 		case "vm":
 			params.VM = &terraform.AzureVMParams{

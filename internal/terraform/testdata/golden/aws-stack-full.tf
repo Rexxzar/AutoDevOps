@@ -241,6 +241,10 @@ output "rds_master_user_secret_arn" {
   value = aws_db_instance.main.master_user_secret[0].secret_arn
 }
 
+output "rds_security_group_id" {
+  value = aws_security_group.rds.id
+}
+
 resource "aws_subnet" "ecs_0" {
   vpc_id                  = local.vpc_id
   cidr_block              = "10.0.4.0/24"
@@ -511,4 +515,21 @@ output "ecs_alb_dns_name" {
 
 output "ecs_cluster_name" {
   value = aws_ecs_cluster.main.name
+}
+
+resource "aws_ecr_repository" "main" {
+  name                 = lower("demo")
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    Name = "demo"
+  }
+}
+
+output "ecr_repository_url" {
+  value = aws_ecr_repository.main.repository_url
 }

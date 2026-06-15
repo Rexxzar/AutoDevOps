@@ -77,6 +77,18 @@ var goldenCases = []struct {
 			},
 			RDS: &exampleRDSParams,
 			ECS: &exampleECSParams,
+			ECR: &ECRParams{},
+		},
+	},
+	{
+		name: "aws-stack-ecs-ecr",
+		id:   AWSStackID,
+		params: AWSStackParams{
+			Name:    "demo",
+			Region:  "us-east-1",
+			VPCCIDR: "10.0.0.0/16",
+			ECS:     &exampleECSParams,
+			ECR:     &ECRParams{},
 		},
 	},
 	{
@@ -142,6 +154,18 @@ var goldenCases = []struct {
 			VM:       &exampleAzureVMParams,
 			DB:       &exampleAzureDBParams,
 			ACI:      &exampleAzureACIParams,
+			ACR:      &exampleACRParams,
+		},
+	},
+	{
+		name: "azure-stack-aci-acr",
+		id:   AzureStackID,
+		params: AzureStackParams{
+			Name:     "demo",
+			Location: "uksouth",
+			VNetCIDR: "10.0.0.0/16",
+			ACI:      &exampleAzureACIParams,
+			ACR:      &exampleACRParams,
 		},
 	},
 	{
@@ -192,6 +216,12 @@ var exampleAzureACIParams = AzureACIParams{
 	ContainerPort:  80,
 	CPU:            1,
 	MemoryGB:       1.5,
+}
+
+// exampleACRParams is the shared example value for the Azure ACR golden
+// cases — a syntactically valid (alphanumeric, 5-50 char) registry name.
+var exampleACRParams = ACRParams{
+	Name: "demoacr1a2b3c4d",
 }
 
 // exampleRDSParams and exampleECSParams are shared example values, reused

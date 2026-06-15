@@ -178,6 +178,38 @@ func buildService(name, namespace string) *corev1.Service {
 	}
 }
 
+// volumeName returns the deterministic name of a Phase-4 "image"-kind app's
+// PVC and Volume — "<name>-data", matching internal/docker's
+// "<container>-data" named-volume convention for the same feature.
+func volumeName(name string) string {
+	return name + "-data"
+}
+
+// buildResourcePVC returns a 1Gi ReadWriteOnce PersistentVolumeClaim against
+// kind's default "standard" StorageClass (the local-path-provisioner running
+// in the local-path-storage namespace — see isSystemNamespace in
+// internal/k8s/k8s.go), used as the backing volume when a Phase-4
+// "image"-kind app sets volume_path.
+func buildResourcePVC(name, namespace string) *corev1.PersistentVolumeClaim {
+	storageClass := "standard"
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      volumeName(name),
+			Namespace: namespace,
+			Labels:    managedLabels(name),
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			StorageClassName: &storageClass,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+	}
+}
+
 // buildResourceDeployment is like buildDeployment but for standalone "local"
 // Resources (provider='local', resource_type='k8s') and Phase-4 "image"-kind
 // apps: the container port is caller-supplied (not hardcoded to the Paketo
@@ -185,10 +217,49 @@ func buildService(name, namespace string) *corev1.Service {
 // sidecar — arbitrary public images don't follow either convention. env is
 // applied as-is (sorted for deterministic re-applies) — e.g. POSTGRES_PASSWORD
 // for a postgres:16 image app; pass nil for standalone Resources, which have
-// no env-var concept.
-func buildResourceDeployment(name, namespace, imageRef string, port int32, env map[string]string) *appsv1.Deployment {
+// no env-var concept. volumePath, if non-empty, mounts the PVC from
+// buildResourcePVC at that path — pass "" for standalone Resources and image
+// apps with no persistent storage configured.
+func buildResourceDeployment(name, namespace, imageRef string, port int32, env map[string]string, volumePath string) *appsv1.Deployment {
 	replicas := int32(1)
 	labels := managedLabels(name)
+
+	container := corev1.Container{
+		Name:  "app",
+		Image: imageRef,
+		Ports: []corev1.ContainerPort{
+			{ContainerPort: port, Protocol: corev1.ProtocolTCP},
+		},
+		Env: sortedEnvVars(env),
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("128Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		},
+		ImagePullPolicy: corev1.PullIfNotPresent,
+	}
+
+	var volumes []corev1.Volume
+	if volumePath != "" {
+		container.VolumeMounts = []corev1.VolumeMount{
+			{Name: volumeName(name), MountPath: volumePath},
+		}
+		volumes = []corev1.Volume{
+			{
+				Name: volumeName(name),
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: volumeName(name),
+					},
+				},
+			},
+		}
+	}
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -204,27 +275,8 @@ func buildResourceDeployment(name, namespace, imageRef string, port int32, env m
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "app",
-							Image: imageRef,
-							Ports: []corev1.ContainerPort{
-								{ContainerPort: port, Protocol: corev1.ProtocolTCP},
-							},
-							Env: sortedEnvVars(env),
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("500m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-							},
-							ImagePullPolicy: corev1.PullIfNotPresent,
-						},
-					},
+					Containers: []corev1.Container{container},
+					Volumes:    volumes,
 				},
 			},
 		},

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -151,6 +152,25 @@ func (o *Orchestrator) resolveResourceLinks(ctx context.Context, appID string) (
 	defer rows.Close()
 
 	env := make(map[string]string)
+	var devIP string
+	var devIPFetched bool
+	// fetchDevIP lazily resolves the dev machine's public IP at most once per
+	// resolveResourceLinks call, and only when an "aws:rds"/"azure:db" link
+	// actually needs it. Best-effort: a failure logs a warning and disables
+	// dev-IP injection for the rest of this call, without failing the deploy.
+	fetchDevIP := func() string {
+		if !devIPFetched {
+			devIPFetched = true
+			ip, err := getPublicIP(ctx)
+			if err != nil {
+				slog.Warn("deploy: fetch dev public ip, skipping dev-ip security rule injection", "error", err)
+			} else {
+				devIP = ip
+			}
+		}
+		return devIP
+	}
+
 	for rows.Next() {
 		var alias, provider, resourceType, cloudAccountID, region, outputsJSON string
 		var linkPort int
@@ -176,8 +196,28 @@ func (o *Orchestrator) resolveResourceLinks(ctx context.Context, appID string) (
 			if err := o.resolveRDSLink(ctx, env, prefix, outputs, cloudAccountID, region, linkPort); err != nil {
 				return nil, fmt.Errorf("deploy: resolve resource link %s: %w", alias, err)
 			}
+			if cloudAccountID != "" {
+				if ip := fetchDevIP(); ip != "" {
+					port := linkPort
+					if port == 0 {
+						port = outputInt(outputs, "rds_port")
+					}
+					if err := o.authorizeAWSDevIP(ctx, cloudAccountID, region, outputString(outputs, "rds_security_group_id"), port, ip); err != nil {
+						slog.Warn("deploy: authorize dev ip on rds security group", "alias", alias, "error", err)
+					}
+				}
+			}
 		case "azure:db":
-			resolveAzureDBLink(env, prefix, outputs)
+			if err := o.resolveAzureDBLink(ctx, env, prefix, outputs, cloudAccountID); err != nil {
+				return nil, fmt.Errorf("deploy: resolve resource link %s: %w", alias, err)
+			}
+			if cloudAccountID != "" {
+				if ip := fetchDevIP(); ip != "" {
+					if err := o.authorizeAzureDevIP(ctx, cloudAccountID, outputs, ip); err != nil {
+						slog.Warn("deploy: authorize dev ip on azure postgres firewall", "alias", alias, "error", err)
+					}
+				}
+			}
 		default:
 			continue
 		}
@@ -287,23 +327,59 @@ func (o *Orchestrator) rdsMasterPassword(ctx context.Context, cloudAccountID, re
 	return secret.Password, nil
 }
 
-// resolveAzureDBLink sets HOST/PORT/USER/DATABASE for an Azure Postgres
-// Flexible Server link from its terraform outputs (db_fqdn,
-// db_admin_username). No PASSWORD or credentialed URL: stack.tf.tmpl sets
-// password_auth_enabled = false (AAD-only), so there is no master-user
-// secret to relay — the consuming app must authenticate via its own Azure
-// AD identity, which is out of scope for resolveLinks.
-func resolveAzureDBLink(env map[string]string, prefix string, outputs map[string]any) {
+// resolveAzureDBLink sets HOST/PORT/USER/DATABASE/PASSWORD/URL for an Azure
+// Postgres Flexible Server link from its terraform outputs (db_fqdn,
+// db_admin_username). stack.tf.tmpl sets password_auth_enabled = false
+// (AAD-only), so there is no master-user secret to relay — instead, the
+// consuming app authenticates AS the cloud account's own AAD identity
+// (db_admin_username == AADAdminPrincipalName): PASSWORD is set to a fresh
+// AAD access token for the azurePostgresScope, which Azure Postgres accepts
+// directly as the connecting user's password.
+//
+// Caveat (documented MVP limitation): AAD tokens expire after ~1hr. A token
+// baked into a long-lived container's env var will eventually stop working —
+// acceptable for single-tenant/demo scope, but a production deployment would
+// need the app itself to refresh the token (e.g. via azidentity) rather than
+// receiving a static env var.
+//
+// If cloudAccountID is empty (e.g. a seeded resource with no associated cloud
+// account), PASSWORD/credentialed URL are skipped — no live Azure call.
+func (o *Orchestrator) resolveAzureDBLink(ctx context.Context, env map[string]string, prefix string, outputs map[string]any, cloudAccountID string) error {
 	host := outputString(outputs, "db_fqdn")
 	if host == "" {
-		return
+		return nil
 	}
+	const port = 5432
+	const database = "postgres"
+
 	env[prefix+"HOST"] = host
-	env[prefix+"PORT"] = "5432"
-	if username := outputString(outputs, "db_admin_username"); username != "" {
+	env[prefix+"PORT"] = strconv.Itoa(port)
+	username := outputString(outputs, "db_admin_username")
+	if username != "" {
 		env[prefix+"USER"] = username
 	}
-	env[prefix+"DATABASE"] = "postgres"
+	env[prefix+"DATABASE"] = database
+
+	var password string
+	if cloudAccountID != "" {
+		var err error
+		password, err = o.azureAADToken(ctx, cloudAccountID)
+		if err != nil {
+			return err
+		}
+		env[prefix+"PASSWORD"] = password
+	}
+
+	u := &url.URL{Scheme: "postgres", Host: fmt.Sprintf("%s:%d", host, port), Path: "/" + database}
+	if username != "" {
+		if password != "" {
+			u.User = url.UserPassword(username, password)
+		} else {
+			u.User = url.User(username)
+		}
+	}
+	env[prefix+"URL"] = u.String()
+	return nil
 }
 
 // outputString reads a string-valued terraform output from a

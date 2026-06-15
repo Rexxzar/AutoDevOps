@@ -75,7 +75,7 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
 		return "", "", fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
 	}
-	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, nil)); err != nil {
+	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, nil, "")); err != nil {
 		return "", "", fmt.Errorf("k8s: apply deployment %s: %w", name, err)
 	}
 	if err := c.applyService(ctx, buildResourceService(name, namespace, port)); err != nil {
@@ -116,19 +116,25 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 
 // KubeDeployImageApp applies the K8s resources for a Phase-4 "image"-kind app
 // (e.g. a postgres:16 db container) within a stack's existing namespace:
-// Deployment (buildResourceDeployment — caller-supplied port + env, no
+// optionally a PVC (buildResourcePVC, when volumePath is set), Deployment
+// (buildResourceDeployment — caller-supplied port + env + volume mount, no
 // sidecar) and Service (buildResourceService — port 80 -> the container's
 // port, so resolveLinks' local_k8s->local_k8s case needs no special-casing
 // for image apps). No Ingress is created — image apps are link targets for
 // sibling apps, not externally exposed. Blocks until at least one pod reports
 // Available.
-func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string) error {
-	slog.Info("k8s: deploying image app", "name", name, "namespace", namespace, "image", imageRef, "port", port)
+func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string) error {
+	slog.Info("k8s: deploying image app", "name", name, "namespace", namespace, "image", imageRef, "port", port, "volume_path", volumePath)
 
 	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
 		return fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
 	}
-	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, env)); err != nil {
+	if volumePath != "" {
+		if err := c.applyPVC(ctx, buildResourcePVC(name, namespace)); err != nil {
+			return fmt.Errorf("k8s: apply pvc %s: %w", name, err)
+		}
+	}
+	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, env, volumePath)); err != nil {
 		return fmt.Errorf("k8s: apply deployment %s: %w", name, err)
 	}
 	if err := c.applyService(ctx, buildResourceService(name, namespace, port)); err != nil {
@@ -225,6 +231,17 @@ func (c *Controller) applyDeployment(ctx context.Context, dep *appsv1.Deployment
 	}
 	dep.ResourceVersion = existing.ResourceVersion
 	_, err = c.clientset.AppsV1().Deployments(dep.Namespace).Update(ctx, dep, metav1.UpdateOptions{})
+	return err
+}
+
+// applyPVC creates a PersistentVolumeClaim, treating AlreadyExists as a no-op
+// — PVC specs (size, storage class, access modes) are immutable after
+// creation, so unlike applyDeployment/applyService there is no update path.
+func (c *Controller) applyPVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim) error {
+	_, err := c.clientset.CoreV1().PersistentVolumeClaims(pvc.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
+	if kerrors.IsAlreadyExists(err) {
+		return nil
+	}
 	return err
 }
 

@@ -92,17 +92,23 @@ func TestOutputStringAndOutputInt(t *testing.T) {
 }
 
 func TestResolveAzureDBLink(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := context.Background()
+
 	t.Run("with fqdn and username", func(t *testing.T) {
 		env := make(map[string]string)
-		resolveAzureDBLink(env, "DB_", map[string]any{
+		if err := o.resolveAzureDBLink(ctx, env, "DB_", map[string]any{
 			"db_fqdn":           "myserver.postgres.database.azure.com",
 			"db_admin_username": "azureadmin",
-		})
+		}, ""); err != nil {
+			t.Fatalf("resolveAzureDBLink() error = %v", err)
+		}
 		want := map[string]string{
 			"DB_HOST":     "myserver.postgres.database.azure.com",
 			"DB_PORT":     "5432",
 			"DB_USER":     "azureadmin",
 			"DB_DATABASE": "postgres",
+			"DB_URL":      "postgres://azureadmin@myserver.postgres.database.azure.com:5432/postgres",
 		}
 		for k, v := range want {
 			if env[k] != v {
@@ -110,17 +116,51 @@ func TestResolveAzureDBLink(t *testing.T) {
 			}
 		}
 		if _, ok := env["DB_PASSWORD"]; ok {
-			t.Error("DB_PASSWORD should not be set (AAD-only)")
+			t.Error("DB_PASSWORD should not be set when cloudAccountID is empty (no live AAD call)")
 		}
 	})
 
 	t.Run("missing fqdn is no-op", func(t *testing.T) {
 		env := make(map[string]string)
-		resolveAzureDBLink(env, "DB_", map[string]any{})
+		if err := o.resolveAzureDBLink(ctx, env, "DB_", map[string]any{}, ""); err != nil {
+			t.Fatalf("resolveAzureDBLink() error = %v", err)
+		}
 		if len(env) != 0 {
 			t.Errorf("env = %v, want empty", env)
 		}
 	})
+}
+
+// TestAuthorizeAWSDevIPNoOp covers the short-circuits that let
+// resolveResourceLinks call authorizeAWSDevIP unconditionally without an AWS
+// credential or network access in tests: a missing security group ID or port
+// skips loadAWSConfig entirely.
+func TestAuthorizeAWSDevIPNoOp(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := context.Background()
+
+	if err := o.authorizeAWSDevIP(ctx, "", "us-east-1", "", 5432, "203.0.113.1"); err != nil {
+		t.Errorf("missing security group: error = %v, want nil", err)
+	}
+	if err := o.authorizeAWSDevIP(ctx, "", "us-east-1", "sg-123", 0, "203.0.113.1"); err != nil {
+		t.Errorf("missing port: error = %v, want nil", err)
+	}
+}
+
+// TestAuthorizeAzureDevIPNoOp covers the short-circuit that lets
+// resolveResourceLinks call authorizeAzureDevIP unconditionally without an
+// Azure credential or network access in tests: outputs missing
+// resource_group_name/db_fqdn skip loadAzureCredential entirely.
+func TestAuthorizeAzureDevIPNoOp(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := context.Background()
+
+	if err := o.authorizeAzureDevIP(ctx, "", map[string]any{}, "203.0.113.1"); err != nil {
+		t.Errorf("missing outputs: error = %v, want nil", err)
+	}
+	if err := o.authorizeAzureDevIP(ctx, "", map[string]any{"resource_group_name": "rg"}, "203.0.113.1"); err != nil {
+		t.Errorf("missing db_fqdn: error = %v, want nil", err)
+	}
 }
 
 func TestResolveRDSLinkNoSecret(t *testing.T) {
@@ -333,6 +373,7 @@ func TestResolveResourceLinks(t *testing.T) {
 				"AUTODEVOPS_AZDB_PORT":     "5432",
 				"AUTODEVOPS_AZDB_USER":     "azureadmin",
 				"AUTODEVOPS_AZDB_DATABASE": "postgres",
+				"AUTODEVOPS_AZDB_URL":      "postgres://azureadmin@myserver.postgres.database.azure.com:5432/postgres",
 			},
 			wantAbsent: []string{"AUTODEVOPS_AZDB_PASSWORD"},
 		},

@@ -7,11 +7,13 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"time"
 
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
+	"github.com/docker/docker/api/types/registry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -25,7 +27,7 @@ import (
 // image_env_secret_id contents (e.g. POSTGRES_PASSWORD), applied as-is.
 type KubeDeployer interface {
 	KubeDeploy(ctx context.Context, name, namespace, imageRef string, extraEnv map[string]string) error
-	KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string) error
+	KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string) error
 }
 
 // DockerDeployer deploys a built image as a Docker container on the stack's
@@ -38,19 +40,36 @@ type KubeDeployer interface {
 // POSTGRES_PASSWORD), applied as-is.
 type DockerDeployer interface {
 	DockerDeploy(ctx context.Context, stackName, appName, imageRef string, extraEnv map[string]string) error
-	DockerDeployImageApp(ctx context.Context, stackName, appName, imageRef string, containerPort uint16, env map[string]string) error
+	DockerDeployImageApp(ctx context.Context, stackName, appName, imageRef string, containerPort uint16, env map[string]string, volumePath string) error
 }
 
-// ImagePusher pushes a locally-built image to the registry. Implemented by
+// ImagePusher pushes a locally-built image to the registry, and builds images
+// for "Dockerfile-if-present, else Paketo" apps. Implemented by
 // internal/docker.Manager and injected into Orchestrator at construction time
-// — same import-boundary reason as KubeDeployer/DockerDeployer. Needed
-// because pack's lifecycle containers run in their own network namespace and
-// can't reach the registry via its host-mapped "localhost:<port>" address
-// (connection refused); buildImage builds with Publish: false and pushes from
-// here instead, since the host Docker daemon CAN reach localhost registries
-// directly (Docker treats loopback registries as insecure/HTTP automatically).
+// — same import-boundary reason as KubeDeployer/DockerDeployer.
+//
+// PushImage is needed because pack's lifecycle containers run in their own
+// network namespace and can't reach the registry via its host-mapped
+// "localhost:<port>" address (connection refused); buildImage builds with
+// Publish: false and pushes from here instead, since the host Docker daemon
+// CAN reach localhost registries directly (Docker treats loopback registries
+// as insecure/HTTP automatically). auth is nil for the local registry (no
+// credentials configured) and non-nil for the ECR/ACR pushes used by the
+// cloud_ecs/cloud_aci targets.
+//
+// BuildImage builds the Dockerfile at contextDir's root via the Docker SDK and
+// tags the result tag in the host daemon's local image store — the
+// Dockerfile-path counterpart to buildImage's Paketo (pack) branch. Both paths
+// land a tagged image in the same local daemon store, so PushImage works
+// unchanged afterward regardless of which branch produced the image.
+//
+// TagImage applies an additional tag to an image already in the local daemon
+// store — used to retag the locally-built image under an ECR/ACR repository
+// reference before pushing it there.
 type ImagePusher interface {
-	PushImage(ctx context.Context, ref string) error
+	PushImage(ctx context.Context, ref string, auth *registry.AuthConfig) error
+	BuildImage(ctx context.Context, contextDir, tag string, logLine func(string)) error
+	TagImage(ctx context.Context, source, target string) error
 }
 
 // ImageSaver exports a locally-built image as a tar stream, implemented by
@@ -60,6 +79,17 @@ type ImagePusher interface {
 // on a remote VM without a registry round-trip.
 type ImageSaver interface {
 	SaveImage(ctx context.Context, ref string) (io.ReadCloser, error)
+}
+
+// ACIRedeployer swaps the running image (and environment variables) on an
+// already-applied Azure Container Instance group via terraform HCL surgery +
+// re-apply, implemented by internal/terraform.Runner and injected into
+// Orchestrator at construction time — same import-boundary reason as
+// KubeDeployer. resourceID is the provisioned_resources.id of the "aci"
+// resource. The returned outputs let deployToACI refresh
+// provisioned_resources.outputs after the re-apply.
+type ACIRedeployer interface {
+	RedeployACIImage(ctx context.Context, resourceID, cloudAccountID, image string, env map[string]string) (map[string]json.RawMessage, error)
 }
 
 // ComplianceGate runs all scanners against an app's build artefacts and
@@ -84,6 +114,7 @@ type Orchestrator struct {
 	dockerDeployer  DockerDeployer // nil when Docker daemon is not available
 	pusher          ImagePusher    // nil when Docker daemon is not available
 	imageSaver      ImageSaver     // nil when Docker daemon is not available — required for cloud_vm targets
+	aciRedeployer   ACIRedeployer  // nil when terraform is not available — required for cloud_aci targets
 	complianceGate  ComplianceGate // nil disables compliance scanning
 }
 
@@ -92,12 +123,13 @@ type Orchestrator struct {
 // builderImage, registryPush, and registryPull drive the Paketo build step.
 // ingressDomain is used by resolveLinks to address local_k8s apps from
 // local_docker dependents (via their Ingress hostname).
-// kube, docker, pusher, saver, and gate may be nil — the corresponding step
-// is skipped when nil (deploy step skipped if target type doesn't match;
+// kube, docker, pusher, saver, aci, and gate may be nil — the corresponding
+// step is skipped when nil (deploy step skipped if target type doesn't match;
 // compliance skipped entirely; buildImage errors if pusher is nil since a
 // build with no way to push the result can never succeed; deployToVM errors
-// if saver is nil for the same reason).
-func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builderImage, registryPush, registryPull, ingressDomain string, kube KubeDeployer, docker DockerDeployer, pusher ImagePusher, saver ImageSaver, gate ComplianceGate) *Orchestrator {
+// if saver is nil for the same reason; deployToACI errors if aci is nil since
+// a redeploy with no way to re-apply terraform can never succeed).
+func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builderImage, registryPush, registryPull, ingressDomain string, kube KubeDeployer, docker DockerDeployer, pusher ImagePusher, saver ImageSaver, aci ACIRedeployer, gate ComplianceGate) *Orchestrator {
 	return &Orchestrator{
 		pool:           pool,
 		hub:            hub,
@@ -111,6 +143,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builde
 		dockerDeployer: docker,
 		pusher:         pusher,
 		imageSaver:     saver,
+		aciRedeployer:  aci,
 		complianceGate: gate,
 	}
 }

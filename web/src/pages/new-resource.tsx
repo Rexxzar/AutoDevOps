@@ -65,6 +65,15 @@ function ECSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
           {['1','2','3','4','5'].map(v => <option key={v} value={v}>{v}</option>)}
         </select>
       </FormField>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={v.create_registry === 'true'}
+          onChange={e => set('create_registry', e.target.checked ? 'true' : 'false')}
+          className="size-4 rounded border-border"
+        />
+        Create a container registry (ECR) for this service
+      </label>
     </>
   )
 }
@@ -149,6 +158,15 @@ function ACIFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
           <option value="Windows">Windows</option>
         </select>
       </FormField>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={v.create_registry === 'true'}
+          onChange={e => set('create_registry', e.target.checked ? 'true' : 'false')}
+          className="size-4 rounded border-border"
+        />
+        Create a container registry (ACR) for this container group
+      </label>
     </>
   )
 }

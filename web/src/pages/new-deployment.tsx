@@ -6,8 +6,10 @@ import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { TargetPill, FormField, inputCls } from '@/components/deploy-form-fields'
+import { ComposeImportForm } from '@/components/compose-import-form'
 
 type Step = 'form' | 'success'
+type Mode = 'scratch' | 'import'
 type LocalTarget = 'k8s' | 'container'
 
 // ─── Domain field with inline DNS checker ────────────────────────
@@ -102,6 +104,7 @@ export function NewDeploymentPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [step, setStep] = useState<Step>('form')
+  const [mode, setMode] = useState<Mode>('scratch')
 
   const [name, setName] = useState('')
   const [repo, setRepo] = useState('')
@@ -149,43 +152,54 @@ export function NewDeploymentPage() {
 
         {/* ── Form ── */}
         {step === 'form' && (
-          <div className="w-full max-w-md space-y-6">
-            <div className="space-y-1">
-              <h1 className="text-xl font-bold">New Deployment</h1>
-              <p className="text-sm text-muted-foreground">Connect a Git repo and choose a target</p>
+          <div className="flex w-full max-w-2xl flex-col items-center gap-6">
+            <div className="flex w-full max-w-md gap-2">
+              <TargetPill label="From scratch" sub="single repo" active={mode === 'scratch'} onClick={() => setMode('scratch')} />
+              <TargetPill label="Import docker-compose" sub="multiple services" active={mode === 'import'} onClick={() => setMode('import')} />
             </div>
-            <form onSubmit={submit} className="space-y-4">
-              <FormField label="App name">
-                <input value={name} onChange={e => setName(e.target.value)} placeholder="my-app" required className={inputCls} />
-              </FormField>
-              <FormField label="Git repository URL">
-                <input value={repo} onChange={e => setRepo(e.target.value)} placeholder="https://github.com/you/my-app" required className={inputCls} />
-              </FormField>
-              <div className="grid grid-cols-2 gap-3">
-                <FormField label="Branch">
-                  <input value={branch} onChange={e => setBranch(e.target.value)} placeholder="main" className={inputCls} />
-                </FormField>
-                <FormField label="Git token" hint="private repos">
-                  <input value={token} onChange={e => setToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
-                </FormField>
+
+            {mode === 'scratch' ? (
+              <div className="w-full max-w-md space-y-6">
+                <div className="space-y-1">
+                  <h1 className="text-xl font-bold">New Deployment</h1>
+                  <p className="text-sm text-muted-foreground">Connect a Git repo and choose a target</p>
+                </div>
+                <form onSubmit={submit} className="space-y-4">
+                  <FormField label="App name">
+                    <input value={name} onChange={e => setName(e.target.value)} placeholder="my-app" required className={inputCls} />
+                  </FormField>
+                  <FormField label="Git repository URL">
+                    <input value={repo} onChange={e => setRepo(e.target.value)} placeholder="https://github.com/you/my-app" required className={inputCls} />
+                  </FormField>
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField label="Branch">
+                      <input value={branch} onChange={e => setBranch(e.target.value)} placeholder="main" className={inputCls} />
+                    </FormField>
+                    <FormField label="Git token" hint="private repos">
+                      <input value={token} onChange={e => setToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
+                    </FormField>
+                  </div>
+                  <FormField label="Target">
+                    <div className="flex gap-2">
+                      <TargetPill label="Kubernetes" sub="kind cluster" active={localTarget === 'k8s'} onClick={() => setLocalTarget('k8s')} />
+                      <TargetPill label="Container" sub="Docker SDK" active={localTarget === 'container'} onClick={() => setLocalTarget('container')} />
+                    </div>
+                  </FormField>
+                  <DomainField value={localDomain} onChange={setLocalDomain} />
+                  {error && (
+                    <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
+                      <AlertCircle className="size-4 shrink-0" />{error}
+                    </div>
+                  )}
+                  <Button type="submit" className="w-full h-10 gap-2 mt-2" disabled={loading}>
+                    {loading && <Loader2 className="size-4 animate-spin" />}
+                    {loading ? 'Creating deployment…' : 'Create deployment'}
+                  </Button>
+                </form>
               </div>
-              <FormField label="Target">
-                <div className="flex gap-2">
-                  <TargetPill label="Kubernetes" sub="kind cluster" active={localTarget === 'k8s'} onClick={() => setLocalTarget('k8s')} />
-                  <TargetPill label="Container" sub="Docker SDK" active={localTarget === 'container'} onClick={() => setLocalTarget('container')} />
-                </div>
-              </FormField>
-              <DomainField value={localDomain} onChange={setLocalDomain} />
-              {error && (
-                <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
-                  <AlertCircle className="size-4 shrink-0" />{error}
-                </div>
-              )}
-              <Button type="submit" className="w-full h-10 gap-2 mt-2" disabled={loading}>
-                {loading && <Loader2 className="size-4 animate-spin" />}
-                {loading ? 'Creating deployment…' : 'Create deployment'}
-              </Button>
-            </form>
+            ) : (
+              <ComposeImportForm />
+            )}
           </div>
         )}
 

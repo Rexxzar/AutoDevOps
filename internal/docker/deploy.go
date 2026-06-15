@@ -13,6 +13,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
@@ -160,8 +161,11 @@ func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef
 // contents (e.g. POSTGRES_PASSWORD). The container is bound to the same
 // deterministic host port as DockerDeploy would for this stack/app
 // (hostPort(appContainerName(...))) and given a network alias of appName for
-// short-name resolution by sibling apps.
-func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, imageRef string, containerPort uint16, env map[string]string) error {
+// short-name resolution by sibling apps. volumePath, if non-empty, mounts a
+// named volume "<cname>-data" at that path — Docker creates the named volume
+// implicitly on first use, and re-deploys (removeContainer + re-create) reuse
+// the same volume since it's keyed by name, not by container.
+func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, imageRef string, containerPort uint16, env map[string]string, volumePath string) error {
 	if _, err := m.client.Ping(ctx); err != nil {
 		return &ErrDockerNotFound{Cause: err}
 	}
@@ -208,6 +212,11 @@ func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, 
 			},
 		},
 		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+	}
+	if volumePath != "" {
+		hostCfg.Mounts = []mount.Mount{
+			{Type: mount.TypeVolume, Source: cname + "-data", Target: volumePath},
+		}
 	}
 	netCfg := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{

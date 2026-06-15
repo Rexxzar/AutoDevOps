@@ -21,7 +21,9 @@ if docker inspect "$REGISTRY_NAME" &>/dev/null; then
   echo "[1/5] Registry already running — skipping"
 else
   echo "[1/5] Starting local registry on localhost:${REGISTRY_PORT}..."
-  docker run -d --restart=always -p "127.0.0.1:${REGISTRY_PORT}:5000" --name "$REGISTRY_NAME" registry:2
+  docker run -d --restart=always -p "127.0.0.1:${REGISTRY_PORT}:5000" \
+    -e REGISTRY_STORAGE_DELETE_ENABLED=true \
+    --name "$REGISTRY_NAME" registry:2
 fi
 
 # 2. Kind cluster — generate config with correct host ports
