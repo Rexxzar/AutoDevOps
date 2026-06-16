@@ -105,6 +105,10 @@ func main() {
 
 	complianceScanner := compliance.New(pool, hub, cfg.ComplianceThreshold)
 	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, cfg.IngressDomain, kubeDeployer, dockerDeployer, imagePusher, imageSaver, aciRedeployer, complianceScanner)
+	if dockerMgr != nil && cfg.PublicIP != "" {
+		tlsProv := deploy.NewTLSProvisioner(dockerMgr.Client(), pool, cfg.PublicIP, cfg.AdminEmail)
+		orchestrator.SetTLSProvisioner(tlsProv)
+	}
 
 	tfEngine, err := terraform.New([]terraform.Definition{
 		{ID: terraform.AWSStackID, Provider: terraform.ProviderAWS, Path: "templates/aws/stack.tf.tmpl"},

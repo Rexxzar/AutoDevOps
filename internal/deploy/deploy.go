@@ -121,6 +121,7 @@ type Orchestrator struct {
 	imageSaver      ImageSaver     // nil when Docker daemon is not available — required for cloud_vm targets
 	aciRedeployer   ACIRedeployer  // nil when terraform is not available — required for cloud_aci targets
 	complianceGate  ComplianceGate // nil disables compliance scanning
+	tlsProvisioner  *TLSProvisioner // nil skips TLS step for local_docker
 
 	stepsMu sync.RWMutex
 	steps   map[string]map[string]StepEvent // appID -> step -> latest StepEvent, for hydrating dashboard pages that load mid-deploy (deploy.step SSE events aren't replayed on reconnect)
@@ -156,6 +157,12 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builde
 		steps:          make(map[string]map[string]StepEvent),
 	}
 }
+
+// SetTLSProvisioner wires a TLSProvisioner into the Orchestrator after
+// construction — called from cmd/server/main.go once the Docker client is
+// available. A nil provisioner is a no-op: local_docker deployments with a
+// domain set will still succeed but the StepTLS step is skipped.
+func (o *Orchestrator) SetTLSProvisioner(p *TLSProvisioner) { o.tlsProvisioner = p }
 
 // gitCredentials is the JSON shape stored (encrypted) via vault.Put under
 // deployment_apps.git_credentials_secret_id and read back via vault.GetByID —

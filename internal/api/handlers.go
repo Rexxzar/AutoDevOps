@@ -714,7 +714,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		SELECT id::text, name, kind, COALESCE(role, ''), COALESCE(repo_url, ''), branch,
 		       COALESCE(framework, ''), target_kind, COALESCE(namespace, ''),
 		       COALESCE(image_ref, ''), COALESCE(port, 0), COALESCE(domain, ''), status, created_at, updated_at,
-		       COALESCE(volume_path, ''), COALESCE(secret_file_paths, '{}')
+		       COALESCE(volume_path, ''), COALESCE(secret_file_paths, '{}'), tls_status
 		FROM deployment_apps WHERE deployment_id = $1 ORDER BY created_at ASC
 	`, id)
 	if err != nil {
@@ -742,6 +742,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt       time.Time `json:"updated_at"`
 		VolumePath      string    `json:"volume_path,omitempty"`
 		SecretFilePaths []string  `json:"secret_file_paths,omitempty"`
+		TLSStatus       string    `json:"tls_status,omitempty"`
 		Links           []appLink `json:"links"`
 		// Steps hydrates the deploy-progress pipeline for pages that load (or
 		// reconnect their SSE stream) mid-deploy — deploy.step events aren't
@@ -754,7 +755,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		var a appDetail
 		var targetKind string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Role, &a.RepoURL, &a.Branch,
-			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths); err != nil {
+			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan app")
 			return
 		}

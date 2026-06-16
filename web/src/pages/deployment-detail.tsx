@@ -48,6 +48,7 @@ interface AppDetail {
   updated_at: string
   volume_path?: string
   secret_file_paths?: string[]
+  tls_status?: string
   links: AppLink[]
   // Hydrates the deploy-progress pipeline on page load / SSE reconnect — see
   // DeployStepEvent and internal/api/handlers.go's handleGetDeployment.
@@ -101,7 +102,7 @@ interface DeployLogEvent {
 
 // STEP_ORDER mirrors internal/deploy/progress.go's Step* consts, in the order
 // ProcessPush walks them — the deploy-progress Pipeline for "git"-kind apps.
-const STEP_ORDER = ['clone', 'detect', 'build', 'push', 'compliance', 'deploy'] as const
+const STEP_ORDER = ['clone', 'detect', 'build', 'push', 'compliance', 'deploy', 'tls'] as const
 const STEP_LABELS: Record<string, string> = {
   clone: 'Clone',
   detect: 'Detect',
@@ -109,6 +110,7 @@ const STEP_LABELS: Record<string, string> = {
   push: 'Push',
   compliance: 'Compliance',
   deploy: 'Deploy',
+  tls: 'TLS',
 }
 
 function initialPipelineStages(): PipelineStage[] {
@@ -632,6 +634,34 @@ function AppCard({
                 <span className="font-mono text-xs">{url}</span>
                 <ExternalLink className="size-3" />
               </a>
+            }
+          />
+        )}
+        {app.domain && app.tls_status && app.tls_status !== 'none' && (
+          <InfoRow
+            label="TLS"
+            value={
+              app.tls_status === 'active' ? (
+                <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                  <CheckCircle2 className="size-3" /> Active
+                </span>
+              ) : app.tls_status === 'provisioning' ? (
+                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <Loader2 className="size-3 animate-spin" /> Provisioning…
+                </span>
+              ) : app.tls_status === 'dns_failed' ? (
+                <span className="inline-flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400">
+                  <AlertCircle className="size-3" /> DNS mismatch
+                </span>
+              ) : app.tls_status === 'cert_failed' ? (
+                <span className="inline-flex items-center gap-1 text-xs text-critical">
+                  <AlertCircle className="size-3" /> Cert failed
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs text-critical">
+                  <AlertCircle className="size-3" /> Failed
+                </span>
+              )
             }
           />
         )}

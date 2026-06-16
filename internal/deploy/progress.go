@@ -17,6 +17,7 @@ const (
 	StepPush       = "push"
 	StepCompliance = "compliance"
 	StepDeploy     = "deploy"
+	StepTLS        = "tls" // local_docker only — cert + nginx vhost provisioning
 )
 
 // Step statuses — mirrors web/src/lib/mock-data.ts's PipelineStage.status.
@@ -77,7 +78,7 @@ func (o *Orchestrator) CurrentSteps(appID string) []StepEvent {
 	if len(steps) == 0 {
 		return nil
 	}
-	order := []string{StepClone, StepDetect, StepBuild, StepPush, StepCompliance, StepDeploy}
+	order := []string{StepClone, StepDetect, StepBuild, StepPush, StepCompliance, StepDeploy, StepTLS}
 	out := make([]StepEvent, 0, len(steps))
 	for _, name := range order {
 		if e, ok := steps[name]; ok {

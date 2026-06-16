@@ -77,13 +77,14 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		gitCredsSecretID *string
 		buildContext     string
 		secretFilesID    *string
+		domain           string
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text
+		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text, COALESCE(da.domain, '')
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1
-	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID)
+	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID, &domain)
 	if err != nil {
 		return fmt.Errorf("deploy: look up app %s: %w", appID, err)
 	}
@@ -196,6 +197,19 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		}
 		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 		o.publishStep(appID, StepDeploy, StepDone)
+
+		// TLS step — only when a domain is configured and the provisioner is wired.
+		// Non-fatal: a TLS failure leaves the container running (already "running"
+		// status above) but marks tls_status="cert_failed"|"dns_failed" so the
+		// dashboard can surface a "retry TLS" action.
+		if domain != "" && o.tlsProvisioner != nil {
+			if tlsErr := o.tlsProvisioner.Provision(ctx, appID, domain, stackName, appName, o.publishStep); tlsErr != nil {
+				// Log but don't fail the whole pipeline — container is live.
+				o.hub.Publish(sse.Event{Type: "deploy.log", Payload: LogEvent{AppID: appID, Line: "TLS: " + tlsErr.Error()}})
+			}
+		} else if domain != "" {
+			o.publishStep(appID, StepTLS, StepSkipped)
+		}
 
 	case targetKind == "cloud_vm":
 		if targetResourceID == nil {

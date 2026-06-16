@@ -92,6 +92,10 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, workDir, registryPush, registryPull s
 	return m, nil
 }
 
+// Client returns the underlying Docker client for use by packages that
+// depend on internal/docker via injection (e.g. internal/deploy/tls.go).
+func (m *Manager) Client() *dockerclient.Client { return m.client }
+
 // Run starts the 30-second health-poll loop and blocks until ctx is cancelled.
 // Mirrors k8s.Controller.Run.
 func (m *Manager) Run(ctx context.Context) error {
