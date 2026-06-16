@@ -156,11 +156,13 @@ func ensurePackProcfile(contextDir string) {
 	// launch environment and `node` is not on PATH when the container starts —
 	// the Procfile alone is insufficient because Paketo decides launch-layer
 	// inclusion during the build phase.
-	_ = os.WriteFile(filepath.Join(contextDir, "autodevops_server.js"), []byte(spaServerJS), 0o644)
+	// Use .cjs extension so Node treats this as CommonJS even when package.json
+	// has "type": "module" (which would make .js files ESM, breaking require()).
+	_ = os.WriteFile(filepath.Join(contextDir, "autodevops_server.cjs"), []byte(spaServerJS), 0o644)
 	if scripts == nil {
 		scripts = map[string]interface{}{}
 	}
-	scripts["start"] = "node autodevops_server.js"
+	scripts["start"] = "node autodevops_server.cjs"
 	manifest["scripts"] = scripts
 	if updated, err := json.MarshalIndent(manifest, "", "  "); err == nil {
 		_ = os.WriteFile(pkgPath, updated, 0o644)
