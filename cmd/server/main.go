@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -105,9 +106,29 @@ func main() {
 
 	complianceScanner := compliance.New(pool, hub, cfg.ComplianceThreshold)
 	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, cfg.IngressDomain, kubeDeployer, dockerDeployer, imagePusher, imageSaver, aciRedeployer, complianceScanner)
-	if dockerMgr != nil && cfg.PublicIP != "" {
-		tlsProv := deploy.NewTLSProvisioner(dockerMgr.Client(), pool, cfg.PublicIP, cfg.AdminEmail)
-		orchestrator.SetTLSProvisioner(tlsProv)
+	if dockerMgr != nil {
+		if cfg.PublicIP != "" {
+			tlsProv := deploy.NewTLSProvisioner(dockerMgr.Client(), pool, cfg.PublicIP, cfg.AdminEmail)
+			orchestrator.SetTLSProvisioner(tlsProv)
+		}
+		// Use Publish:true pack mode when the Docker daemon uses containerd image store,
+		// which is incompatible with Publish:false. The lifecycle registry address is the
+		// registry as seen from inside Docker containers (bridge gateway IP + port).
+		// Auto-detected from the Docker bridge network; can be overridden via REGISTRY_LIFECYCLE_ADDR.
+		lifecycleAddr := cfg.RegistryLifecycle
+		if lifecycleAddr == "" {
+			gw := dockerMgr.BridgeGatewayIP(ctx)
+			// Only auto-switch if registryPush uses localhost — on remote registries
+			// the existing Publish:false + PushImage path is correct.
+			if strings.HasPrefix(cfg.RegistryPush, "localhost:") {
+				port := strings.TrimPrefix(cfg.RegistryPush, "localhost:")
+				lifecycleAddr = gw + ":" + port
+			}
+		}
+		if lifecycleAddr != "" {
+			orchestrator.SetRegistryLifecycle(lifecycleAddr)
+			slog.Info("pack: using Publish:true with lifecycle registry", "addr", lifecycleAddr)
+		}
 	}
 
 	tfEngine, err := terraform.New([]terraform.Definition{

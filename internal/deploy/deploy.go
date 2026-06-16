@@ -122,6 +122,11 @@ type Orchestrator struct {
 	aciRedeployer   ACIRedeployer  // nil when terraform is not available — required for cloud_aci targets
 	complianceGate  ComplianceGate // nil disables compliance scanning
 	tlsProvisioner  *TLSProvisioner // nil skips TLS step for local_docker
+	// registryLifecycle is the registry address as seen from inside pack's
+	// lifecycle containers (e.g. "172.17.0.1:5001") — used when the Docker
+	// daemon uses containerd image store, where Publish:false fails. Empty
+	// means fall back to Publish:false with registryPush.
+	registryLifecycle string
 
 	stepsMu sync.RWMutex
 	steps   map[string]map[string]StepEvent // appID -> step -> latest StepEvent, for hydrating dashboard pages that load mid-deploy (deploy.step SSE events aren't replayed on reconnect)
@@ -163,6 +168,13 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builde
 // available. A nil provisioner is a no-op: local_docker deployments with a
 // domain set will still succeed but the StepTLS step is skipped.
 func (o *Orchestrator) SetTLSProvisioner(p *TLSProvisioner) { o.tlsProvisioner = p }
+
+// SetRegistryLifecycle sets the registry address that pack lifecycle containers
+// use to push images directly (Publish:true path). Must be reachable from
+// inside Docker containers — typically the Docker bridge gateway IP + port,
+// e.g. "172.17.0.1:5001". When set, the registry must also be bound to
+// 0.0.0.0 (not 127.0.0.1) so containers can reach it.
+func (o *Orchestrator) SetRegistryLifecycle(addr string) { o.registryLifecycle = addr }
 
 // gitCredentials is the JSON shape stored (encrypted) via vault.Put under
 // deployment_apps.git_credentials_secret_id and read back via vault.GetByID —

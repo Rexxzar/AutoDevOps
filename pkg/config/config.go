@@ -32,6 +32,10 @@ type Config struct {
 	ComplianceThreshold string // minimum severity that blocks deploy: critical|high|medium|low|info
 	// DNS / TLS
 	PublicIP string // server's public IP shown to users when DNS doesn't point here yet
+	// RegistryLifecycle is the registry address as seen from inside pack lifecycle
+	// containers (e.g. "172.17.0.1:5001"). Auto-detected from Docker bridge gateway
+	// when RegistryPush uses localhost; set REGISTRY_LIFECYCLE_ADDR to override.
+	RegistryLifecycle string
 }
 
 func Load() *Config {
@@ -52,6 +56,7 @@ func Load() *Config {
 		IngressDomain:       env("INGRESS_DOMAIN", "apps.127.0.0.1.sslip.io"),
 		ComplianceThreshold: env("COMPLIANCE_THRESHOLD", "high"),
 		PublicIP:            env("PUBLIC_IP", ""),
+		RegistryLifecycle:   env("REGISTRY_LIFECYCLE_ADDR", ""),
 	}
 }
 

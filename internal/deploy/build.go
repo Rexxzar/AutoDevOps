@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	packclient "github.com/buildpacks/pack/pkg/client"
 	"github.com/buildpacks/pack/pkg/image"
@@ -52,6 +53,16 @@ func (l *slogPackLogger) emit(line string) {
 	if l.logLine != nil {
 		l.logLine(line)
 	}
+}
+
+// imageNameOnly strips the host:port prefix from a registry image ref,
+// returning just "name:tag" — used when substituting the lifecycle registry host.
+// e.g. "localhost:5001/skyline:abc123" → "skyline:abc123"
+func imageNameOnly(ref string) string {
+	if i := strings.Index(ref, "/"); i >= 0 {
+		return ref[i+1:]
+	}
+	return ref
 }
 
 // imageRefs returns both address variants for a deployment's image:
@@ -153,11 +164,19 @@ func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath,
 			return fmt.Errorf("deploy: init pack client: %w", err)
 		}
 
-		// Publish: false builds into the host Docker daemon's local image store
-		// instead of pushing directly from pack's lifecycle containers — those run
-		// in their own network namespace and can't reach the registry via its
-		// host-mapped "localhost:<port>" address. o.pusher.PushImage below pushes
-		// from the host daemon instead, which resolves localhost registries fine.
+		// Two pack publish modes depending on whether the Docker daemon uses
+		// containerd image store:
+		//
+		// Publish:false (default) — builds into the host daemon's local image
+		// store; o.pusher.PushImage pushes from the host afterward. Fails on
+		// Linux Docker with containerd storage (exit 62) because the lifecycle
+		// containers can't export to containerd's store format.
+		//
+		// Publish:true (when registryLifecycle is set) — lifecycle containers push
+		// directly to the registry address visible from inside Docker (bridge
+		// gateway IP, e.g. "172.17.0.1:5001"). Requires the registry to be bound
+		// to 0.0.0.0, not 127.0.0.1. The separate PushImage step is skipped since
+		// the image is already in the registry.
 		//
 		// TrustBuilder: pack's default IsKnownTrustedBuilder does an exact string
 		// match against builder image names with NO tag, so our configured
@@ -165,13 +184,18 @@ func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath,
 		// pack falls back to the untrusted 5-phase flow — which hits a
 		// "/layers/group.toml: permission denied" error on this Docker setup.
 		// builderImage is server config (not user input) and is one of pack's
-		// officially trusted Paketo builders, so trusting it here is safe and
-		// restores the single-container "creator" flow.
+		// officially trusted Paketo builders, so trusting it here is safe.
+		packPublish := o.registryLifecycle != ""
+		packImageRef := pushRef
+		if packPublish {
+			// Replace the host:port prefix so lifecycle containers can reach the registry.
+			packImageRef = o.registryLifecycle + "/" + imageNameOnly(pushRef)
+		}
 		if err := packClient.Build(ctx, packclient.BuildOptions{
-			Image:        pushRef,
+			Image:        packImageRef,
 			Builder:      o.builderImage,
 			AppPath:      contextDir,
-			Publish:      false,
+			Publish:      packPublish,
 			PullPolicy:   image.PullIfNotPresent,
 			TrustBuilder: func(string) bool { return true },
 			Env:          extraEnv,
@@ -183,9 +207,20 @@ func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath,
 	o.publishStep(appID, StepBuild, StepDone)
 
 	o.publishStep(appID, StepPush, StepActive)
-	if err := o.pusher.PushImage(ctx, pushRef, nil); err != nil {
-		o.publishStep(appID, StepPush, StepFailed)
-		return fmt.Errorf("deploy: push %s: %w", pushRef, err)
+	if o.registryLifecycle != "" {
+		// Image was published directly to the registry by the lifecycle container
+		// under lifecycleRef (gateway-IP addr). Re-tag it under pushRef (localhost
+		// addr) so pullRef lookups work — both hostnames reach the same registry.
+		lifecycleRef := o.registryLifecycle + "/" + imageNameOnly(pushRef)
+		if err := o.pusher.TagImage(ctx, lifecycleRef, pushRef); err != nil {
+			// Non-fatal: log and continue.
+			slog.Warn("deploy: retag lifecycle image", "from", lifecycleRef, "to", pushRef, "error", err)
+		}
+	} else {
+		if err := o.pusher.PushImage(ctx, pushRef, nil); err != nil {
+			o.publishStep(appID, StepPush, StepFailed)
+			return fmt.Errorf("deploy: push %s: %w", pushRef, err)
+		}
 	}
 	o.publishStep(appID, StepPush, StepDone)
 

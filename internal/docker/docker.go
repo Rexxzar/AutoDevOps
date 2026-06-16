@@ -14,6 +14,7 @@ import (
 
 	"github.com/Rexxzar/autodevops/internal/sse"
 	dockertypes "github.com/docker/docker/api/types"
+	dockernetwork "github.com/docker/docker/api/types/network"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -95,6 +96,21 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, workDir, registryPush, registryPull s
 // Client returns the underlying Docker client for use by packages that
 // depend on internal/docker via injection (e.g. internal/deploy/tls.go).
 func (m *Manager) Client() *dockerclient.Client { return m.client }
+
+// BridgeGatewayIP returns the IPv4 gateway of Docker's default bridge network —
+// the address lifecycle containers (running inside Docker) use to reach the host.
+// Falls back to "172.17.0.1" if the network cannot be inspected.
+func (m *Manager) BridgeGatewayIP(ctx context.Context) string {
+	info, err := m.client.NetworkInspect(ctx, "bridge", dockernetwork.InspectOptions{})
+	if err == nil {
+		for _, cfg := range info.IPAM.Config {
+			if cfg.Gateway != "" {
+				return cfg.Gateway
+			}
+		}
+	}
+	return "172.17.0.1"
+}
 
 // Run starts the 30-second health-poll loop and blocks until ctx is cancelled.
 // Mirrors k8s.Controller.Run.
