@@ -22,10 +22,10 @@ const (
 	clusterIssuerName = "selfsigned-issuer"
 )
 
-// namespaceName derives the deterministic K8s namespace for a deployment:
+// NamespaceName derives the deterministic K8s namespace for a deployment:
 // "autodevops-<name>" with underscores→hyphens and lower-cased, capped at 63
 // characters to satisfy the DNS label format.
-func namespaceName(deploymentName string) string {
+func NamespaceName(deploymentName string) string {
 	ns := "autodevops-" + strings.ToLower(strings.ReplaceAll(deploymentName, "_", "-"))
 	if len(ns) > 63 {
 		ns = ns[:63]
@@ -83,9 +83,105 @@ func sortedEnvVars(env map[string]string) []corev1.EnvVar {
 	return vars
 }
 
-func buildDeployment(name, namespace, imageRef string, extraEnv map[string]string) *appsv1.Deployment {
+// sanitizeSecretKey turns a container path ("/opt/secrets/firebase.json")
+// into a valid Kubernetes Secret data key ("opt_secrets_firebase.json") —
+// duplicated in internal/docker (as a host filename) per the package
+// boundary rule. Secret data keys must match [-._a-zA-Z0-9]+, which this
+// always satisfies for normal filesystem paths.
+func sanitizeSecretKey(containerPath string) string {
+	return strings.ReplaceAll(strings.TrimPrefix(containerPath, "/"), "/", "_")
+}
+
+// buildSecret returns the Opaque Secret holding an app's uploaded secret
+// files, keyed by sanitizeSecretKey(path) -> file content. Named
+// "<name>-secrets" and referenced by the "secret-files" Volume that
+// buildDeployment/buildResourceDeployment add when secretFiles is non-empty.
+func buildSecret(name, namespace string, files map[string][]byte) *corev1.Secret {
+	data := make(map[string][]byte, len(files))
+	for path, content := range files {
+		data[sanitizeSecretKey(path)] = content
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name + "-secrets",
+			Namespace: namespace,
+			Labels:    managedLabels(name),
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: data,
+	}
+}
+
+// secretFileVolumeMounts returns one VolumeMount per secret file (sorted by
+// path for deterministic re-applies), each referencing the shared
+// "secret-files" Volume via SubPath so multiple files can share one Volume
+// backed by buildSecret's Secret. Returns nil if secretFiles is empty.
+func secretFileVolumeMounts(secretFiles map[string][]byte) []corev1.VolumeMount {
+	if len(secretFiles) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(secretFiles))
+	for path := range secretFiles {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	mounts := make([]corev1.VolumeMount, 0, len(paths))
+	for _, path := range paths {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "secret-files",
+			MountPath: path,
+			SubPath:   sanitizeSecretKey(path),
+			ReadOnly:  true,
+		})
+	}
+	return mounts
+}
+
+// secretFilesVolume returns the "secret-files" Volume sourced from
+// buildSecret's "<name>-secrets" Secret, or nil if secretFiles is empty.
+func secretFilesVolume(name string, secretFiles map[string][]byte) *corev1.Volume {
+	if len(secretFiles) == 0 {
+		return nil
+	}
+	return &corev1.Volume{
+		Name: "secret-files",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: name + "-secrets"},
+		},
+	}
+}
+
+func buildDeployment(name, namespace, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte) *appsv1.Deployment {
 	replicas := int32(1)
 	labels := managedLabels(name)
+
+	appContainer := corev1.Container{
+		Name:  "app",
+		Image: imageRef,
+		Ports: []corev1.ContainerPort{
+			{ContainerPort: paketoPort, Protocol: corev1.ProtocolTCP},
+		},
+		Env: append([]corev1.EnvVar{
+			{Name: "PORT", Value: "8080"},
+		}, sortedEnvVars(extraEnv)...),
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("128Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		},
+		ImagePullPolicy: corev1.PullAlways,
+		VolumeMounts:    secretFileVolumeMounts(secretFiles),
+	}
+
+	var volumes []corev1.Volume
+	if v := secretFilesVolume(name, secretFiles); v != nil {
+		volumes = append(volumes, *v)
+	}
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -102,29 +198,10 @@ func buildDeployment(name, namespace, imageRef string, extraEnv map[string]strin
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
-						{
-							Name:  "app",
-							Image: imageRef,
-							Ports: []corev1.ContainerPort{
-								{ContainerPort: paketoPort, Protocol: corev1.ProtocolTCP},
-							},
-							Env: append([]corev1.EnvVar{
-								{Name: "PORT", Value: "8080"},
-							}, sortedEnvVars(extraEnv)...),
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("500m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-							},
-							ImagePullPolicy: corev1.PullAlways,
-						},
+						appContainer,
 						buildHealthSidecar(name),
 					},
+					Volumes: volumes,
 				},
 			},
 		},
@@ -219,8 +296,10 @@ func buildResourcePVC(name, namespace string) *corev1.PersistentVolumeClaim {
 // for a postgres:16 image app; pass nil for standalone Resources, which have
 // no env-var concept. volumePath, if non-empty, mounts the PVC from
 // buildResourcePVC at that path — pass "" for standalone Resources and image
-// apps with no persistent storage configured.
-func buildResourceDeployment(name, namespace, imageRef string, port int32, env map[string]string, volumePath string) *appsv1.Deployment {
+// apps with no persistent storage configured. secretFiles, if non-empty,
+// mounts buildSecret's Secret via the "secret-files" Volume — pass nil for
+// standalone Resources.
+func buildResourceDeployment(name, namespace, imageRef string, port int32, env map[string]string, volumePath string, secretFiles map[string][]byte) *appsv1.Deployment {
 	replicas := int32(1)
 	labels := managedLabels(name)
 
@@ -246,19 +325,19 @@ func buildResourceDeployment(name, namespace, imageRef string, port int32, env m
 
 	var volumes []corev1.Volume
 	if volumePath != "" {
-		container.VolumeMounts = []corev1.VolumeMount{
-			{Name: volumeName(name), MountPath: volumePath},
-		}
-		volumes = []corev1.Volume{
-			{
-				Name: volumeName(name),
-				VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: volumeName(name),
-					},
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: volumeName(name), MountPath: volumePath})
+		volumes = append(volumes, corev1.Volume{
+			Name: volumeName(name),
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: volumeName(name),
 				},
 			},
-		}
+		})
+	}
+	container.VolumeMounts = append(container.VolumeMounts, secretFileVolumeMounts(secretFiles)...)
+	if v := secretFilesVolume(name, secretFiles); v != nil {
+		volumes = append(volumes, *v)
 	}
 
 	return &appsv1.Deployment{

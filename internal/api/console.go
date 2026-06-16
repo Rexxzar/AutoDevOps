@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +27,29 @@ const consoleExecTimeout = 2 * time.Minute
 // yet — its terraform outputs (instance IDs, IPs, etc.) only exist after a
 // successful Apply.
 func (s *Server) consoleResource(ctx context.Context, id string) (console.Resource, error) {
+	// Synthetic IDs for host-inventory items — no DB lookup needed.
+	if strings.HasPrefix(id, "docker:") {
+		cid := strings.TrimPrefix(id, "docker:")
+		return console.Resource{
+			Name:         cid,
+			Provider:     "local",
+			ResourceType: "docker",
+			Outputs:      map[string]any{"container_id": cid},
+		}, nil
+	}
+	if strings.HasPrefix(id, "k8s:") {
+		_, ns, pod, parseErr := parseInventoryID(id)
+		if parseErr != nil {
+			return console.Resource{}, parseErr
+		}
+		return console.Resource{
+			Name:         pod,
+			Provider:     "local",
+			ResourceType: "k8s",
+			Outputs:      map[string]any{"namespace": ns, "pod_name": pod},
+		}, nil
+	}
+
 	rr, err := s.getResource(ctx, id)
 	if err != nil {
 		return console.Resource{}, fmt.Errorf("resource not found")

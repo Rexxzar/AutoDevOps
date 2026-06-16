@@ -76,13 +76,14 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		targetResourceID *string
 		gitCredsSecretID *string
 		buildContext     string
+		secretFilesID    *string
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, '')
+		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1
-	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext)
+	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID)
 	if err != nil {
 		return fmt.Errorf("deploy: look up app %s: %w", appID, err)
 	}
@@ -130,6 +131,12 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		return fmt.Errorf("deploy: resolve links for %s: %w", appID, err)
 	}
 
+	secretFiles, err := o.loadSecretFiles(ctx, secretFilesID)
+	if err != nil {
+		o.publishStep(appID, StepBuild, StepFailed)
+		return fmt.Errorf("deploy: load secret files for %s: %w", appID, err)
+	}
+
 	contextDir := repoPath
 	if buildContext != "" {
 		contextDir = filepath.Join(repoPath, buildContext)
@@ -163,7 +170,7 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 	switch {
 	case targetKind == "local_k8s" && o.kubeDeployer != nil:
 		namespace := namespaceName(stackName)
-		if err := o.kubeDeployer.KubeDeploy(ctx, appName, namespace, imageRef, extraEnv); err != nil {
+		if err := o.kubeDeployer.KubeDeploy(ctx, appName, namespace, imageRef, extraEnv, secretFiles); err != nil {
 			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
@@ -177,7 +184,7 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		o.publishStep(appID, StepDeploy, StepDone)
 
 	case targetKind == "local_docker" && o.dockerDeployer != nil:
-		if err := o.dockerDeployer.DockerDeploy(ctx, stackName, appName, imageRef, extraEnv); err != nil {
+		if err := o.dockerDeployer.DockerDeploy(ctx, stackName, appName, imageRef, extraEnv, secretFiles); err != nil {
 			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})

@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,34 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/docker/docker/api/types/registry"
 )
+
+// loadRegistryOutputs reads the outputs of an applied "ecr"/"acr"
+// provisioned_resources row identified by registryResourceID — used by
+// loadECSResource/loadACIResource to resolve registry connection info from a
+// linked standalone registry resource (see migration
+// 020_registry_resource_link.sql) rather than the ECS/ACI resource's own
+// outputs.
+func (o *Orchestrator) loadRegistryOutputs(ctx context.Context, registryResourceID, wantType string) (map[string]any, error) {
+	var resourceType, status, outputsJSON string
+	err := o.pool.QueryRow(ctx, `
+		SELECT resource_type, status, COALESCE(outputs::text, '{}')
+		FROM provisioned_resources WHERE id = $1
+	`, registryResourceID).Scan(&resourceType, &status, &outputsJSON)
+	if err != nil {
+		return nil, fmt.Errorf("deploy: look up linked registry resource %s: %w", registryResourceID, err)
+	}
+	if resourceType != wantType {
+		return nil, fmt.Errorf("deploy: linked registry resource %s is not %s (resource_type=%s)", registryResourceID, wantType, resourceType)
+	}
+	if status != "applied" {
+		return nil, fmt.Errorf("deploy: linked registry resource %s is not applied (status=%s)", registryResourceID, status)
+	}
+	var outputs map[string]any
+	if err := json.Unmarshal([]byte(outputsJSON), &outputs); err != nil {
+		return nil, fmt.Errorf("deploy: decode outputs for linked registry resource %s: %w", registryResourceID, err)
+	}
+	return outputs, nil
+}
 
 // ecrAuth fetches a short-lived (12h) ECR authorization token for
 // cloudAccountID/region and returns it as a registry.AuthConfig suitable for

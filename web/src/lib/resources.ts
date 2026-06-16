@@ -14,6 +14,10 @@ export interface ProvisionedResource {
   // see `output` blocks in internal/terraform/templates/*/stack.tf.tmpl),
   // "{}" until the first successful Apply.
   outputs: string
+  // Optional link (ecs/aci only) to an applied "ecr"/"acr" resource whose
+  // outputs supply the registry connection info for git-app deploys onto
+  // this resource — see migration 020_registry_resource_link.sql.
+  registry_resource_id?: string
   created_at: string
   updated_at: string
 }
@@ -31,8 +35,8 @@ export interface TerraformRun {
 }
 
 export const provisionedTypeLabel: Record<string, Record<string, string>> = {
-  aws: { ecs: 'ECS Fargate', vm: 'EC2 Instance', rds: 'RDS Database' },
-  azure: { aci: 'Container Instance', vm: 'Virtual Machine', db: 'Database' },
+  aws: { ecs: 'ECS Fargate', vm: 'EC2 Instance', rds: 'RDS Database', ecr: 'ECR Repository' },
+  azure: { aci: 'Container Instance', vm: 'Virtual Machine', db: 'Database', acr: 'Container Registry' },
   local: { docker: 'Docker Container', k8s: 'K8s Workload' },
 }
 

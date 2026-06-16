@@ -26,14 +26,18 @@ type ecsResource struct {
 
 // loadECSResource reads the provisioned_resources row identified by
 // resourceID — a deployment_apps.target_resource_id for a cloud_ecs app —
-// and validates it is an applied "ecs" resource before deployToECS runs.
+// and validates it is an applied "ecs" resource before deployToECS runs. If
+// the resource has a linked "ecr" registry resource (registry_resource_id,
+// migration 020), that resource's ecr_repository_url output is merged into
+// res.Outputs so deployToECS can push there.
 func (o *Orchestrator) loadECSResource(ctx context.Context, resourceID string) (ecsResource, error) {
 	var res ecsResource
-	var resourceType, status, outputsJSON string
+	var resourceType, status, outputsJSON, registryResourceID string
 	err := o.pool.QueryRow(ctx, `
-		SELECT name, resource_type, COALESCE(cloud_account_id::text, ''), region, status, COALESCE(outputs::text, '{}')
+		SELECT name, resource_type, COALESCE(cloud_account_id::text, ''), region, status, COALESCE(outputs::text, '{}'),
+		       COALESCE(registry_resource_id::text, '')
 		FROM provisioned_resources WHERE id = $1
-	`, resourceID).Scan(&res.Name, &resourceType, &res.CloudAccountID, &res.Region, &status, &outputsJSON)
+	`, resourceID).Scan(&res.Name, &resourceType, &res.CloudAccountID, &res.Region, &status, &outputsJSON, &registryResourceID)
 	if err != nil {
 		return ecsResource{}, fmt.Errorf("deploy: look up target resource %s: %w", resourceID, err)
 	}
@@ -45,6 +49,13 @@ func (o *Orchestrator) loadECSResource(ctx context.Context, resourceID string) (
 	}
 	if err := json.Unmarshal([]byte(outputsJSON), &res.Outputs); err != nil {
 		return ecsResource{}, fmt.Errorf("deploy: decode outputs for resource %s: %w", resourceID, err)
+	}
+	if registryResourceID != "" {
+		registryOutputs, err := o.loadRegistryOutputs(ctx, registryResourceID, "ecr")
+		if err != nil {
+			return ecsResource{}, err
+		}
+		res.Outputs["ecr_repository_url"] = registryOutputs["ecr_repository_url"]
 	}
 	return res, nil
 }
@@ -59,10 +70,13 @@ func (o *Orchestrator) deployToECS(ctx context.Context, pushRef string, extraEnv
 		return fmt.Errorf("deploy: no image pusher configured (Docker daemon unavailable)")
 	}
 
-	repoURL := outputString(res.Outputs, "ecr_repository_url")
 	clusterName := outputString(res.Outputs, "ecs_cluster_name")
-	if repoURL == "" || clusterName == "" {
-		return fmt.Errorf("deploy: resource %s is missing ecr_repository_url/ecs_cluster_name outputs — apply it with a bundled ECR repository first", res.Name)
+	if clusterName == "" {
+		return fmt.Errorf("deploy: resource %s is missing ecs_cluster_name output", res.Name)
+	}
+	repoURL := outputString(res.Outputs, "ecr_repository_url")
+	if repoURL == "" {
+		return fmt.Errorf("deploy: resource %s has no linked ECR registry — link an applied ECR registry resource first", res.Name)
 	}
 
 	auth, err := o.ecrAuth(ctx, res.CloudAccountID, res.Region, repoURL)

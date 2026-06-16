@@ -18,23 +18,23 @@ func TestNamespaceName(t *testing.T) {
 		{"MY_APP", "autodevops-my-app"},
 	}
 	for _, tc := range cases {
-		got := namespaceName(tc.in)
+		got := NamespaceName(tc.in)
 		if got != tc.want {
-			t.Errorf("namespaceName(%q) = %q, want %q", tc.in, got, tc.want)
+			t.Errorf("NamespaceName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
 
 func TestNamespaceNameLengthCap(t *testing.T) {
 	long := strings.Repeat("a", 60)
-	got := namespaceName(long)
+	got := NamespaceName(long)
 	if len(got) > 63 {
-		t.Errorf("namespaceName returned %d chars, max is 63", len(got))
+		t.Errorf("NamespaceName returned %d chars, max is 63", len(got))
 	}
 }
 
 func TestBuildDeployment(t *testing.T) {
-	dep := buildDeployment("svc", "autodevops-svc", "registry.local:5000/svc:abc123", nil)
+	dep := buildDeployment("svc", "autodevops-svc", "registry.local:5000/svc:abc123", nil, nil)
 
 	if dep.Name != "svc" {
 		t.Errorf("deployment name = %q, want %q", dep.Name, "svc")
@@ -72,7 +72,7 @@ func TestBuildDeploymentExtraEnv(t *testing.T) {
 	dep := buildDeployment("frontend", "autodevops-stack", "registry.local:5000/frontend:abc123", map[string]string{
 		"AUTODEVOPS_BACKEND_URL":  "http://backend",
 		"AUTODEVOPS_BACKEND_HOST": "backend",
-	})
+	}, nil)
 
 	app := dep.Spec.Template.Spec.Containers[0]
 	if app.Env[0].Name != "PORT" || app.Env[0].Value != "8080" {
@@ -146,7 +146,7 @@ func TestBuildResourceNamespace(t *testing.T) {
 }
 
 func TestBuildResourceDeployment(t *testing.T) {
-	dep := buildResourceDeployment("my-resource", "resource-my-resource", "nginx:latest", 80, nil, "")
+	dep := buildResourceDeployment("my-resource", "resource-my-resource", "nginx:latest", 80, nil, "", nil)
 
 	if dep.Name != "my-resource" || dep.Namespace != "resource-my-resource" {
 		t.Errorf("deployment name/namespace = %q/%q", dep.Name, dep.Namespace)
@@ -172,7 +172,7 @@ func TestBuildResourceDeployment(t *testing.T) {
 }
 
 func TestBuildResourceDeploymentWithVolume(t *testing.T) {
-	dep := buildResourceDeployment("pg", "autodevops-stack", "postgres:16", 5432, nil, "/var/lib/postgresql/data")
+	dep := buildResourceDeployment("pg", "autodevops-stack", "postgres:16", 5432, nil, "/var/lib/postgresql/data", nil)
 
 	pod := dep.Spec.Template.Spec
 	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != "pg-data" {
@@ -185,6 +185,98 @@ func TestBuildResourceDeploymentWithVolume(t *testing.T) {
 	mounts := pod.Containers[0].VolumeMounts
 	if len(mounts) != 1 || mounts[0].Name != "pg-data" || mounts[0].MountPath != "/var/lib/postgresql/data" {
 		t.Errorf("volume mounts = %v, want pg-data at /var/lib/postgresql/data", mounts)
+	}
+}
+
+func TestSanitizeSecretKey(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"/opt/secrets/firebase.json", "opt_secrets_firebase.json"},
+		{"/etc/app.conf", "etc_app.conf"},
+		{"relative/path.txt", "relative_path.txt"},
+		{"single.txt", "single.txt"},
+	}
+	for _, tc := range cases {
+		if got := sanitizeSecretKey(tc.in); got != tc.want {
+			t.Errorf("sanitizeSecretKey(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestBuildSecret(t *testing.T) {
+	secret := buildSecret("app-plant", "autodevops-stack", map[string][]byte{
+		"/opt/secrets/firebase.json": []byte(`{"type":"service_account"}`),
+	})
+
+	if secret.Name != "app-plant-secrets" || secret.Namespace != "autodevops-stack" {
+		t.Errorf("secret name/namespace = %q/%q", secret.Name, secret.Namespace)
+	}
+	if secret.Type != corev1.SecretTypeOpaque {
+		t.Errorf("secret type = %q, want Opaque", secret.Type)
+	}
+	got, ok := secret.Data["opt_secrets_firebase.json"]
+	if !ok {
+		t.Fatalf("secret data missing key %q, got %v", "opt_secrets_firebase.json", secret.Data)
+	}
+	if string(got) != `{"type":"service_account"}` {
+		t.Errorf("secret data = %q, want firebase JSON", got)
+	}
+}
+
+func TestBuildDeploymentWithSecretFiles(t *testing.T) {
+	secretFiles := map[string][]byte{
+		"/opt/secrets/firebase.json": []byte("{}"),
+	}
+	dep := buildDeployment("app-plant", "autodevops-stack", "registry.local:5000/app-plant:abc123", nil, secretFiles)
+
+	pod := dep.Spec.Template.Spec
+	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != "secret-files" {
+		t.Fatalf("expected secret-files volume, got %v", pod.Volumes)
+	}
+	if pod.Volumes[0].Secret == nil || pod.Volumes[0].Secret.SecretName != "app-plant-secrets" {
+		t.Errorf("volume secret source = %v, want app-plant-secrets", pod.Volumes[0].Secret)
+	}
+
+	mounts := pod.Containers[0].VolumeMounts
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 volume mount, got %v", mounts)
+	}
+	if mounts[0].Name != "secret-files" || mounts[0].MountPath != "/opt/secrets/firebase.json" || mounts[0].SubPath != "opt_secrets_firebase.json" || !mounts[0].ReadOnly {
+		t.Errorf("volume mount = %+v, want secret-files at /opt/secrets/firebase.json (subpath opt_secrets_firebase.json, read-only)", mounts[0])
+	}
+}
+
+func TestBuildResourceDeploymentWithSecretFiles(t *testing.T) {
+	secretFiles := map[string][]byte{
+		"/opt/secrets/firebase.json": []byte("{}"),
+	}
+	dep := buildResourceDeployment("app-plant", "autodevops-stack", "registry.local:5000/app-plant:abc123", 8080, nil, "/data", secretFiles)
+
+	pod := dep.Spec.Template.Spec
+	if len(pod.Volumes) != 2 {
+		t.Fatalf("expected 2 volumes (pvc + secret-files), got %v", pod.Volumes)
+	}
+	var sawPVC, sawSecret bool
+	for _, v := range pod.Volumes {
+		switch v.Name {
+		case "app-plant-data":
+			sawPVC = true
+		case "secret-files":
+			sawSecret = true
+			if v.Secret == nil || v.Secret.SecretName != "app-plant-secrets" {
+				t.Errorf("secret-files volume source = %v, want app-plant-secrets", v.Secret)
+			}
+		}
+	}
+	if !sawPVC || !sawSecret {
+		t.Errorf("volumes = %v, want both app-plant-data and secret-files", pod.Volumes)
+	}
+
+	mounts := pod.Containers[0].VolumeMounts
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 volume mounts (pvc + secret file), got %v", mounts)
 	}
 }
 

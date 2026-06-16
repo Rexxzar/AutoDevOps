@@ -7,11 +7,12 @@ import { Dialog } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { TargetPill, FormField, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { type ProvisionedResource } from '@/lib/resources'
 
 type Step = 'select' | 'form' | 'preview' | 'success'
 type Provider = 'aws' | 'azure' | 'local'
-type AWSResource = 'ecs' | 'vm' | 'rds'
-type AzureResource = 'aci' | 'vm' | 'db'
+type AWSResource = 'ecs' | 'vm' | 'rds' | 'ecr'
+type AzureResource = 'aci' | 'vm' | 'db' | 'acr'
 export type LocalResource = 'docker' | 'k8s'
 type NetworkMode = 'new' | 'existing'
 
@@ -65,15 +66,6 @@ function ECSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
           {['1','2','3','4','5'].map(v => <option key={v} value={v}>{v}</option>)}
         </select>
       </FormField>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={v.create_registry === 'true'}
-          onChange={e => set('create_registry', e.target.checked ? 'true' : 'false')}
-          className="size-4 rounded border-border"
-        />
-        Create a container registry (ECR) for this service
-      </label>
     </>
   )
 }
@@ -158,16 +150,73 @@ function ACIFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
           <option value="Windows">Windows</option>
         </select>
       </FormField>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={v.create_registry === 'true'}
-          onChange={e => set('create_registry', e.target.checked ? 'true' : 'false')}
-          className="size-4 rounded border-border"
-        />
-        Create a container registry (ACR) for this container group
-      </label>
     </>
+  )
+}
+
+// ─── AWS ECR sub-fields ───────────────────────────────────────────
+// No extra fields — the repository is named after this resource (see
+// generateACRName's AWS counterpart in buildTerraformConfig's "ecr" case).
+function ECRFields() {
+  return (
+    <>
+      <SectionDivider label="ECR repository options" />
+      <p className="text-xs text-muted-foreground">
+        Creates a private ECR repository named after this resource. Link it from an ECS service
+        (optionally, when creating or editing it) so git-app deploys push images here.
+      </p>
+    </>
+  )
+}
+
+// ─── Azure ACR sub-fields ─────────────────────────────────────────
+// No extra fields — the registry name is auto-generated from this resource's
+// name (see generateACRName in internal/api/handlers.go).
+function ACRFields() {
+  return (
+    <>
+      <SectionDivider label="Container registry options" />
+      <p className="text-xs text-muted-foreground">
+        Creates an Azure Container Registry (admin access enabled) named after this resource.
+        Link it from an ACI container group (optionally, when creating or editing it) so
+        git-app deploys push images here.
+      </p>
+    </>
+  )
+}
+
+// ─── Optional registry link (ECS/ACI) ─────────────────────────────
+// Lets the user optionally link this ECS service / ACI container group to an
+// already-applied standalone "ecr"/"acr" resource — see migration
+// 020_registry_resource_link.sql. The link is editable later from the
+// resource detail page, so this is intentionally not required.
+function RegistryPicker({
+  provider, value, onChange, navigate,
+}: { provider: 'aws' | 'azure'; value: string; onChange: (id: string) => void; navigate: (path: string) => void }) {
+  const wantType = provider === 'aws' ? 'ecr' : 'acr'
+  const label = provider === 'aws' ? 'ECR repository' : 'Azure Container Registry'
+
+  const { data: allResources = [] } = useQuery({
+    queryKey: ['resources'],
+    queryFn: () => apiFetch<ProvisionedResource[]>('/resources'),
+  })
+  const registries = allResources.filter(r => r.provider === provider && r.resource_type === wantType && r.status === 'applied')
+
+  return (
+    <FormField label="Container registry" hint="optional — needed if you plan to deploy a git app onto this resource; can be linked later from the resource page">
+      {registries.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No applied {label} found.{' '}
+          <button type="button" onClick={() => navigate('/new-resource')} className="underline">Create one first</button>,
+          or skip this for now.
+        </p>
+      ) : (
+        <select value={value} onChange={e => onChange(e.target.value)} className={selectCls}>
+          <option value="">None</option>
+          {registries.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+      )}
+    </FormField>
   )
 }
 
@@ -431,6 +480,7 @@ export function NewResourcePage() {
   const [resourceOpts, setResourceOpts] = useState<Record<string, string>>({})
   const [networkMode, setNetworkMode] = useState<NetworkMode>('new')
   const [existingNetworkID, setExistingNetworkID] = useState('')
+  const [registryResourceID, setRegistryResourceID] = useState('')
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -460,7 +510,7 @@ export function NewResourcePage() {
     setResourceOpts(prev => ({ ...prev, [k]: val }))
   }
 
-  function clearOpts() { setResourceOpts({}) }
+  function clearOpts() { setResourceOpts({}); setRegistryResourceID('') }
 
   function resetNetwork() { setNetworkMode('new'); setExistingNetworkID('') }
 
@@ -524,12 +574,14 @@ export function NewResourcePage() {
     setLoading(true); setError('')
     try {
       const resourceType = provider === 'aws' ? awsResource : azureResource
+      const body: Record<string, unknown> = {
+        name, provider, cloud_account_id: cloudAccountID,
+        region, resource_type: resourceType, resource_opts: buildResourceOpts(),
+      }
+      if (registryResourceID) body.registry_resource_id = registryResourceID
       await apiFetch('/resources', {
         method: 'POST',
-        body: JSON.stringify({
-          name, provider, cloud_account_id: cloudAccountID,
-          region, resource_type: resourceType, resource_opts: buildResourceOpts(),
-        }),
+        body: JSON.stringify(body),
       })
       setSuccess({ name, provider, resourceType })
       setStep('success')
@@ -682,6 +734,7 @@ export function NewResourcePage() {
                       <TargetPill label="ECS Fargate" active={awsResource === 'ecs'} onClick={() => { setAWSResource('ecs'); clearOpts() }} />
                       <TargetPill label="EC2 VM" active={awsResource === 'vm'} onClick={() => { setAWSResource('vm'); clearOpts() }} />
                       <TargetPill label="RDS DB" active={awsResource === 'rds'} onClick={() => { setAWSResource('rds'); clearOpts() }} />
+                      <TargetPill label="ECR" sub="Registry" active={awsResource === 'ecr'} onClick={() => { setAWSResource('ecr'); clearOpts() }} />
                     </>
                   )}
                   {provider === 'azure' && (
@@ -689,6 +742,7 @@ export function NewResourcePage() {
                       <TargetPill label="Container" sub="ACI" active={azureResource === 'aci'} onClick={() => { setAzureResource('aci'); clearOpts() }} />
                       <TargetPill label="VM" active={azureResource === 'vm'} onClick={() => { setAzureResource('vm'); clearOpts() }} />
                       <TargetPill label="Database" active={azureResource === 'db'} onClick={() => { setAzureResource('db'); clearOpts() }} />
+                      <TargetPill label="ACR" sub="Registry" active={azureResource === 'acr'} onClick={() => { setAzureResource('acr'); clearOpts() }} />
                     </>
                   )}
                   {provider === 'local' && (
@@ -744,10 +798,19 @@ export function NewResourcePage() {
               {provider === 'aws' && awsResource === 'ecs' && <ECSFields v={resourceOpts} set={setOpt} />}
               {provider === 'aws' && awsResource === 'vm'  && <EC2Fields v={resourceOpts} set={setOpt} />}
               {provider === 'aws' && awsResource === 'rds' && <RDSFields v={resourceOpts} set={setOpt} />}
+              {provider === 'aws' && awsResource === 'ecr' && <ECRFields />}
               {provider === 'azure' && azureResource === 'aci' && <ACIFields v={resourceOpts} set={setOpt} />}
               {provider === 'azure' && azureResource === 'vm'  && <AzureVMFields v={resourceOpts} set={setOpt} />}
               {provider === 'azure' && azureResource === 'db'  && <AzureDBFields v={resourceOpts} set={setOpt} />}
+              {provider === 'azure' && azureResource === 'acr' && <ACRFields />}
               {provider === 'local' && <LocalFields v={resourceOpts} set={setOpt} resourceType={localResource} />}
+
+              {provider === 'aws' && awsResource === 'ecs' && (
+                <RegistryPicker provider="aws" value={registryResourceID} onChange={setRegistryResourceID} navigate={navigate} />
+              )}
+              {provider === 'azure' && azureResource === 'aci' && (
+                <RegistryPicker provider="azure" value={registryResourceID} onChange={setRegistryResourceID} navigate={navigate} />
+              )}
 
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">

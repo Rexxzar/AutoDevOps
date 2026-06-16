@@ -47,6 +47,7 @@ interface AppDetail {
   created_at: string
   updated_at: string
   volume_path?: string
+  secret_file_paths?: string[]
   links: AppLink[]
   // Hydrates the deploy-progress pipeline on page load / SSE reconnect — see
   // DeployStepEvent and internal/api/handlers.go's handleGetDeployment.
@@ -164,6 +165,29 @@ const severityStyle: Record<string, string> = {
   low: 'text-muted-foreground border-border bg-muted/50',
   info: 'text-muted-foreground border-border bg-muted/30',
 }
+
+// fileToBase64 reads a File's contents and resolves to its base64 encoding
+// (stripping the "data:...;base64," prefix from FileReader.readAsDataURL) —
+// used to build the secret_files payload for createApp/createImageApp and
+// handleUpdateSecretFiles.
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result as string
+      resolve(result.slice(result.indexOf(',') + 1))
+    }
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+}
+
+// fileInputCls styles a native file picker to roughly match inputCls's
+// text-input look (Tailwind's file: variant targets the inner button).
+const fileInputCls = cn(
+  inputCls,
+  'cursor-pointer file:mr-2 file:rounded-md file:border-0 file:bg-accent file:px-2 file:py-1 file:text-xs file:text-foreground',
+)
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -500,6 +524,9 @@ function AppCard({
   const [linkOpen, setLinkOpen] = useState(false)
   const [deletingLinkId, setDeletingLinkId] = useState<string | null>(null)
   const [linkError, setLinkError] = useState('')
+  const [secretFileOpen, setSecretFileOpen] = useState(false)
+  const [removingSecretPath, setRemovingSecretPath] = useState<string | null>(null)
+  const [secretFileError, setSecretFileError] = useState('')
   const [showLogs, setShowLogs] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
   const siblings = allApps.filter((a) => a.id !== app.id)
@@ -540,6 +567,21 @@ function AppCard({
       setLinkError(err instanceof Error ? err.message : 'Failed to remove connection')
     } finally {
       setDeletingLinkId(null)
+    }
+  }
+
+  async function handleRemoveSecretFile(path: string) {
+    setRemovingSecretPath(path)
+    setSecretFileError('')
+    try {
+      await apiFetch(`/deployments/${stackId}/apps/${app.id}/secret-files`, {
+        method: 'PUT', body: JSON.stringify({ remove: [path] }),
+      })
+      onLinksChanged()
+    } catch (err) {
+      setSecretFileError(err instanceof Error ? err.message : 'Failed to remove secret file')
+    } finally {
+      setRemovingSecretPath(null)
     }
   }
 
@@ -658,6 +700,39 @@ function AppCard({
           </div>
         )}
 
+        {(app.target_type === 'k8s' || app.target_type === 'container') && (
+          <div className="space-y-1.5 pt-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Secret files</p>
+              <Button size="sm" variant="outline" className="h-6 gap-1 px-2 text-xs" onClick={() => setSecretFileOpen(true)}>
+                <Plus className="size-3" />
+                Add
+              </Button>
+            </div>
+            {secretFileError && (
+              <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2 text-xs text-critical">
+                <AlertCircle className="size-3.5 shrink-0" />{secretFileError}
+              </div>
+            )}
+            {!app.secret_file_paths?.length ? (
+              <p className="text-xs text-muted-foreground">No secret files configured.</p>
+            ) : (
+              app.secret_file_paths.map((path) => (
+                <div key={path} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                  <span className="min-w-0 truncate font-mono">{path}</span>
+                  <Button
+                    size="sm" variant="ghost" className="h-6 w-6 shrink-0 p-0"
+                    disabled={removingSecretPath === path}
+                    onClick={() => handleRemoveSecretFile(path)}
+                  >
+                    {removingSecretPath === path ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
         {findings.length > 0 && (
           <div className="space-y-1.5 pt-2">
             <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Compliance findings</p>
@@ -702,7 +777,97 @@ function AppCard({
         onClose={() => setLinkOpen(false)}
         onCreated={onLinksChanged}
       />
+
+      <AddSecretFileDialog
+        stackId={stackId}
+        appId={app.id}
+        open={secretFileOpen}
+        onClose={() => setSecretFileOpen(false)}
+        onAdded={onLinksChanged}
+      />
     </Card>
+  )
+}
+
+// AddSecretFileDialog is a single-row "path + file" form for
+// handleUpdateSecretFiles' {add: {path: base64Content}} request — adding one
+// secret file to an existing app and triggering a redeploy so the mount
+// takes effect.
+function AddSecretFileDialog({
+  stackId, appId, open, onClose, onAdded,
+}: {
+  stackId: string
+  appId: string
+  open: boolean
+  onClose: () => void
+  onAdded: () => void
+}) {
+  const [path, setPath] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  function reset() {
+    setPath(''); setFile(null); setError('')
+  }
+
+  function handleClose() {
+    reset()
+    onClose()
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!file) return
+    setLoading(true); setError('')
+    try {
+      const content = await fileToBase64(file)
+      await apiFetch(`/deployments/${stackId}/apps/${appId}/secret-files`, {
+        method: 'PUT', body: JSON.stringify({ add: { [path]: content } }),
+      })
+      onAdded()
+      handleClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add secret file')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onClose={handleClose} title="Add secret file">
+      <form onSubmit={submit} className="p-4 space-y-4">
+        <FormField label="Container path" hint="e.g. /opt/secrets/firebase.json">
+          <input
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder="/opt/secrets/firebase.json"
+            required
+            className={cn(inputCls, 'font-mono text-xs')}
+          />
+        </FormField>
+        <FormField label="File">
+          <input
+            type="file"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            required
+            className={fileInputCls}
+          />
+        </FormField>
+        {error && (
+          <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
+            <AlertCircle className="size-4 shrink-0" />{error}
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={handleClose} disabled={loading}>Cancel</Button>
+          <Button type="submit" size="sm" className="gap-1.5" disabled={loading}>
+            {loading && <Loader2 className="size-3.5 animate-spin" />}
+            {loading ? 'Adding…' : 'Add'}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   )
 }
 
@@ -862,6 +1027,7 @@ function AddAppDialog({
   const [port, setPort] = useState('')
   const [volumePath, setVolumePath] = useState('')
   const [envRows, setEnvRows] = useState<{ key: string; value: string }[]>([])
+  const [secretFileRows, setSecretFileRows] = useState<{ path: string; file: File | null }[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ webhookURL: string; webhookSecret: string } | null>(null)
@@ -874,7 +1040,7 @@ function AddAppDialog({
     setKind('git')
     setName(''); setRepo(''); setBranch('main'); setGitToken(''); setTarget('k8s'); setVmResourceId(''); setDomain('')
     setEcsResourceId(''); setAciResourceId('')
-    setImageRef(''); setPort(''); setVolumePath(''); setEnvRows([])
+    setImageRef(''); setPort(''); setVolumePath(''); setEnvRows([]); setSecretFileRows([])
     setError(''); setSuccess(null)
   }
 
@@ -896,6 +1062,13 @@ function AddAppDialog({
     e.preventDefault()
     setLoading(true); setError('')
     try {
+      const secretFiles: Record<string, string> = {}
+      for (const row of secretFileRows) {
+        if (row.path && row.file) {
+          secretFiles[row.path] = await fileToBase64(row.file)
+        }
+      }
+
       if (kind === 'image') {
         const env: Record<string, string> = {}
         for (const row of envRows) {
@@ -906,6 +1079,7 @@ function AddAppDialog({
         }
         if (Object.keys(env).length > 0) body.env = env
         if (volumePath) body.volume_path = volumePath
+        if (Object.keys(secretFiles).length > 0) body.secret_files = secretFiles
         await apiFetch<{ id: string }>(`/deployments/${stackId}/apps`, {
           method: 'POST', body: JSON.stringify(body),
         })
@@ -920,6 +1094,7 @@ function AddAppDialog({
       if (target === 'aci') body.target_resource_id = effectiveAciResourceId
       if (gitToken) body.git_auth = { type: 'token', token: gitToken }
       if (domain) body.domain = domain
+      if (Object.keys(secretFiles).length > 0) body.secret_files = secretFiles
       const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>(`/deployments/${stackId}/apps`, {
         method: 'POST', body: JSON.stringify(body),
       })
@@ -1044,6 +1219,38 @@ function AddAppDialog({
               </FormField>
             </>
           )}
+          <FormField label="Secret files" hint="optional — files mounted read-only into the container, e.g. /opt/secrets/firebase.json">
+            <div className="space-y-2">
+              {secretFileRows.map((row, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={row.path}
+                    onChange={(e) => setSecretFileRows((rows) => rows.map((r, j) => (j === i ? { ...r, path: e.target.value } : r)))}
+                    placeholder="/opt/secrets/firebase.json"
+                    className={cn(inputCls, 'font-mono text-xs')}
+                  />
+                  <input
+                    type="file"
+                    onChange={(e) => setSecretFileRows((rows) => rows.map((r, j) => (j === i ? { ...r, file: e.target.files?.[0] ?? null } : r)))}
+                    className={cn(fileInputCls, 'text-xs')}
+                  />
+                  <Button
+                    type="button" size="sm" variant="ghost" className="h-9 w-9 shrink-0 p-0"
+                    onClick={() => setSecretFileRows((rows) => rows.filter((_, j) => j !== i))}
+                  >
+                    <X className="size-3.5" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button" size="sm" variant="outline" className="gap-1.5"
+                onClick={() => setSecretFileRows((rows) => [...rows, { path: '', file: null }])}
+              >
+                <Plus className="size-3.5" />
+                Add secret file
+              </Button>
+            </div>
+          </FormField>
           <FormField label="Target">
             <div className="flex gap-2">
               <TargetPill label="Kubernetes" sub="kind cluster" active={target === 'k8s'} onClick={() => setTarget('k8s')} />

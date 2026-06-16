@@ -17,20 +17,21 @@ import (
 // Called from handleAddApp on creation and handleTriggerApp for re-deploys.
 func (o *Orchestrator) DeployImageApp(ctx context.Context, appID string) error {
 	var (
-		stackName   string
-		appName     string
-		imageRef    string
-		port        int32
-		targetKind  string
-		envSecretID *string
-		volumePath  string
+		stackName     string
+		appName       string
+		imageRef      string
+		port          int32
+		targetKind    string
+		envSecretID   *string
+		volumePath    string
+		secretFilesID *string
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT d.name, da.name, COALESCE(da.image_ref, ''), COALESCE(da.port, 0), da.target_kind, da.image_env_secret_id::text, COALESCE(da.volume_path, '')
+		SELECT d.name, da.name, COALESCE(da.image_ref, ''), COALESCE(da.port, 0), da.target_kind, da.image_env_secret_id::text, COALESCE(da.volume_path, ''), da.secret_files_id::text
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1
-	`, appID).Scan(&stackName, &appName, &imageRef, &port, &targetKind, &envSecretID, &volumePath)
+	`, appID).Scan(&stackName, &appName, &imageRef, &port, &targetKind, &envSecretID, &volumePath, &secretFilesID)
 	if err != nil {
 		return fmt.Errorf("deploy: look up image app %s: %w", appID, err)
 	}
@@ -46,12 +47,17 @@ func (o *Orchestrator) DeployImageApp(ctx context.Context, appID string) error {
 		}
 	}
 
+	secretFiles, err := o.loadSecretFiles(ctx, secretFilesID)
+	if err != nil {
+		return fmt.Errorf("deploy: load secret files for %s: %w", appID, err)
+	}
+
 	var deployErr error
 	switch {
 	case targetKind == "local_k8s" && o.kubeDeployer != nil:
-		deployErr = o.kubeDeployer.KubeDeployImageApp(ctx, appName, namespaceName(stackName), imageRef, port, env, volumePath)
+		deployErr = o.kubeDeployer.KubeDeployImageApp(ctx, appName, namespaceName(stackName), imageRef, port, env, volumePath, secretFiles)
 	case targetKind == "local_docker" && o.dockerDeployer != nil:
-		deployErr = o.dockerDeployer.DockerDeployImageApp(ctx, stackName, appName, imageRef, uint16(port), env, volumePath)
+		deployErr = o.dockerDeployer.DockerDeployImageApp(ctx, stackName, appName, imageRef, uint16(port), env, volumePath, secretFiles)
 	default:
 		return fmt.Errorf("deploy: no deployer available for target_kind %q", targetKind)
 	}

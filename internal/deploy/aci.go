@@ -21,14 +21,18 @@ type aciResource struct {
 
 // loadACIResource reads the provisioned_resources row identified by
 // resourceID — a deployment_apps.target_resource_id for a cloud_aci app —
-// and validates it is an applied "aci" resource before deployToACI runs.
+// and validates it is an applied "aci" resource before deployToACI runs. If
+// the resource has a linked "acr" registry resource (registry_resource_id,
+// migration 020), that resource's acr_login_server/resource_group_name
+// outputs are merged into res.Outputs so deployToACI/acrAuth can push there.
 func (o *Orchestrator) loadACIResource(ctx context.Context, resourceID string) (aciResource, error) {
 	var res aciResource
-	var resourceType, status, outputsJSON string
+	var resourceType, status, outputsJSON, registryResourceID string
 	err := o.pool.QueryRow(ctx, `
-		SELECT id::text, name, resource_type, COALESCE(cloud_account_id::text, ''), status, COALESCE(outputs::text, '{}')
+		SELECT id::text, name, resource_type, COALESCE(cloud_account_id::text, ''), status, COALESCE(outputs::text, '{}'),
+		       COALESCE(registry_resource_id::text, '')
 		FROM provisioned_resources WHERE id = $1
-	`, resourceID).Scan(&res.ID, &res.Name, &resourceType, &res.CloudAccountID, &status, &outputsJSON)
+	`, resourceID).Scan(&res.ID, &res.Name, &resourceType, &res.CloudAccountID, &status, &outputsJSON, &registryResourceID)
 	if err != nil {
 		return aciResource{}, fmt.Errorf("deploy: look up target resource %s: %w", resourceID, err)
 	}
@@ -40,6 +44,14 @@ func (o *Orchestrator) loadACIResource(ctx context.Context, resourceID string) (
 	}
 	if err := json.Unmarshal([]byte(outputsJSON), &res.Outputs); err != nil {
 		return aciResource{}, fmt.Errorf("deploy: decode outputs for resource %s: %w", resourceID, err)
+	}
+	if registryResourceID != "" {
+		registryOutputs, err := o.loadRegistryOutputs(ctx, registryResourceID, "acr")
+		if err != nil {
+			return aciResource{}, err
+		}
+		res.Outputs["acr_login_server"] = registryOutputs["acr_login_server"]
+		res.Outputs["resource_group_name"] = registryOutputs["resource_group_name"]
 	}
 	return res, nil
 }
@@ -61,7 +73,7 @@ func (o *Orchestrator) deployToACI(ctx context.Context, appName, pushRef string,
 
 	loginServer := outputString(res.Outputs, "acr_login_server")
 	if loginServer == "" {
-		return fmt.Errorf("deploy: resource %s is missing acr_login_server output — apply it with a bundled ACR registry first", res.Name)
+		return fmt.Errorf("deploy: resource %s has no linked ACR registry — link an applied ACR registry resource first", res.Name)
 	}
 
 	auth, err := o.acrAuth(ctx, res.CloudAccountID, res.Outputs)

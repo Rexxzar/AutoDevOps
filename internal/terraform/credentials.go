@@ -29,8 +29,9 @@ type azureCredentials struct {
 // needs to authenticate against cloudAccountID's provider, decrypted from the
 // secrets vault — merged on top of the current process environment, since
 // tfexec.SetEnv replaces the child's entire environment rather than extending
-// it (losing PATH/TEMP/the plugin cache dir otherwise). Returns nil for an
-// empty cloudAccountID (no provider credentials needed).
+// it (losing PATH/TEMP otherwise). Returns nil for an empty cloudAccountID (no
+// provider credentials needed) — client (runner.go) falls back to
+// processEnv() and adds TF_PLUGIN_CACHE_DIR in that case too.
 func (r *Runner) providerEnv(ctx context.Context, cloudAccountID string) (map[string]string, error) {
 	if cloudAccountID == "" {
 		return nil, nil

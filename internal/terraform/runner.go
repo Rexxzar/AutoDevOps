@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -58,11 +60,12 @@ const (
 // shape the k8s self-healing controller uses for pod health (see
 // internal/k8s/k8s.go upsertPodHealth and internal/k8s/healer.go).
 type Runner struct {
-	execPath string
-	baseDir  string
-	pool     *pgxpool.Pool
-	hub      *sse.Hub
-	vault    *secrets.Vault
+	execPath       string
+	baseDir        string
+	pluginCacheDir string
+	pool           *pgxpool.Pool
+	hub            *sse.Hub
+	vault          *secrets.Vault
 
 	mu       sync.Mutex
 	inFlight map[string]struct{}
@@ -74,14 +77,20 @@ type Runner struct {
 // deployment — see terraform-engine-design memory). vault decrypts
 // cloud_accounts credentials for cloudAccountID-scoped runs (see
 // providerEnv in credentials.go).
+//
+// pluginCacheDir is a single shared TF_PLUGIN_CACHE_DIR (see client) so
+// `terraform init` downloads each provider version once instead of once per
+// workspace — without it, every workspace's .terraform/providers ends up
+// with its own ~686MB copy of the AWS provider plugin.
 func NewRunner(execPath, baseDir string, pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault) *Runner {
 	return &Runner{
-		execPath: execPath,
-		baseDir:  baseDir,
-		pool:     pool,
-		hub:      hub,
-		vault:    vault,
-		inFlight: make(map[string]struct{}),
+		execPath:       execPath,
+		baseDir:        baseDir,
+		pluginCacheDir: filepath.Join(baseDir, "plugin-cache"),
+		pool:           pool,
+		hub:            hub,
+		vault:          vault,
+		inFlight:       make(map[string]struct{}),
 	}
 }
 
@@ -233,14 +242,20 @@ func (r *Runner) client(ctx context.Context, dir, cloudAccountID string) (*tfexe
 		return nil, nil, fmt.Errorf("new client for %s: %w", dir, err)
 	}
 
+	if err := os.MkdirAll(r.pluginCacheDir, 0o755); err != nil {
+		return nil, nil, fmt.Errorf("create plugin cache dir: %w", err)
+	}
+
 	env, err := r.providerEnv(ctx, cloudAccountID)
 	if err != nil {
 		return nil, nil, err
 	}
-	if env != nil {
-		if err := tf.SetEnv(env); err != nil {
-			return nil, nil, fmt.Errorf("set env for %s: %w", dir, err)
-		}
+	if env == nil {
+		env = processEnv()
+	}
+	env["TF_PLUGIN_CACHE_DIR"] = r.pluginCacheDir
+	if err := tf.SetEnv(env); err != nil {
+		return nil, nil, fmt.Errorf("set env for %s: %w", dir, err)
 	}
 
 	var log bytes.Buffer

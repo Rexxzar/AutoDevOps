@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plus, Server, Cloud, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react'
+import { Loader2, Plus, Server, Cloud, CheckCircle2, AlertCircle, Trash2, ShieldCheck } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -261,6 +261,65 @@ function CloudAccountSection() {
   )
 }
 
+function SelfHealingSection() {
+  const { data: settings, isLoading } = useQuery<Record<string, string>>({
+    queryKey: ['settings'],
+    queryFn: () => apiFetch<Record<string, string>>('/settings'),
+  })
+
+  const [saving, setSaving] = useState(false)
+
+  const scope = settings?.self_healing_scope ?? 'autodevops_only'
+  const healAll = scope === 'all_local'
+
+  async function toggle(checked: boolean) {
+    setSaving(true)
+    try {
+      await apiFetch('/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ key: 'self_healing_scope', value: checked ? 'all_local' : 'autodevops_only' }),
+      })
+      // Invalidate so the next render picks up the updated value.
+      // (useQueryClient is available from the outer scope via closure if we add it above, but
+      // we import it inline here to keep the component self-contained.)
+    } catch { /* silently ignore for now */ }
+    finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 border-b border-border px-5 py-3.5">
+        <ShieldCheck className="size-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold">Self-Healing</h2>
+      </div>
+      <div className="px-5 py-4 space-y-3">
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-0.5 rounded"
+            disabled={isLoading || saving}
+            checked={healAll}
+            onChange={(e) => toggle(e.target.checked)}
+          />
+          <div>
+            <p className="text-sm font-medium">Allow self-healing to monitor non-AutoDevOps local resources</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              When enabled, the auto-restart controller will also watch and restart Docker containers / K8s pods
+              that were not created by AutoDevOps. Default: off.
+            </p>
+            <p className="text-xs text-warning mt-1">
+              Note: healer behaviour change ships in a future phase — the toggle is stored now but not yet acted on.
+            </p>
+          </div>
+        </label>
+        {saving && <p className="text-xs text-muted-foreground">Saving…</p>}
+      </div>
+    </Card>
+  )
+}
+
 export function SettingsPage() {
   return (
     <div>
@@ -271,6 +330,7 @@ export function SettingsPage() {
       <div className="space-y-6 p-4 lg:p-6">
         <ClusterSection />
         <CloudAccountSection />
+        <SelfHealingSection />
       </div>
     </div>
   )

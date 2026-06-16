@@ -245,6 +245,31 @@ type appCreateRequest struct {
 	Port             int               // kind == "image"
 	Env              map[string]string // kind == "image", optional
 	VolumePath       string            // kind == "image", optional — see Phase 4 volume_path
+	SecretFiles      map[string]string // container path -> base64 content, optional — see secret_files
+}
+
+// storeSecretFiles encrypts files (container path -> base64 content) into the
+// vault under "secret-files:<deploymentID>:<appName>" for createApp/
+// createImageApp's INSERT — secretFilesName feeds the secret_files_id
+// subquery, paths becomes secret_file_paths (cleartext, for dashboard
+// display without decrypting). Returns (nil, nil, nil) if files is empty.
+func (s *Server) storeSecretFiles(ctx context.Context, deploymentID, appName string, files map[string]string) (secretFilesName *string, paths []string, err error) {
+	if len(files) == 0 {
+		return nil, nil, nil
+	}
+	raw, err := json.Marshal(files)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode secret files: %w", err)
+	}
+	name := "secret-files:" + deploymentID + ":" + appName
+	if err := s.vault.Put(ctx, name, raw); err != nil {
+		return nil, nil, fmt.Errorf("store secret files: %w", err)
+	}
+	paths = make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	return &name, paths, nil
 }
 
 // createApp generates a per-app webhook secret and (optionally) stores git
@@ -294,14 +319,21 @@ func (s *Server) createApp(ctx context.Context, deploymentID string, req appCrea
 		branch = "main"
 	}
 
+	secretFilesName, secretFilePaths, err := s.storeSecretFiles(ctx, deploymentID, req.Name, req.SecretFiles)
+	if err != nil {
+		return "", "", err
+	}
+
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context)
+		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context, secret_files_id, secret_file_paths)
 		SELECT $1, $2, $3, $4, $5, NULLIF($6, '')::uuid, NULLIF($7, ''),
 		       (SELECT id FROM secrets WHERE name = $8),
 		       (SELECT id FROM secrets WHERE name = $9),
-		       NULLIF($10, '')
+		       NULLIF($10, ''),
+		       (SELECT id FROM secrets WHERE name = $11),
+		       $12
 		RETURNING id::text
-	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext).Scan(&appID)
+	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext, secretFilesName, secretFilePaths).Scan(&appID)
 	if err != nil {
 		return "", "", fmt.Errorf("insert app: %w", err)
 	}
@@ -327,11 +359,16 @@ func (s *Server) createImageApp(ctx context.Context, deploymentID string, req ap
 		envSecretName = &name
 	}
 
+	secretFilesName, secretFilePaths, err := s.storeSecretFiles(ctx, deploymentID, req.Name, req.SecretFiles)
+	if err != nil {
+		return "", err
+	}
+
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO deployment_apps (deployment_id, name, kind, image_ref, port, target_kind, target_resource_id, image_env_secret_id, volume_path)
-		SELECT $1, $2, 'image', $3, $4, $5, NULLIF($6, '')::uuid, (SELECT id FROM secrets WHERE name = $7), NULLIF($8, '')
+		INSERT INTO deployment_apps (deployment_id, name, kind, image_ref, port, target_kind, target_resource_id, image_env_secret_id, volume_path, secret_files_id, secret_file_paths)
+		SELECT $1, $2, 'image', $3, $4, $5, NULLIF($6, '')::uuid, (SELECT id FROM secrets WHERE name = $7), NULLIF($8, ''), (SELECT id FROM secrets WHERE name = $9), $10
 		RETURNING id::text
-	`, deploymentID, req.Name, req.ImageRef, req.Port, req.TargetKind, req.TargetResourceID, envSecretName, req.VolumePath).Scan(&appID)
+	`, deploymentID, req.Name, req.ImageRef, req.Port, req.TargetKind, req.TargetResourceID, envSecretName, req.VolumePath, secretFilesName, secretFilePaths).Scan(&appID)
 	if err != nil {
 		return "", fmt.Errorf("insert image app: %w", err)
 	}
@@ -424,14 +461,15 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 // the user to paste into GitHub's repo → Settings → Webhooks.
 func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name             string          `json:"name"`
-		RepoURL          string          `json:"repo_url"`
-		Branch           string          `json:"branch"`
-		TargetType       string          `json:"target_type"`
-		TargetResourceID string          `json:"target_resource_id,omitempty"`
-		Domain           string          `json:"domain,omitempty"`
-		GitAuth          *gitAuthRequest `json:"git_auth,omitempty"`
-		BuildContext     string          `json:"build_context,omitempty"`
+		Name             string            `json:"name"`
+		RepoURL          string            `json:"repo_url"`
+		Branch           string            `json:"branch"`
+		TargetType       string            `json:"target_type"`
+		TargetResourceID string            `json:"target_resource_id,omitempty"`
+		Domain           string            `json:"domain,omitempty"`
+		GitAuth          *gitAuthRequest   `json:"git_auth,omitempty"`
+		BuildContext     string            `json:"build_context,omitempty"`
+		SecretFiles      map[string]string `json:"secret_files,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -475,6 +513,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		Domain:           req.Domain,
 		GitAuth:          req.GitAuth,
 		BuildContext:     req.BuildContext,
+		SecretFiles:      req.SecretFiles,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create deployment")
@@ -562,6 +601,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 		Port             int               `json:"port,omitempty"`
 		Env              map[string]string `json:"env,omitempty"`
 		VolumePath       string            `json:"volume_path,omitempty"`
+		SecretFiles      map[string]string `json:"secret_files,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -624,6 +664,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 		Port:             req.Port,
 		Env:              req.Env,
 		VolumePath:       req.VolumePath,
+		SecretFiles:      req.SecretFiles,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -673,7 +714,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		SELECT id::text, name, kind, COALESCE(role, ''), COALESCE(repo_url, ''), branch,
 		       COALESCE(framework, ''), target_kind, COALESCE(namespace, ''),
 		       COALESCE(image_ref, ''), COALESCE(port, 0), COALESCE(domain, ''), status, created_at, updated_at,
-		       COALESCE(volume_path, '')
+		       COALESCE(volume_path, ''), COALESCE(secret_file_paths, '{}')
 		FROM deployment_apps WHERE deployment_id = $1 ORDER BY created_at ASC
 	`, id)
 	if err != nil {
@@ -683,24 +724,25 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type appDetail struct {
-		ID         string    `json:"id"`
-		Name       string    `json:"name"`
-		Kind       string    `json:"kind"`
-		Role       string    `json:"role,omitempty"`
-		RepoURL    string    `json:"repo_url,omitempty"`
-		Branch     string    `json:"branch"`
-		Framework  string    `json:"framework,omitempty"`
-		TargetType string    `json:"target_type"`
-		Namespace  string    `json:"namespace,omitempty"`
-		ImageRef   string    `json:"image_ref,omitempty"`
-		Port       int       `json:"port,omitempty"`
-		Domain     string    `json:"domain,omitempty"`
-		HostPort   uint32    `json:"host_port,omitempty"`
-		Status     string    `json:"status"`
-		CreatedAt  time.Time `json:"created_at"`
-		UpdatedAt  time.Time `json:"updated_at"`
-		VolumePath string    `json:"volume_path,omitempty"`
-		Links      []appLink `json:"links"`
+		ID              string    `json:"id"`
+		Name            string    `json:"name"`
+		Kind            string    `json:"kind"`
+		Role            string    `json:"role,omitempty"`
+		RepoURL         string    `json:"repo_url,omitempty"`
+		Branch          string    `json:"branch"`
+		Framework       string    `json:"framework,omitempty"`
+		TargetType      string    `json:"target_type"`
+		Namespace       string    `json:"namespace,omitempty"`
+		ImageRef        string    `json:"image_ref,omitempty"`
+		Port            int       `json:"port,omitempty"`
+		Domain          string    `json:"domain,omitempty"`
+		HostPort        uint32    `json:"host_port,omitempty"`
+		Status          string    `json:"status"`
+		CreatedAt       time.Time `json:"created_at"`
+		UpdatedAt       time.Time `json:"updated_at"`
+		VolumePath      string    `json:"volume_path,omitempty"`
+		SecretFilePaths []string  `json:"secret_file_paths,omitempty"`
+		Links           []appLink `json:"links"`
 		// Steps hydrates the deploy-progress pipeline for pages that load (or
 		// reconnect their SSE stream) mid-deploy — deploy.step events aren't
 		// replayed on reconnect, so the frontend seeds stepsByApp from here.
@@ -712,7 +754,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		var a appDetail
 		var targetKind string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Role, &a.RepoURL, &a.Branch,
-			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath); err != nil {
+			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan app")
 			return
 		}
@@ -924,6 +966,89 @@ func (s *Server) handleDeleteAppLink(w http.ResponseWriter, r *http.Request) {
 	s.triggerAppIfGit(appID, appKind)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleUpdateSecretFiles adds and/or removes per-app secret files (container
+// path -> file content), re-encrypting the merged set back into the vault
+// under "secret-files:<deploymentID>:<appName>" (see loadSecretFiles,
+// internal/deploy/secretfiles.go) and re-triggering a redeploy so the new
+// mount takes effect on local_k8s/local_docker targets.
+func (s *Server) handleUpdateSecretFiles(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var appName, appKind string
+	var secretFilesID *string
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT name, kind, secret_files_id::text FROM deployment_apps WHERE id = $1 AND deployment_id = $2`,
+		appID, deploymentID,
+	).Scan(&appName, &appKind, &secretFilesID); err != nil {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+
+	var req struct {
+		Add    map[string]string `json:"add,omitempty"`    // container path -> base64 content
+		Remove []string          `json:"remove,omitempty"` // container paths to drop
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	files := make(map[string]string)
+	if secretFilesID != nil {
+		raw, err := s.vault.GetByID(r.Context(), *secretFilesID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load secret files")
+			return
+		}
+		if err := json.Unmarshal(raw, &files); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to decode secret files")
+			return
+		}
+	}
+	for _, path := range req.Remove {
+		delete(files, path)
+	}
+	for path, content := range req.Add {
+		files[path] = content
+	}
+
+	raw, err := json.Marshal(files)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode secret files")
+		return
+	}
+	name := "secret-files:" + deploymentID + ":" + appName
+	if err := s.vault.Put(r.Context(), name, raw); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store secret files")
+		return
+	}
+
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	if _, err := s.db.Exec(r.Context(),
+		`UPDATE deployment_apps SET secret_files_id = (SELECT id FROM secrets WHERE name = $1), secret_file_paths = $2 WHERE id = $3`,
+		name, paths, appID,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update app")
+		return
+	}
+
+	if appKind == "image" {
+		go func() {
+			if err := s.deploy.DeployImageApp(context.Background(), appID); err != nil {
+				slog.Error("deploy: redeploy after secret files update", "app_id", appID, "error", err)
+			}
+		}()
+	} else {
+		s.triggerAppIfGit(appID, appKind)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"secret_file_paths": paths})
 }
 
 // handleGitHubWebhook receives GitHub push deliveries for a deployment.
@@ -1486,14 +1611,19 @@ func (s *Server) handleListTerraformRuns(w http.ResponseWriter, r *http.Request)
 // plan/apply/destroy run; the run history itself is in terraform_runs,
 // grouped by resource_id (see GET /terraform/runs).
 type resourceRow struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Provider       string    `json:"provider"`
-	CloudAccountID string    `json:"cloud_account_id,omitempty"`
-	Region         string    `json:"region"`
-	ResourceType   string    `json:"resource_type"`
-	Template       string    `json:"template"`
-	Status         string    `json:"status"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Provider           string `json:"provider"`
+	CloudAccountID     string `json:"cloud_account_id,omitempty"`
+	Region             string `json:"region"`
+	ResourceType       string `json:"resource_type"`
+	Template           string `json:"template"`
+	Status             string `json:"status"`
+	// RegistryResourceID, for resource_type "ecs"/"aci", optionally links to
+	// an applied "ecr"/"acr" provisioned_resources row whose outputs supply
+	// the registry connection info for git-app deploys onto this resource
+	// (see loadECSResource/loadACIResource in internal/deploy).
+	RegistryResourceID string `json:"registry_resource_id,omitempty"`
 	// Outputs is the JSON-encoded terraform outputs (vpc_id, public IP, db
 	// endpoint, etc. — see `output` blocks in templates/*/stack.tf.tmpl),
 	// "{}" until the first successful Apply. Cast to text in SQL (same
@@ -1507,7 +1637,8 @@ type resourceRow struct {
 func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
 		SELECT id::text, name, provider, COALESCE(cloud_account_id::text,''),
-		       region, resource_type, template, status, COALESCE(outputs::text, '{}'), created_at, updated_at
+		       region, resource_type, template, status, COALESCE(outputs::text, '{}'),
+		       COALESCE(registry_resource_id::text, ''), created_at, updated_at
 		FROM provisioned_resources WHERE dismissed_at IS NULL ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -1520,7 +1651,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rr resourceRow
 		if err := rows.Scan(&rr.ID, &rr.Name, &rr.Provider, &rr.CloudAccountID,
-			&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.Outputs, &rr.CreatedAt, &rr.UpdatedAt); err != nil {
+			&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.Outputs, &rr.RegistryResourceID, &rr.CreatedAt, &rr.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan resource")
 			return
 		}
@@ -1548,11 +1679,45 @@ func (s *Server) getResource(ctx context.Context, id string) (resourceRow, error
 	var rr resourceRow
 	err := s.db.QueryRow(ctx, `
 		SELECT id::text, name, provider, COALESCE(cloud_account_id::text,''),
-		       region, resource_type, template, status, COALESCE(outputs::text, '{}'), created_at, updated_at
+		       region, resource_type, template, status, COALESCE(outputs::text, '{}'),
+		       COALESCE(registry_resource_id::text, ''), created_at, updated_at
 		FROM provisioned_resources WHERE id = $1
 	`, id).Scan(&rr.ID, &rr.Name, &rr.Provider, &rr.CloudAccountID,
-		&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.Outputs, &rr.CreatedAt, &rr.UpdatedAt)
+		&rr.Region, &rr.ResourceType, &rr.Template, &rr.Status, &rr.Outputs, &rr.RegistryResourceID, &rr.CreatedAt, &rr.UpdatedAt)
 	return rr, err
+}
+
+// validateRegistryLink checks that registryResourceID (if non-empty) is a
+// valid optional link target for a resource of resourceType/provider — an
+// applied "ecr" resource (for "ecs") or "acr" resource (for "aci") owned by
+// the same provider. Used by handleCreateResource and
+// handleUpdateResourceRegistry; loadECSResource/loadACIResource
+// (internal/deploy) read the linked row's outputs for registry connection
+// info at deploy time.
+func (s *Server) validateRegistryLink(ctx context.Context, provider, resourceType, registryResourceID string) error {
+	if registryResourceID == "" {
+		return nil
+	}
+	var wantType string
+	switch resourceType {
+	case "ecs":
+		wantType = "ecr"
+	case "aci":
+		wantType = "acr"
+	default:
+		return fmt.Errorf("registry_resource_id is only valid for ecs/aci resources")
+	}
+	rr, err := s.getResource(ctx, registryResourceID)
+	if err != nil {
+		return fmt.Errorf("registry resource not found")
+	}
+	if rr.Provider != provider || rr.ResourceType != wantType {
+		return fmt.Errorf("registry_resource_id must reference an applied %s %s resource", provider, wantType)
+	}
+	if rr.Status != "applied" {
+		return fmt.Errorf("registry resource %q is not applied yet", rr.Name)
+	}
+	return nil
 }
 
 // handleGetResourceTerraform returns the exact Terraform HCL last planned
@@ -1680,12 +1845,13 @@ func (s *Server) handleGenerateSSHKey(w http.ResponseWriter, r *http.Request) {
 // plan` in the background. Unlike POST /deployments, no git repo is involved.
 func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name           string            `json:"name"`
-		Provider       string            `json:"provider"`
-		CloudAccountID string            `json:"cloud_account_id"`
-		Region         string            `json:"region"`
-		ResourceType   string            `json:"resource_type"`
-		ResourceOpts   map[string]string `json:"resource_opts"`
+		Name               string            `json:"name"`
+		Provider           string            `json:"provider"`
+		CloudAccountID     string            `json:"cloud_account_id"`
+		Region             string            `json:"region"`
+		ResourceType       string            `json:"resource_type"`
+		ResourceOpts       map[string]string `json:"resource_opts"`
+		RegistryResourceID string            `json:"registry_resource_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1709,6 +1875,10 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "terraform binary unavailable — check server logs")
 		return
 	}
+	if err := s.validateRegistryLink(r.Context(), req.Provider, req.ResourceType, req.RegistryResourceID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	config, err := s.buildTerraformConfig(req.Provider, req.ResourceType, req.Name, req.Region, req.ResourceOpts)
 	if err != nil {
@@ -1719,10 +1889,10 @@ func (s *Server) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 	template := req.Provider + "-stack"
 	var resourceID string
 	err = s.db.QueryRow(r.Context(), `
-		INSERT INTO provisioned_resources (name, provider, cloud_account_id, region, resource_type, template, status)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+		INSERT INTO provisioned_resources (name, provider, cloud_account_id, region, resource_type, template, status, registry_resource_id)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending', NULLIF($7, '')::uuid)
 		RETURNING id::text
-	`, req.Name, req.Provider, req.CloudAccountID, req.Region, req.ResourceType, template).Scan(&resourceID)
+	`, req.Name, req.Provider, req.CloudAccountID, req.Region, req.ResourceType, template, req.RegistryResourceID).Scan(&resourceID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -2244,6 +2414,47 @@ func (s *Server) handleDismissResource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "dismissed", "id": id})
 }
 
+// handleUpdateResourceRegistry sets or clears the optional registry link on
+// an ECS/ACI resource — the linked "ecr"/"acr" resource's outputs supply the
+// registry connection info loadECSResource/loadACIResource (internal/deploy)
+// use when redeploying a git app onto this resource. An empty
+// registry_resource_id clears the link.
+func (s *Server) handleUpdateResourceRegistry(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	rr, err := s.getResource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+
+	var req struct {
+		RegistryResourceID string `json:"registry_resource_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.validateRegistryLink(r.Context(), rr.Provider, rr.ResourceType, req.RegistryResourceID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if _, err := s.db.Exec(r.Context(), `
+		UPDATE provisioned_resources SET registry_resource_id = NULLIF($2, '')::uuid, updated_at = now() WHERE id = $1
+	`, id, req.RegistryResourceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update registry link")
+		return
+	}
+
+	updated, err := s.getResource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reload resource")
+		return
+	}
+	s.hub.Publish(sse.Event{Type: "resource", Payload: updated})
+	writeJSON(w, http.StatusOK, updated)
+}
+
 func strOpt(opts map[string]string, key, def string) string {
 	if v, ok := opts[key]; ok && v != "" {
 		return v
@@ -2390,9 +2601,8 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 				DesiredCount:   desiredCount,
 				Subnets:        awsZonalSubnets(region),
 			}
-			if strOpt(opts, "create_registry", "") == "true" {
-				params.ECR = &terraform.ECRParams{}
-			}
+		case "ecr":
+			params.ECR = &terraform.ECRParams{}
 		default:
 			return nil, fmt.Errorf("unsupported aws resource type %q", resourceType)
 		}
@@ -2430,13 +2640,12 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 				CPU:            cpu,
 				MemoryGB:       memoryGB,
 			}
-			if strOpt(opts, "create_registry", "") == "true" {
-				acrName, err := generateACRName(name)
-				if err != nil {
-					return nil, err
-				}
-				params.ACR = &terraform.ACRParams{Name: acrName}
+		case "acr":
+			acrName, err := generateACRName(name)
+			if err != nil {
+				return nil, err
 			}
+			params.ACR = &terraform.ACRParams{Name: acrName}
 		case "vm":
 			params.VM = &terraform.AzureVMParams{
 				Size:          strOpt(opts, "size", "Standard_D2as_v7"),

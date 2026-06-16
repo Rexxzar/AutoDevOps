@@ -57,6 +57,36 @@ func envSlice(env map[string]string) []string {
 	return out
 }
 
+// sanitizeSecretKey turns a container path ("/opt/secrets/firebase.json")
+// into a filesystem-safe filename ("opt_secrets_firebase.json") for the
+// host-side secrets directory written by writeSecretFiles.
+func sanitizeSecretKey(containerPath string) string {
+	return strings.ReplaceAll(strings.TrimPrefix(containerPath, "/"), "/", "_")
+}
+
+// writeSecretFiles writes each decrypted secret file to
+// workDir/<stackName>/<appName>/secrets/<sanitized> (0o600, overwritten on
+// every call so re-deploys pick up updated content) and returns one
+// read-only bind mount per file, target = the original container path.
+func (m *Manager) writeSecretFiles(stackName, appName string, secretFiles map[string][]byte) ([]mount.Mount, error) {
+	if len(secretFiles) == 0 {
+		return nil, nil
+	}
+	dir := filepath.Join(m.workDir, stackName, appName, "secrets")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("docker: create secrets dir: %w", err)
+	}
+	mounts := make([]mount.Mount, 0, len(secretFiles))
+	for containerPath, content := range secretFiles {
+		hostPath := filepath.Join(dir, sanitizeSecretKey(containerPath))
+		if err := os.WriteFile(hostPath, content, 0o600); err != nil {
+			return nil, fmt.Errorf("docker: write secret file %q: %w", containerPath, err)
+		}
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: hostPath, Target: containerPath, ReadOnly: true})
+	}
+	return mounts, nil
+}
+
 // DockerDeploy deploys the built image as a Docker container on the stack's
 // per-stack network. It:
 //   - pings the daemon and returns ErrDockerNotFound if unreachable
@@ -67,7 +97,7 @@ func envSlice(env map[string]string) []string {
 //   - creates and starts the container, mapping port 8080 → a deterministic host port,
 //     attached to the stack network with a network alias of appName for
 //     short-name resolution by other apps in the stack
-func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef string, extraEnv map[string]string) error {
+func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte) error {
 	if _, err := m.client.Ping(ctx); err != nil {
 		return &ErrDockerNotFound{Cause: err}
 	}
@@ -105,6 +135,11 @@ func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef
 		return err
 	}
 
+	secretMounts, err := m.writeSecretFiles(stackName, appName, secretFiles)
+	if err != nil {
+		return err
+	}
+
 	portKey := nat.Port("8080/tcp")
 	env := append([]string{"PORT=8080"}, envSlice(extraEnv)...)
 
@@ -128,6 +163,7 @@ func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef
 			},
 		},
 		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+		Mounts:        secretMounts,
 	}
 	netCfg := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
@@ -165,7 +201,7 @@ func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef
 // named volume "<cname>-data" at that path — Docker creates the named volume
 // implicitly on first use, and re-deploys (removeContainer + re-create) reuse
 // the same volume since it's keyed by name, not by container.
-func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, imageRef string, containerPort uint16, env map[string]string, volumePath string) error {
+func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, imageRef string, containerPort uint16, env map[string]string, volumePath string, secretFiles map[string][]byte) error {
 	if _, err := m.client.Ping(ctx); err != nil {
 		return &ErrDockerNotFound{Cause: err}
 	}
@@ -188,6 +224,11 @@ func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, 
 
 	// Remove any pre-existing container so re-deploys are clean.
 	if err := m.removeContainer(ctx, cname); err != nil {
+		return err
+	}
+
+	secretMounts, err := m.writeSecretFiles(stackName, appName, secretFiles)
+	if err != nil {
 		return err
 	}
 
@@ -214,10 +255,9 @@ func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, 
 		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 	}
 	if volumePath != "" {
-		hostCfg.Mounts = []mount.Mount{
-			{Type: mount.TypeVolume, Source: cname + "-data", Target: volumePath},
-		}
+		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{Type: mount.TypeVolume, Source: cname + "-data", Target: volumePath})
 	}
+	hostCfg.Mounts = append(hostCfg.Mounts, secretMounts...)
 	netCfg := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
 			netName: {Aliases: []string{appName}},

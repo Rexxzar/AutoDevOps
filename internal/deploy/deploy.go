@@ -26,9 +26,11 @@ import (
 // app container alongside PORT. KubeDeployImageApp is the Phase-4 counterpart
 // for "image"-kind apps (no build pipeline): env is the app's own
 // image_env_secret_id contents (e.g. POSTGRES_PASSWORD), applied as-is.
+// secretFiles is the decrypted secret_files_id contents (container path ->
+// file content, may be nil) mounted read-only via a K8s Secret + Volume.
 type KubeDeployer interface {
-	KubeDeploy(ctx context.Context, name, namespace, imageRef string, extraEnv map[string]string) error
-	KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string) error
+	KubeDeploy(ctx context.Context, name, namespace, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte) error
+	KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string, secretFiles map[string][]byte) error
 }
 
 // DockerDeployer deploys a built image as a Docker container on the stack's
@@ -38,10 +40,12 @@ type KubeDeployer interface {
 // (T-Phase3 resolveLinks) injected into the container alongside PORT.
 // DockerDeployImageApp is the Phase-4 counterpart for "image"-kind apps (no
 // build pipeline): env is the app's own image_env_secret_id contents (e.g.
-// POSTGRES_PASSWORD), applied as-is.
+// POSTGRES_PASSWORD), applied as-is. secretFiles is the decrypted
+// secret_files_id contents (container path -> file content, may be nil)
+// bind-mounted read-only from the host.
 type DockerDeployer interface {
-	DockerDeploy(ctx context.Context, stackName, appName, imageRef string, extraEnv map[string]string) error
-	DockerDeployImageApp(ctx context.Context, stackName, appName, imageRef string, containerPort uint16, env map[string]string, volumePath string) error
+	DockerDeploy(ctx context.Context, stackName, appName, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte) error
+	DockerDeployImageApp(ctx context.Context, stackName, appName, imageRef string, containerPort uint16, env map[string]string, volumePath string, secretFiles map[string][]byte) error
 }
 
 // ImagePusher pushes a locally-built image to the registry, and builds images

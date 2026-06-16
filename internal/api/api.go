@@ -66,6 +66,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Post("/deployments/{id}/apps/{appId}/trigger", s.handleTriggerApp)
 		r.Post("/deployments/{id}/apps/{appId}/links", s.handleCreateAppLink)
 		r.Delete("/deployments/{id}/apps/{appId}/links/{linkId}", s.handleDeleteAppLink)
+		r.Put("/deployments/{id}/apps/{appId}/secret-files", s.handleUpdateSecretFiles)
 		r.Get("/deployments/{id}/apps/{appId}/workflow", s.handleGetAppWorkflow)
 		r.Get("/clusters", s.handleListClusters)
 		r.Get("/cloud/accounts", s.handleListCloudAccounts)
@@ -90,6 +91,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Post("/resources/{id}/terraform/plan", s.handlePlanResourceTerraform)
 		r.Post("/resources/{id}/apply", s.handleApplyResource)
 		r.Post("/resources/{id}/edit", s.handleEditResource)
+		r.Put("/resources/{id}/registry", s.handleUpdateResourceRegistry)
 		r.Post("/resources/{id}/destroy", s.handleDestroyResource)
 		r.Post("/resources/{id}/dismiss", s.handleDismissResource)
 		r.Post("/resources/{id}/console/sessions", s.handleOpenConsoleSession)
@@ -101,6 +103,11 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Post("/secrets", s.handlePutSecret)
 		r.Get("/secrets/{name}", s.handleGetSecret)
 		r.Delete("/secrets/{name}", s.handleDeleteSecret)
+		r.Get("/local/inventory", s.handleLocalInventory)
+		r.Get("/local/inventory/{id}/logs", s.handleInventoryLogs)
+		r.Post("/local/inventory/{id}/restart", s.handleInventoryRestart)
+		r.Get("/settings", s.handleGetSettings)
+		r.Put("/settings", s.handlePutSetting)
 	})
 
 	return r

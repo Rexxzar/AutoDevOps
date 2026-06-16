@@ -9,6 +9,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { ResourceConsole } from '@/components/resource-console'
 import { ProviderTag } from '@/components/meta-tags'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
+import { selectCls } from '@/components/deploy-form-fields'
 import { apiFetch } from '@/lib/api'
 import { useSSE } from '@/lib/use-sse'
 import { useAuth } from '@/lib/auth'
@@ -166,6 +167,78 @@ function EditResourceDialog({
         </div>
       </form>
     </Dialog>
+  )
+}
+
+// RegistryLinkSection shows (and lets the user edit) the "ecr"/"acr" registry
+// resource linked to this ECS service / ACI container group via
+// provisioned_resources.registry_resource_id (migration
+// 020_registry_resource_link.sql) — required for git-app deploys onto this
+// resource to push images. Mirrors new-resource.tsx's RegistryPicker, but
+// saves immediately via PUT /resources/{id}/registry; the resulting "resource"
+// SSE event refreshes the parent page's `resource` state.
+function RegistryLinkSection({
+  resourceId, provider, registryResourceId, navigate,
+}: {
+  resourceId: string
+  provider: 'aws' | 'azure'
+  registryResourceId?: string
+  navigate: (path: string) => void
+}) {
+  const wantType = provider === 'aws' ? 'ecr' : 'acr'
+  const label = provider === 'aws' ? 'ECR repository' : 'Azure Container Registry'
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const { data: allResources = [] } = useQuery({
+    queryKey: ['resources'],
+    queryFn: () => apiFetch<ProvisionedResource[]>('/resources'),
+  })
+  const registries = allResources.filter((r) => r.provider === provider && r.resource_type === wantType && r.status === 'applied')
+
+  async function handleChange(value: string) {
+    setSaving(true)
+    setError('')
+    try {
+      await apiFetch(`/resources/${resourceId}/registry`, {
+        method: 'PUT',
+        body: JSON.stringify({ registry_resource_id: value }),
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update registry link')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Container registry</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-xs text-muted-foreground">
+          Required for git-app deploys onto this resource — the built image is pushed here.
+        </p>
+        {registries.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No applied {label} found.{' '}
+            <button type="button" onClick={() => navigate('/new-resource')} className="underline">Create one</button>
+          </p>
+        ) : (
+          <select value={registryResourceId ?? ''} onChange={(e) => handleChange(e.target.value)} disabled={saving} className={selectCls}>
+            <option value="">None</option>
+            {registries.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        )}
+        {error && (
+          <div className="flex items-start gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
+            <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -607,6 +680,14 @@ export function ResourceDetailPage() {
               )}
             </CardContent>
           </Card>
+        )}
+
+        {/* Linked container registry (ECS/ACI only) — migration 020 */}
+        {resource.provider === 'aws' && resource.resource_type === 'ecs' && (
+          <RegistryLinkSection resourceId={id!} provider="aws" registryResourceId={resource.registry_resource_id} navigate={navigate} />
+        )}
+        {resource.provider === 'azure' && resource.resource_type === 'aci' && (
+          <RegistryLinkSection resourceId={id!} provider="azure" registryResourceId={resource.registry_resource_id} navigate={navigate} />
         )}
 
         <Card>

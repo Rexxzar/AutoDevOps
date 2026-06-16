@@ -31,27 +31,51 @@ type k8sConnector struct {
 	registry *Registry
 }
 
-// target resolves the namespace and the name of a Running pod for res, using
-// the namespace recorded in outputs (KubeDeployResource) and the
-// "app=<name>" selector buildResourceDeployment assigns to its pod template.
-func (c *k8sConnector) target(ctx context.Context, clientset kubernetes.Interface, res Resource) (namespace, podName string, err error) {
+// target resolves the namespace, pod name, and container name for res.
+//
+// Fast path (host-inventory / foreign pods): if res.Outputs["pod_name"] is
+// set, that pod is used directly (the inventory listing already knows the
+// exact pod name) and the container is taken from res.Outputs["container_name"]
+// or, if absent, looked up from the pod spec's first container.
+//
+// Slow path (AutoDevOps-provisioned resources): list pods by "app=<name>"
+// selector in the namespace, pick the first Running one, and use the
+// constant AutoDevOps container name ("app") defined by buildDeployment.
+func (c *k8sConnector) target(ctx context.Context, clientset kubernetes.Interface, res Resource) (namespace, podName, containerName string, err error) {
 	namespace, _ = res.Outputs["namespace"].(string)
-	if namespace == "" || res.Name == "" {
-		return "", "", fmt.Errorf("console: resource is missing namespace output — apply it first")
+	if namespace == "" {
+		return "", "", "", fmt.Errorf("console: resource is missing namespace output — apply it first")
 	}
 
+	// Fast path: explicit pod name (host-inventory / foreign pods).
+	if pn, ok := res.Outputs["pod_name"].(string); ok && pn != "" {
+		if cn, ok := res.Outputs["container_name"].(string); ok && cn != "" {
+			return namespace, pn, cn, nil
+		}
+		// Container name not set — look it up from the pod spec.
+		pod, podErr := clientset.CoreV1().Pods(namespace).Get(ctx, pn, metav1.GetOptions{})
+		if podErr == nil && len(pod.Spec.Containers) > 0 {
+			return namespace, pn, pod.Spec.Containers[0].Name, nil
+		}
+		// Fall back to the AutoDevOps default if the Get fails.
+		return namespace, pn, k8sContainerName, nil
+	}
+
+	if res.Name == "" {
+		return "", "", "", fmt.Errorf("console: resource is missing name — apply it first")
+	}
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=" + res.Name,
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("console: list pods in %s: %w", namespace, err)
+		return "", "", "", fmt.Errorf("console: list pods in %s: %w", namespace, err)
 	}
 	for _, pod := range pods.Items {
 		if pod.Status.Phase == corev1.PodRunning {
-			return namespace, pod.Name, nil
+			return namespace, pod.Name, k8sContainerName, nil
 		}
 	}
-	return "", "", fmt.Errorf("console: no running pod found for resource %s in namespace %s", res.Name, namespace)
+	return "", "", "", fmt.Errorf("console: no running pod found for resource %s in namespace %s", res.Name, namespace)
 }
 
 // sizeQueue adapts a channel of terminal sizes to remotecommand.TerminalSizeQueue.
@@ -116,7 +140,7 @@ func (c *k8sConnector) Open(ctx context.Context, res Resource, rows, cols uint16
 	if err != nil {
 		return nil, err
 	}
-	namespace, podName, err := c.target(ctx, clientset, res)
+	namespace, podName, containerName, err := c.target(ctx, clientset, res)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +151,7 @@ func (c *k8sConnector) Open(ctx context.Context, res Resource, rows, cols uint16
 		Name(podName).
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
-			Container: k8sContainerName,
+			Container: containerName,
 			Command:   []string{k8sShell},
 			Stdin:     true,
 			Stdout:    true,
@@ -169,7 +193,7 @@ func (c *k8sConnector) Exec(ctx context.Context, res Resource, command string) (
 	if err != nil {
 		return ExecResult{}, err
 	}
-	namespace, podName, err := c.target(ctx, clientset, res)
+	namespace, podName, containerName, err := c.target(ctx, clientset, res)
 	if err != nil {
 		return ExecResult{}, err
 	}
@@ -180,7 +204,7 @@ func (c *k8sConnector) Exec(ctx context.Context, res Resource, command string) (
 		Name(podName).
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
-			Container: k8sContainerName,
+			Container: containerName,
 			Command:   []string{k8sShell, "-c", command},
 			Stdout:    true,
 			Stderr:    true,

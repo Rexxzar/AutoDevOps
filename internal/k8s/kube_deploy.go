@@ -21,11 +21,12 @@ var (
 )
 
 // KubeDeploy applies the full set of K8s resources for a named deployment:
-// Namespace, Deployment (app container + health-checker sidecar), Service,
-// cert-manager ClusterIssuer + Certificate (best-effort — silently skipped if
-// cert-manager CRDs are not installed), and Ingress. Blocks until at least one
-// pod reports Available or the context deadline is reached.
-func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef string, extraEnv map[string]string) error {
+// Namespace, optionally a Secret for secretFiles, Deployment (app container +
+// health-checker sidecar), Service, cert-manager ClusterIssuer + Certificate
+// (best-effort — silently skipped if cert-manager CRDs are not installed),
+// and Ingress. Blocks until at least one pod reports Available or the context
+// deadline is reached.
+func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte) error {
 	host := name + "." + c.ingressDomain
 
 	slog.Info("k8s: deploying", "name", name, "namespace", namespace, "image", imageRef, "host", host)
@@ -33,7 +34,12 @@ func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef s
 	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
 		return fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
 	}
-	if err := c.applyDeployment(ctx, buildDeployment(name, namespace, imageRef, extraEnv)); err != nil {
+	if len(secretFiles) > 0 {
+		if err := c.applySecret(ctx, buildSecret(name, namespace, secretFiles)); err != nil {
+			return fmt.Errorf("k8s: apply secret %s: %w", name, err)
+		}
+	}
+	if err := c.applyDeployment(ctx, buildDeployment(name, namespace, imageRef, extraEnv, secretFiles)); err != nil {
 		return fmt.Errorf("k8s: apply deployment %s: %w", name, err)
 	}
 	if err := c.applyService(ctx, buildService(name, namespace)); err != nil {
@@ -75,7 +81,7 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
 		return "", "", fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
 	}
-	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, nil, "")); err != nil {
+	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, nil, "", nil)); err != nil {
 		return "", "", fmt.Errorf("k8s: apply deployment %s: %w", name, err)
 	}
 	if err := c.applyService(ctx, buildResourceService(name, namespace, port)); err != nil {
@@ -116,14 +122,14 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 
 // KubeDeployImageApp applies the K8s resources for a Phase-4 "image"-kind app
 // (e.g. a postgres:16 db container) within a stack's existing namespace:
-// optionally a PVC (buildResourcePVC, when volumePath is set), Deployment
-// (buildResourceDeployment — caller-supplied port + env + volume mount, no
-// sidecar) and Service (buildResourceService — port 80 -> the container's
-// port, so resolveLinks' local_k8s->local_k8s case needs no special-casing
-// for image apps). No Ingress is created — image apps are link targets for
-// sibling apps, not externally exposed. Blocks until at least one pod reports
-// Available.
-func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string) error {
+// optionally a PVC (buildResourcePVC, when volumePath is set), optionally a
+// Secret for secretFiles, Deployment (buildResourceDeployment —
+// caller-supplied port + env + volume/secret mounts, no sidecar) and Service
+// (buildResourceService — port 80 -> the container's port, so resolveLinks'
+// local_k8s->local_k8s case needs no special-casing for image apps). No
+// Ingress is created — image apps are link targets for sibling apps, not
+// externally exposed. Blocks until at least one pod reports Available.
+func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string, secretFiles map[string][]byte) error {
 	slog.Info("k8s: deploying image app", "name", name, "namespace", namespace, "image", imageRef, "port", port, "volume_path", volumePath)
 
 	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
@@ -134,7 +140,12 @@ func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, im
 			return fmt.Errorf("k8s: apply pvc %s: %w", name, err)
 		}
 	}
-	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, env, volumePath)); err != nil {
+	if len(secretFiles) > 0 {
+		if err := c.applySecret(ctx, buildSecret(name, namespace, secretFiles)); err != nil {
+			return fmt.Errorf("k8s: apply secret %s: %w", name, err)
+		}
+	}
+	if err := c.applyDeployment(ctx, buildResourceDeployment(name, namespace, imageRef, port, env, volumePath, secretFiles)); err != nil {
 		return fmt.Errorf("k8s: apply deployment %s: %w", name, err)
 	}
 	if err := c.applyService(ctx, buildResourceService(name, namespace, port)); err != nil {
@@ -242,6 +253,25 @@ func (c *Controller) applyPVC(ctx context.Context, pvc *corev1.PersistentVolumeC
 	if kerrors.IsAlreadyExists(err) {
 		return nil
 	}
+	return err
+}
+
+// applySecret creates a Secret, and on AlreadyExists fetches the existing
+// object's ResourceVersion and updates in place — mirrors applyService.
+// Secrets are mutable by default (Immutable left unset), so re-applies with
+// changed Data (e.g. after handleUpdateSecretFiles) take effect on the next
+// pod restart/redeploy.
+func (c *Controller) applySecret(ctx context.Context, secret *corev1.Secret) error {
+	_, err := c.clientset.CoreV1().Secrets(secret.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+	if !kerrors.IsAlreadyExists(err) {
+		return err
+	}
+	existing, err := c.clientset.CoreV1().Secrets(secret.Namespace).Get(ctx, secret.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get existing secret: %w", err)
+	}
+	secret.ResourceVersion = existing.ResourceVersion
+	_, err = c.clientset.CoreV1().Secrets(secret.Namespace).Update(ctx, secret, metav1.UpdateOptions{})
 	return err
 }
 
