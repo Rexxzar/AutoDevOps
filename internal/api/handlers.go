@@ -2687,7 +2687,7 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 // stack namespace is shared by sibling apps and is removed separately once
 // the whole stack is torn down. A nil controller/manager (K8s or Docker
 // unavailable) is treated as a no-op so the DB row can still be soft-deleted.
-func (s *Server) teardownApp(ctx context.Context, stackName, appName, targetKind, namespace string) error {
+func (s *Server) teardownApp(ctx context.Context, stackName, appName, targetKind, namespace, domain string) error {
 	switch targetKind {
 	case "local_k8s":
 		if s.k8sCtrl == nil || namespace == "" {
@@ -2695,6 +2695,11 @@ func (s *Server) teardownApp(ctx context.Context, stackName, appName, targetKind
 		}
 		return s.k8sCtrl.KubeDeleteApp(ctx, namespace, appName)
 	case "local_docker":
+		if domain != "" && s.deploy != nil {
+			if err := s.deploy.DeprovisionTLS(ctx, domain); err != nil {
+				slog.Warn("teardown: nginx vhost cleanup failed", "domain", domain, "error", err)
+			}
+		}
 		if s.dockerMgr == nil {
 			return nil
 		}
@@ -2721,7 +2726,7 @@ func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request)
 	}
 
 	rows, err := s.db.Query(r.Context(), `
-		SELECT name, target_kind, COALESCE(namespace, '')
+		SELECT name, target_kind, COALESCE(namespace, ''), COALESCE(domain, '')
 		FROM deployment_apps WHERE deployment_id = $1 AND status != 'destroyed'
 	`, id)
 	if err != nil {
@@ -2731,13 +2736,13 @@ func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request)
 	namespaces := map[string]bool{}
 	hasDocker := false
 	for rows.Next() {
-		var appName, targetKind, namespace string
-		if err := rows.Scan(&appName, &targetKind, &namespace); err != nil {
+		var appName, targetKind, namespace, domain string
+		if err := rows.Scan(&appName, &targetKind, &namespace, &domain); err != nil {
 			rows.Close()
 			writeError(w, http.StatusInternalServerError, "failed to read app row")
 			return
 		}
-		if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace); err != nil {
+		if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace, domain); err != nil {
 			slog.Error("deployments: teardown app failed", "stack", stackName, "app", appName, "error", err)
 		}
 		if targetKind == "local_k8s" && namespace != "" {
@@ -2777,19 +2782,19 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	deploymentID := chi.URLParam(r, "id")
 	appID := chi.URLParam(r, "appId")
 
-	var stackName, appName, targetKind, namespace string
+	var stackName, appName, targetKind, namespace, domain string
 	err := s.db.QueryRow(r.Context(), `
-		SELECT d.name, da.name, da.target_kind, COALESCE(da.namespace, '')
+		SELECT d.name, da.name, da.target_kind, COALESCE(da.namespace, ''), COALESCE(da.domain, '')
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1 AND da.deployment_id = $2
-	`, appID, deploymentID).Scan(&stackName, &appName, &targetKind, &namespace)
+	`, appID, deploymentID).Scan(&stackName, &appName, &targetKind, &namespace, &domain)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "app not found")
 		return
 	}
 
-	if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace); err != nil {
+	if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace, domain); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to remove running resources: %v", err))
 		return
 	}

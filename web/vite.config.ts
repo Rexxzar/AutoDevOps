@@ -15,9 +15,13 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       '/api': {
-        target: process.env.API_PROXY_TARGET || 'http://localhost:8080',
+        target: process.env.API_PROXY_TARGET || 'http://localhost:9092',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ''),
+      },
+      '/webhooks': {
+        target: process.env.API_PROXY_TARGET || 'http://localhost:9092',
+        changeOrigin: true,
       },
     },
   },

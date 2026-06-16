@@ -342,6 +342,24 @@ func (p *TLSProvisioner) runCertbot(ctx context.Context, domain string, acmePort
 	return fmt.Errorf("%w\ncertbot output:\n%s", err, strings.TrimSpace(outStr)), ""
 }
 
+// Deprovision removes the nginx vhost config for domain and reloads nginx.
+// Called when an app with a TLS domain is deleted so the stale vhost doesn't
+// keep nginx returning 502 for the domain.
+func (p *TLSProvisioner) Deprovision(ctx context.Context, domain string) error {
+	proxy, err := p.detectNginxProxy(ctx)
+	if err != nil {
+		return fmt.Errorf("tls: deprovision %s: detect nginx: %w", domain, err)
+	}
+	confPath := filepath.Join(proxy.ConfDirHost, domain+".conf")
+	if err := os.Remove(confPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("tls: deprovision %s: remove vhost: %w", domain, err)
+	}
+	if err := p.reloadNginx(ctx, proxy); err != nil {
+		return fmt.Errorf("tls: deprovision %s: reload nginx: %w", domain, err)
+	}
+	return nil
+}
+
 // persistTLSStatus writes deployment_apps.tls_status (and optionally tls_error) for appID.
 // errMsg is the actionable fix command to show in the dashboard; empty clears the column.
 func (p *TLSProvisioner) persistTLSStatus(ctx context.Context, appID, status, errMsg string) error {

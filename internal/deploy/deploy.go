@@ -169,6 +169,15 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, vault *secrets.Vault, workDir, builde
 // domain set will still succeed but the StepTLS step is skipped.
 func (o *Orchestrator) SetTLSProvisioner(p *TLSProvisioner) { o.tlsProvisioner = p }
 
+// DeprovisionTLS removes the nginx vhost for domain when an app is deleted.
+// No-op if TLS provisioner is not configured.
+func (o *Orchestrator) DeprovisionTLS(ctx context.Context, domain string) error {
+	if o.tlsProvisioner == nil {
+		return nil
+	}
+	return o.tlsProvisioner.Deprovision(ctx, domain)
+}
+
 // SetRegistryLifecycle sets the registry address that pack lifecycle containers
 // use to push images directly (Publish:true path). Must be reachable from
 // inside Docker containers — typically the Docker bridge gateway IP + port,
