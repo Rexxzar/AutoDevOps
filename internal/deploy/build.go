@@ -130,29 +130,41 @@ func ensurePackProcfile(contextDir string) {
 	if _, err := os.Stat(filepath.Join(contextDir, "Procfile")); err == nil {
 		return
 	}
-	pkg, err := os.ReadFile(filepath.Join(contextDir, "package.json"))
+	pkgPath := filepath.Join(contextDir, "package.json")
+	pkg, err := os.ReadFile(pkgPath)
 	if err != nil {
 		return
 	}
-	var manifest struct {
-		Scripts map[string]string `json:"scripts"`
-	}
+	// Use map[string]interface{} (not json.RawMessage) so the roundtrip stays
+	// safe: all values become standard Go types, MarshalIndent never embeds
+	// raw bytes that could produce malformed JSON.
+	var manifest map[string]interface{}
 	if err := json.Unmarshal(pkg, &manifest); err != nil {
 		return
 	}
-	_, hasBuild := manifest.Scripts["build"]
-	_, hasStart := manifest.Scripts["start"]
+	scripts, _ := manifest["scripts"].(map[string]interface{})
+	_, hasBuild := scripts["build"]
+	_, hasStart := scripts["start"]
 	if !hasBuild || hasStart {
 		return // has a start script or nothing to build — let Paketo decide
 	}
 
-	// Static frontend: build runs but no server is defined. Write a tiny
-	// self-contained Node.js SPA server (no npm packages) and point the
-	// Procfile at it. Paketo's Node Engine buildpack puts `node` on PATH at
-	// launch, so `node autodevops_server.js` works without touching package.json.
+	// Static frontend: write a tiny self-contained Node.js SPA server (built-in
+	// modules only, no npm packages needed) and add a "start" script so Paketo's
+	// npm-start buildpack detects this app as needing node at launch time.
+	// Without a start script, the Node Engine buildpack omits node from the
+	// launch environment and `node` is not on PATH when the container starts —
+	// the Procfile alone is insufficient because Paketo decides launch-layer
+	// inclusion during the build phase.
 	_ = os.WriteFile(filepath.Join(contextDir, "autodevops_server.js"), []byte(spaServerJS), 0o644)
-	procfile := "web: node autodevops_server.js\n"
-	_ = os.WriteFile(filepath.Join(contextDir, "Procfile"), []byte(procfile), 0o644)
+	if scripts == nil {
+		scripts = map[string]interface{}{}
+	}
+	scripts["start"] = "node autodevops_server.js"
+	manifest["scripts"] = scripts
+	if updated, err := json.MarshalIndent(manifest, "", "  "); err == nil {
+		_ = os.WriteFile(pkgPath, updated, 0o644)
+	}
 }
 
 // headSHA12 reads the cloned repo's HEAD commit and returns the first 12 hex
