@@ -73,6 +73,7 @@ func imageNameOnly(ref string) string {
 // The two differ because the kind local registry is exposed on localhost:5001 from
 // the host but is resolved as registry.local:5000 inside the cluster.
 func (o *Orchestrator) imageRefs(name, sha12 string) (pushRef, pullRef string) {
+	name = strings.ToLower(name)
 	return fmt.Sprintf("%s/%s:%s", o.registryPush, name, sha12),
 		fmt.Sprintf("%s/%s:%s", o.registryPull, name, sha12)
 }
