@@ -2838,6 +2838,7 @@ func (s *Server) handleTriggerApp(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			slog.Error("deploy: manual trigger", "app_id", appID, "error", err)
+			s.hub.Publish(sse.Event{Type: "deploy.log", Payload: deploy.LogEvent{AppID: appID, Line: "❌ " + err.Error()}})
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "deployment_id": deploymentID, "app_id": appID})
