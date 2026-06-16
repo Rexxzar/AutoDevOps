@@ -101,24 +101,48 @@ func ensurePackProcfile(contextDir string) {
 	if _, err := os.Stat(filepath.Join(contextDir, "Procfile")); err == nil {
 		return
 	}
-	pkg, err := os.ReadFile(filepath.Join(contextDir, "package.json"))
+	pkgPath := filepath.Join(contextDir, "package.json")
+	pkg, err := os.ReadFile(pkgPath)
 	if err != nil {
 		return
 	}
-	var manifest struct {
-		Scripts map[string]string `json:"scripts"`
-	}
+	var manifest map[string]json.RawMessage
 	if err := json.Unmarshal(pkg, &manifest); err != nil {
 		return
 	}
-	_, hasBuild := manifest.Scripts["build"]
-	_, hasStart := manifest.Scripts["start"]
+	var scripts map[string]string
+	if raw, ok := manifest["scripts"]; ok {
+		_ = json.Unmarshal(raw, &scripts)
+	}
+	_, hasBuild := scripts["build"]
+	_, hasStart := scripts["start"]
 	if !hasBuild || hasStart {
 		return // has a start script or nothing to build — let Paketo decide
 	}
+
+	// Add "serve" to devDependencies so Paketo's npm-install step installs it.
+	// Paketo adds node_modules/.bin to PATH at launch, so "serve" is callable
+	// directly — avoids relying on npx which is not on PATH in Paketo's runtime layer.
+	var devDeps map[string]string
+	if raw, ok := manifest["devDependencies"]; ok {
+		_ = json.Unmarshal(raw, &devDeps)
+	}
+	if devDeps == nil {
+		devDeps = map[string]string{}
+	}
+	if _, hasServe := devDeps["serve"]; !hasServe {
+		devDeps["serve"] = "^14"
+		devDepsJSON, _ := json.Marshal(devDeps)
+		manifest["devDependencies"] = json.RawMessage(devDepsJSON)
+		if updated, err := json.MarshalIndent(manifest, "", "  "); err == nil {
+			_ = os.WriteFile(pkgPath, updated, 0o644)
+		}
+	}
+
 	// Static frontend: build runs but no server defined. Serve dist/ in SPA mode.
-	// PORT is injected by Paketo at runtime.
-	procfile := "web: npx --yes serve -s dist -l tcp://0.0.0.0:${PORT:-8080}\n"
+	// PORT is injected by Paketo at runtime. Use serve from node_modules/.bin
+	// (not npx) since Paketo's runtime PATH includes node_modules/.bin.
+	procfile := "web: serve -s dist -l tcp://0.0.0.0:${PORT:-8080}\n"
 	_ = os.WriteFile(filepath.Join(contextDir, "Procfile"), []byte(procfile), 0o644)
 }
 
