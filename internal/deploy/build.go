@@ -96,53 +96,62 @@ func hasDockerfile(repoPath string) bool {
 // `npx serve` in SPA mode so React Router works correctly. The Procfile is
 // written into the build context (the cloned temp dir), never into the user's
 // actual repo.
+// spaServerJS is a self-contained Node.js static file server injected into
+// static-frontend repos that have a build script but no start script. It
+// serves dist/ with SPA fallback (unknown paths → index.html) using only
+// Node's built-in http/fs/path modules — no npm packages required. This
+// avoids any npm install or PATH issues inside Paketo's runtime layer.
+const spaServerJS = `const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const port = parseInt(process.env.PORT || '8080', 10);
+const dist = path.join(__dirname, 'dist');
+const mime = {
+  '.html':'text/html','.js':'application/javascript','.mjs':'application/javascript',
+  '.css':'text/css','.json':'application/json','.png':'image/png',
+  '.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif',
+  '.svg':'image/svg+xml','.ico':'image/x-icon',
+  '.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf',
+};
+http.createServer((req, res) => {
+  const url = req.url.split('?')[0].split('#')[0];
+  let file = path.join(dist, url);
+  try {
+    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(dist, 'index.html');
+  } catch (_) { file = path.join(dist, 'index.html'); }
+  const ext = path.extname(file).toLowerCase();
+  res.writeHead(200, { 'Content-Type': mime[ext] || 'application/octet-stream' });
+  fs.createReadStream(file).pipe(res);
+}).listen(port, '0.0.0.0', () => console.log('listening on', port));
+`
+
 func ensurePackProcfile(contextDir string) {
 	// Skip if a Procfile already exists — respect the repo's own definition.
 	if _, err := os.Stat(filepath.Join(contextDir, "Procfile")); err == nil {
 		return
 	}
-	pkgPath := filepath.Join(contextDir, "package.json")
-	pkg, err := os.ReadFile(pkgPath)
+	pkg, err := os.ReadFile(filepath.Join(contextDir, "package.json"))
 	if err != nil {
 		return
 	}
-	var manifest map[string]json.RawMessage
+	var manifest struct {
+		Scripts map[string]string `json:"scripts"`
+	}
 	if err := json.Unmarshal(pkg, &manifest); err != nil {
 		return
 	}
-	var scripts map[string]string
-	if raw, ok := manifest["scripts"]; ok {
-		_ = json.Unmarshal(raw, &scripts)
-	}
-	_, hasBuild := scripts["build"]
-	_, hasStart := scripts["start"]
+	_, hasBuild := manifest.Scripts["build"]
+	_, hasStart := manifest.Scripts["start"]
 	if !hasBuild || hasStart {
 		return // has a start script or nothing to build — let Paketo decide
 	}
 
-	// Add "serve" to devDependencies so Paketo's npm-install step installs it.
-	// Paketo adds node_modules/.bin to PATH at launch, so "serve" is callable
-	// directly — avoids relying on npx which is not on PATH in Paketo's runtime layer.
-	var devDeps map[string]string
-	if raw, ok := manifest["devDependencies"]; ok {
-		_ = json.Unmarshal(raw, &devDeps)
-	}
-	if devDeps == nil {
-		devDeps = map[string]string{}
-	}
-	if _, hasServe := devDeps["serve"]; !hasServe {
-		devDeps["serve"] = "^14"
-		devDepsJSON, _ := json.Marshal(devDeps)
-		manifest["devDependencies"] = json.RawMessage(devDepsJSON)
-		if updated, err := json.MarshalIndent(manifest, "", "  "); err == nil {
-			_ = os.WriteFile(pkgPath, updated, 0o644)
-		}
-	}
-
-	// Static frontend: build runs but no server defined. Serve dist/ in SPA mode.
-	// PORT is injected by Paketo at runtime. Use serve from node_modules/.bin
-	// (not npx) since Paketo's runtime PATH includes node_modules/.bin.
-	procfile := "web: serve -s dist -l tcp://0.0.0.0:${PORT:-8080}\n"
+	// Static frontend: build runs but no server is defined. Write a tiny
+	// self-contained Node.js SPA server (no npm packages) and point the
+	// Procfile at it. Paketo's Node Engine buildpack puts `node` on PATH at
+	// launch, so `node autodevops_server.js` works without touching package.json.
+	_ = os.WriteFile(filepath.Join(contextDir, "autodevops_server.js"), []byte(spaServerJS), 0o644)
+	procfile := "web: node autodevops_server.js\n"
 	_ = os.WriteFile(filepath.Join(contextDir, "Procfile"), []byte(procfile), 0o644)
 }
 
