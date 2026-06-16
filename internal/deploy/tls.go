@@ -74,14 +74,15 @@ func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName
 	pub := func(status string) { publishStep(appID, StepTLS, status) }
 
 	pub(StepActive)
-	if err := p.persistTLSStatus(ctx, appID, "provisioning"); err != nil {
+	if err := p.persistTLSStatus(ctx, appID, "provisioning", ""); err != nil {
 		return err
 	}
 
 	// 1. DNS
 	if err := CheckDNS(domain, p.publicIP); err != nil {
 		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "dns_failed")
+		_ = p.persistTLSStatus(ctx, appID, "dns_failed",
+			fmt.Sprintf("DNS not pointing here yet. Add an A record for %s → %s", domain, p.publicIP))
 		return fmt.Errorf("tls: %w", err)
 	}
 
@@ -89,7 +90,7 @@ func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName
 	proxy, err := p.detectNginxProxy(ctx)
 	if err != nil {
 		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed")
+		_ = p.persistTLSStatus(ctx, appID, "failed", "No nginx found on port 80. Start an nginx container with a conf.d volume mount.")
 		return fmt.Errorf("tls: detect nginx: %w", err)
 	}
 	slog.Info("tls: nginx detected", "containerized", proxy.Containerized, "conf_dir", proxy.ConfDirHost, "gateway", proxy.GatewayIP)
@@ -98,7 +99,7 @@ func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName
 	acmePort, err := findFreePort()
 	if err != nil {
 		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed")
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
 		return fmt.Errorf("tls: %w", err)
 	}
 
@@ -109,19 +110,19 @@ func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName
 	tempConf := tlsTempVhost(domain, proxy.GatewayIP, acmePort)
 	if err := os.WriteFile(confPath, []byte(tempConf), 0o644); err != nil {
 		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed")
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
 		return fmt.Errorf("tls: write temp nginx vhost: %w", err)
 	}
 	if err := p.reloadNginx(ctx, proxy); err != nil {
 		_ = os.Remove(confPath)
 		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed")
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
 		return fmt.Errorf("tls: nginx reload (temp): %w", err)
 	}
 
 	// 4. Run certbot standalone on acmePort — nginx proxies port-80 ACME
 	//    traffic to us via the temp vhost above.
-	certErr := p.runCertbot(ctx, domain, acmePort)
+	certErr, certFixCmd := p.runCertbot(ctx, domain, acmePort, proxy)
 
 	// Remove temp vhost regardless of certbot outcome.
 	_ = os.Remove(confPath)
@@ -129,7 +130,7 @@ func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName
 
 	if certErr != nil {
 		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "cert_failed")
+		_ = p.persistTLSStatus(ctx, appID, "cert_failed", certFixCmd)
 		return fmt.Errorf("tls: certbot: %w", certErr)
 	}
 
@@ -139,16 +140,16 @@ func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName
 	finalConf := tlsFinalVhost(domain, proxyTarget, proxy.CertDirInCtn)
 	if err := os.WriteFile(confPath, []byte(finalConf), 0o644); err != nil {
 		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed")
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
 		return fmt.Errorf("tls: write final nginx vhost: %w", err)
 	}
 	if err := p.reloadNginx(ctx, proxy); err != nil {
 		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed")
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
 		return fmt.Errorf("tls: nginx reload (final): %w", err)
 	}
 
-	_ = p.persistTLSStatus(ctx, appID, "active")
+	_ = p.persistTLSStatus(ctx, appID, "active", "")
 	pub(StepDone)
 	return nil
 }
@@ -266,15 +267,20 @@ func (p *TLSProvisioner) reloadNginx(ctx context.Context, proxy *NginxProxy) err
 // runCertbot invokes certbot standalone on acmePort. certbot's HTTP-01
 // listener is on acmePort; the temp nginx vhost proxies /.well-known/ from
 // port 80 → acmePort so Let's Encrypt can reach it.
+//
+// Returns (err, fixCmd): fixCmd is an actionable shell command to show in the
+// dashboard whenever err != nil, or empty if there's no specific fix.
+//
 // Tries plain "certbot" first; if the process exits due to a permission error
 // (certbot's default dirs are root-owned), retries with "sudo -n certbot".
 // To enable the sudo path without a password prompt, add to /etc/sudoers:
 //
 //	<user> ALL=(ALL) NOPASSWD: /usr/bin/certbot
-func (p *TLSProvisioner) runCertbot(ctx context.Context, domain string, acmePort int) error {
+func (p *TLSProvisioner) runCertbot(ctx context.Context, domain string, acmePort int, proxy *NginxProxy) (error, string) {
 	certbotPath, err := exec.LookPath("certbot")
 	if err != nil {
-		return fmt.Errorf("certbot not found on PATH — install it first (e.g. sudo apt install certbot)")
+		return fmt.Errorf("certbot not found on PATH — install it first (e.g. sudo apt install certbot)"),
+			"sudo apt install -y certbot"
 	}
 	args := []string{
 		"certonly", "--standalone",
@@ -290,26 +296,58 @@ func (p *TLSProvisioner) runCertbot(ctx context.Context, domain string, acmePort
 
 	out, err := exec.CommandContext(ctx, certbotPath, args...).CombinedOutput()
 	if err == nil {
-		return nil
+		return nil, ""
 	}
+	outStr := string(out)
+
 	// Permission error — the default certbot dirs (/var/log/letsencrypt etc.)
 	// are root-owned. Retry with sudo -n (non-interactive sudo).
-	if strings.Contains(string(out), "Permission denied") || strings.Contains(string(out), "Errno 13") {
+	if strings.Contains(outStr, "Permission denied") || strings.Contains(outStr, "Errno 13") {
 		sudoArgs := append([]string{"-n", certbotPath}, args...)
 		out2, err2 := exec.CommandContext(ctx, "sudo", sudoArgs...).CombinedOutput()
-		if err2 != nil {
-			return fmt.Errorf("certbot failed (even with sudo -n).\n"+
-				"Add this to /etc/sudoers to fix: $(whoami) ALL=(ALL) NOPASSWD: %s\n"+
-				"sudo output:\n%s", certbotPath, strings.TrimSpace(string(out2)))
+		if err2 == nil {
+			return nil, ""
 		}
-		return nil
+		// sudo failed — most likely NOPASSWD not configured.
+		fixCmd := fmt.Sprintf(
+			"echo \"$(whoami) ALL=(ALL) NOPASSWD: %s\" | sudo tee /etc/sudoers.d/certbot-autodevops && sudo chmod 440 /etc/sudoers.d/certbot-autodevops",
+			certbotPath,
+		)
+		return fmt.Errorf("certbot failed (permission denied, sudo also failed): %w\n%s", err2, strings.TrimSpace(string(out2))),
+			fixCmd
 	}
-	return fmt.Errorf("%w\ncertbot output:\n%s", err, strings.TrimSpace(string(out)))
+
+	// Challenge timeout / 504 — most likely the ACME challenge port is blocked
+	// by a firewall. When nginx runs in Docker, it reaches the host via the
+	// bridge gateway (proxy.GatewayIP / 172.18.x.1); ufw blocks that by default.
+	if strings.Contains(outStr, "504") || strings.Contains(outStr, "Timeout") ||
+		strings.Contains(outStr, "Connection refused") || strings.Contains(outStr, "Challenge did not pass") ||
+		strings.Contains(outStr, "Unauthorized") {
+		gatewayNet := "172.18.0.0/16"
+		if proxy != nil && proxy.GatewayIP != "" {
+			// derive /16 from the gateway so the rule is precise
+			parts := strings.Split(proxy.GatewayIP, ".")
+			if len(parts) == 4 {
+				gatewayNet = parts[0] + "." + parts[1] + ".0.0/16"
+			}
+		}
+		fixCmd := fmt.Sprintf(
+			"sudo ufw allow from %s to any port %d:%d proto tcp",
+			gatewayNet, 9200, 9299,
+		)
+		return fmt.Errorf("certbot ACME challenge failed (Let's Encrypt could not reach the server): %w", err),
+			fixCmd
+	}
+
+	return fmt.Errorf("%w\ncertbot output:\n%s", err, strings.TrimSpace(outStr)), ""
 }
 
-// persistTLSStatus writes deployment_apps.tls_status for appID.
-func (p *TLSProvisioner) persistTLSStatus(ctx context.Context, appID, status string) error {
-	_, err := p.pool.Exec(ctx, "UPDATE deployment_apps SET tls_status = $1 WHERE id = $2", status, appID)
+// persistTLSStatus writes deployment_apps.tls_status (and optionally tls_error) for appID.
+// errMsg is the actionable fix command to show in the dashboard; empty clears the column.
+func (p *TLSProvisioner) persistTLSStatus(ctx context.Context, appID, status, errMsg string) error {
+	_, err := p.pool.Exec(ctx,
+		"UPDATE deployment_apps SET tls_status = $1, tls_error = NULLIF($2, '') WHERE id = $3",
+		status, errMsg, appID)
 	return err
 }
 

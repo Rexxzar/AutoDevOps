@@ -49,6 +49,7 @@ interface AppDetail {
   volume_path?: string
   secret_file_paths?: string[]
   tls_status?: string
+  tls_error?: string
   links: AppLink[]
   // Hydrates the deploy-progress pipeline on page load / SSE reconnect — see
   // DeployStepEvent and internal/api/handlers.go's handleGetDeployment.
@@ -196,6 +197,31 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="flex items-center justify-between gap-3 py-1.5 text-sm">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium text-right min-w-0 truncate">{value}</span>
+    </div>
+  )
+}
+
+function TLSFixBanner({ fixCmd }: { fixCmd: string }) {
+  const [copied, setCopied] = useState(false)
+  function handleCopy() {
+    navigator.clipboard.writeText(fixCmd).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+  return (
+    <div className="mt-1 rounded-md border border-yellow-400/30 bg-yellow-50/60 dark:bg-yellow-950/30 p-2.5 text-xs space-y-1.5">
+      <p className="font-medium text-yellow-800 dark:text-yellow-300 flex items-center gap-1">
+        <AlertCircle className="size-3 shrink-0" /> Run this on the server to fix:
+      </p>
+      <pre className="overflow-x-auto rounded bg-background border border-border px-2 py-1.5 font-mono text-[0.7rem] whitespace-pre-wrap break-all">{fixCmd}</pre>
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="text-[0.7rem] text-yellow-700 dark:text-yellow-400 hover:underline"
+      >
+        {copied ? '✓ Copied' : 'Copy to clipboard'}
+      </button>
     </div>
   )
 }
@@ -638,32 +664,37 @@ function AppCard({
           />
         )}
         {app.domain && app.tls_status && app.tls_status !== 'none' && (
-          <InfoRow
-            label="TLS"
-            value={
-              app.tls_status === 'active' ? (
-                <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
-                  <CheckCircle2 className="size-3" /> Active
-                </span>
-              ) : app.tls_status === 'provisioning' ? (
-                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                  <Loader2 className="size-3 animate-spin" /> Provisioning…
-                </span>
-              ) : app.tls_status === 'dns_failed' ? (
-                <span className="inline-flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400">
-                  <AlertCircle className="size-3" /> DNS mismatch
-                </span>
-              ) : app.tls_status === 'cert_failed' ? (
-                <span className="inline-flex items-center gap-1 text-xs text-critical">
-                  <AlertCircle className="size-3" /> Cert failed
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-xs text-critical">
-                  <AlertCircle className="size-3" /> Failed
-                </span>
-              )
-            }
-          />
+          <>
+            <InfoRow
+              label="TLS"
+              value={
+                app.tls_status === 'active' ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                    <CheckCircle2 className="size-3" /> Active
+                  </span>
+                ) : app.tls_status === 'provisioning' ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" /> Provisioning…
+                  </span>
+                ) : app.tls_status === 'dns_failed' ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400">
+                    <AlertCircle className="size-3" /> DNS mismatch
+                  </span>
+                ) : app.tls_status === 'cert_failed' ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
+                    <AlertCircle className="size-3" /> Cert failed
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
+                    <AlertCircle className="size-3" /> Failed
+                  </span>
+                )
+              }
+            />
+            {app.tls_error && (
+              <TLSFixBanner fixCmd={app.tls_error} />
+            )}
+          </>
         )}
         <InfoRow label="Updated" value={formatRelativeTime(app.updated_at)} />
 
