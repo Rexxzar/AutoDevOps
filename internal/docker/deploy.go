@@ -73,12 +73,16 @@ func (m *Manager) writeSecretFiles(stackName, appName string, secretFiles map[st
 		return nil, nil
 	}
 	dir := filepath.Join(m.workDir, stackName, appName, "secrets")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("docker: resolve secrets dir: %w", err)
+	}
+	if err := os.MkdirAll(absDir, 0o755); err != nil {
 		return nil, fmt.Errorf("docker: create secrets dir: %w", err)
 	}
 	mounts := make([]mount.Mount, 0, len(secretFiles))
 	for containerPath, content := range secretFiles {
-		hostPath := filepath.Join(dir, sanitizeSecretKey(containerPath))
+		hostPath := filepath.Join(absDir, sanitizeSecretKey(containerPath))
 		if err := os.WriteFile(hostPath, content, 0o600); err != nil {
 			return nil, fmt.Errorf("docker: write secret file %q: %w", containerPath, err)
 		}

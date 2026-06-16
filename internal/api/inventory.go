@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,18 @@ import (
 
 	"github.com/Rexxzar/autodevops/internal/k8s"
 )
+
+// inventoryID returns the {id} chi URL param, URL-decoded. chi routes against
+// the raw (percent-encoded) path when r.URL.RawPath is set, so encodeURIComponent
+// on the frontend encodes the ":" separator in "docker:..." to "%3A" and chi
+// stores the encoded value — we always want the decoded form for parsing.
+func inventoryID(r *http.Request) string {
+	raw := chi.URLParam(r, "id")
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		return decoded
+	}
+	return raw
+}
 
 // parseInventoryID splits a synthetic host-inventory ID into its parts.
 //
@@ -266,7 +279,7 @@ func (s *Server) handleLocalInventory(w http.ResponseWriter, r *http.Request) {
 // GET /local/inventory/{id}/logs?tail=300&container=
 func (s *Server) handleInventoryLogs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id := chi.URLParam(r, "id")
+	id := inventoryID(r)
 
 	tail := 300
 	if t := r.URL.Query().Get("tail"); t != "" {
@@ -313,7 +326,7 @@ func (s *Server) handleInventoryLogs(w http.ResponseWriter, r *http.Request) {
 // POST /local/inventory/{id}/restart
 func (s *Server) handleInventoryRestart(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id := chi.URLParam(r, "id")
+	id := inventoryID(r)
 
 	kind, a, b, err := parseInventoryID(id)
 	if err != nil {

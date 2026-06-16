@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -26,6 +27,16 @@ const consoleExecTimeout = 2 * time.Minute
 // command. Returns an error (for a 400 response) if the resource isn't live
 // yet — its terraform outputs (instance IDs, IPs, etc.) only exist after a
 // successful Apply.
+// consoleIDParam returns the {id} chi URL param, URL-decoded — same reason as
+// inventoryID in inventory.go: chi routes on the raw encoded path.
+func consoleIDParam(r *http.Request) string {
+	raw := chi.URLParam(r, "id")
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		return decoded
+	}
+	return raw
+}
+
 func (s *Server) consoleResource(ctx context.Context, id string) (console.Resource, error) {
 	// Synthetic IDs for host-inventory items — no DB lookup needed.
 	if strings.HasPrefix(id, "docker:") {
@@ -90,7 +101,7 @@ type consoleOpenResponse struct {
 // GET .../sessions/{sessionId}/stream (SSE) for output and POSTs to
 // .../input and .../resize.
 func (s *Server) handleOpenConsoleSession(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id := consoleIDParam(r)
 	res, err := s.consoleResource(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -217,7 +228,7 @@ type consoleExecRequest struct {
 // handleConsoleExec runs a one-shot command against the resource and returns
 // its stdout/stderr/exit code — no session bookkeeping involved.
 func (s *Server) handleConsoleExec(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id := consoleIDParam(r)
 	res, err := s.consoleResource(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
