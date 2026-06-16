@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -86,6 +87,41 @@ func hasDockerfile(repoPath string) bool {
 	return err == nil
 }
 
+// ensurePackProcfile writes a Procfile to contextDir if the repo is a static
+// frontend build (has a "build" npm script but no "start" script and no
+// existing Procfile). Without a Procfile, Paketo's lifecycle exits with
+// "no default process" and the container crash-loops immediately.
+//
+// The injected process serves the build output directory (dist/) with
+// `npx serve` in SPA mode so React Router works correctly. The Procfile is
+// written into the build context (the cloned temp dir), never into the user's
+// actual repo.
+func ensurePackProcfile(contextDir string) {
+	// Skip if a Procfile already exists — respect the repo's own definition.
+	if _, err := os.Stat(filepath.Join(contextDir, "Procfile")); err == nil {
+		return
+	}
+	pkg, err := os.ReadFile(filepath.Join(contextDir, "package.json"))
+	if err != nil {
+		return
+	}
+	var manifest struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(pkg, &manifest); err != nil {
+		return
+	}
+	_, hasBuild := manifest.Scripts["build"]
+	_, hasStart := manifest.Scripts["start"]
+	if !hasBuild || hasStart {
+		return // has a start script or nothing to build — let Paketo decide
+	}
+	// Static frontend: build runs but no server defined. Serve dist/ in SPA mode.
+	// PORT is injected by Paketo at runtime.
+	procfile := "web: npx --yes serve -s dist -l tcp://0.0.0.0:${PORT:-8080}\n"
+	_ = os.WriteFile(filepath.Join(contextDir, "Procfile"), []byte(procfile), 0o644)
+}
+
 // headSHA12 reads the cloned repo's HEAD commit and returns the first 12 hex
 // chars — matches the short-SHA convention used by GitHub, Flux, and Helm.
 func headSHA12(repoPath string) (string, error) {
@@ -158,6 +194,7 @@ func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath,
 			"builder", o.builderImage,
 		)
 
+		ensurePackProcfile(contextDir)
 		packClient, err := packclient.NewClient(packclient.WithLogger(&slogPackLogger{logLine: logLine}))
 		if err != nil {
 			o.publishStep(appID, StepBuild, StepFailed)

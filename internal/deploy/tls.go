@@ -264,8 +264,14 @@ func (p *TLSProvisioner) reloadNginx(ctx context.Context, proxy *NginxProxy) err
 // runCertbot invokes certbot standalone on acmePort. certbot's HTTP-01
 // listener is on acmePort; the temp nginx vhost proxies /.well-known/ from
 // port 80 → acmePort so Let's Encrypt can reach it.
+// Tries plain "certbot" first; if the process exits due to a permission error
+// (certbot's default dirs are root-owned), retries with "sudo -n certbot".
+// To enable the sudo path without a password prompt, add to /etc/sudoers:
+//
+//	<user> ALL=(ALL) NOPASSWD: /usr/bin/certbot
 func (p *TLSProvisioner) runCertbot(ctx context.Context, domain string, acmePort int) error {
-	if _, err := exec.LookPath("certbot"); err != nil {
+	certbotPath, err := exec.LookPath("certbot")
+	if err != nil {
 		return fmt.Errorf("certbot not found on PATH — install it first (e.g. sudo apt install certbot)")
 	}
 	args := []string{
@@ -279,11 +285,24 @@ func (p *TLSProvisioner) runCertbot(ctx context.Context, domain string, acmePort
 	} else {
 		args = append(args, "--register-unsafely-without-email")
 	}
-	out, err := exec.CommandContext(ctx, "certbot", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%w\ncertbot output:\n%s", err, strings.TrimSpace(string(out)))
+
+	out, err := exec.CommandContext(ctx, certbotPath, args...).CombinedOutput()
+	if err == nil {
+		return nil
 	}
-	return nil
+	// Permission error — the default certbot dirs (/var/log/letsencrypt etc.)
+	// are root-owned. Retry with sudo -n (non-interactive sudo).
+	if strings.Contains(string(out), "Permission denied") || strings.Contains(string(out), "Errno 13") {
+		sudoArgs := append([]string{"-n", certbotPath}, args...)
+		out2, err2 := exec.CommandContext(ctx, "sudo", sudoArgs...).CombinedOutput()
+		if err2 != nil {
+			return fmt.Errorf("certbot failed (even with sudo -n).\n"+
+				"Add this to /etc/sudoers to fix: $(whoami) ALL=(ALL) NOPASSWD: %s\n"+
+				"sudo output:\n%s", certbotPath, strings.TrimSpace(string(out2)))
+		}
+		return nil
+	}
+	return fmt.Errorf("%w\ncertbot output:\n%s", err, strings.TrimSpace(string(out)))
 }
 
 // persistTLSStatus writes deployment_apps.tls_status for appID.
