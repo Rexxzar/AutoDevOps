@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -203,8 +204,9 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		// status above) but marks tls_status="cert_failed"|"dns_failed" so the
 		// dashboard can surface a "retry TLS" action.
 		if domain != "" && o.tlsProvisioner != nil {
+			slog.Info("tls: provisioning", "app_id", appID, "domain", domain)
 			if tlsErr := o.tlsProvisioner.Provision(ctx, appID, domain, stackName, appName, o.publishStep); tlsErr != nil {
-				// Log but don't fail the whole pipeline — container is live.
+				slog.Error("tls: provision failed", "app_id", appID, "domain", domain, "error", tlsErr)
 				o.hub.Publish(sse.Event{Type: "deploy.log", Payload: LogEvent{AppID: appID, Line: "TLS: " + tlsErr.Error()}})
 			}
 		} else if domain != "" {

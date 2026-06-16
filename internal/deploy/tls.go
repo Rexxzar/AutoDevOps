@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -91,6 +92,7 @@ func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName
 		_ = p.persistTLSStatus(ctx, appID, "failed")
 		return fmt.Errorf("tls: detect nginx: %w", err)
 	}
+	slog.Info("tls: nginx detected", "containerized", proxy.Containerized, "conf_dir", proxy.ConfDirHost, "gateway", proxy.GatewayIP)
 
 	// 3. Find a free port for certbot standalone
 	acmePort, err := findFreePort()
