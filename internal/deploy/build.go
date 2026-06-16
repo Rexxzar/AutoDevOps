@@ -106,7 +106,8 @@ const spaServerJS = `const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const port = parseInt(process.env.PORT || '8080', 10);
-const dist = path.join(__dirname, 'dist');
+// CRA outputs to build/, Vite outputs to dist/ — check which one exists.
+const dist = fs.existsSync(path.join(__dirname, 'dist')) ? path.join(__dirname, 'dist') : path.join(__dirname, 'build');
 const mime = {
   '.html':'text/html','.js':'application/javascript','.mjs':'application/javascript',
   '.css':'text/css','.json':'application/json','.png':'image/png',
@@ -145,9 +146,15 @@ func ensurePackProcfile(contextDir string) {
 	}
 	scripts, _ := manifest["scripts"].(map[string]interface{})
 	_, hasBuild := scripts["build"]
-	_, hasStart := scripts["start"]
-	if !hasBuild || hasStart {
-		return // has a start script or nothing to build — let Paketo decide
+	startVal, hasStart := scripts["start"]
+	// CRA's start script runs the webpack dev server and requires devDependencies
+	// (e.g. cross-env) that Paketo omits from the production runtime layer —
+	// those containers crash-loop. Replace it with our SPA server, same as we
+	// do for repos that have no start script at all.
+	startStr, _ := startVal.(string)
+	isCRADevServer := hasStart && strings.Contains(startStr, "react-scripts start")
+	if !hasBuild || (hasStart && !isCRADevServer) {
+		return // has a production-ready start script or nothing to build — let Paketo decide
 	}
 
 	// Static frontend: write a tiny self-contained Node.js SPA server (built-in
