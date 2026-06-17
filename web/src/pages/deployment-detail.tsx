@@ -21,6 +21,7 @@ import { formatRelativeTime, provisionedTypeLabel, type ProvisionedResource } fr
 import { cn } from '@/lib/utils'
 import type { Target, PipelineStage } from '@/lib/mock-data'
 import { diagnoseApp } from '@/lib/diagnose'
+import { DECLARED_FRAMEWORK_LABELS, DECLARED_FRAMEWORK_HINTS, DECLARED_FRAMEWORK_OPTIONS } from '@/lib/frameworks'
 
 interface AppLink {
   id: string
@@ -40,6 +41,7 @@ interface AppDetail {
   repo_url?: string
   branch: string
   framework?: string
+  declared_framework?: string
   target_type: string // "k8s" | "container" | "vm"
   namespace?: string
   image_ref?: string
@@ -749,6 +751,19 @@ function AppCard({
             {app.framework && (
               <InfoRow label="Framework" value={frameworkLabel[app.framework] ?? app.framework} />
             )}
+            {app.declared_framework && (
+              <InfoRow
+                label="Declared"
+                value={
+                  <span className="inline-flex items-center gap-1">
+                    <span>{DECLARED_FRAMEWORK_LABELS[app.declared_framework] ?? app.declared_framework}</span>
+                    <span className="text-[0.65rem] text-muted-foreground">
+                      {DECLARED_FRAMEWORK_HINTS[app.declared_framework]}
+                    </span>
+                  </span>
+                }
+              />
+            )}
             <InfoRow label="Branch" value={<span className="font-mono text-xs">{app.branch}</span>} />
             {app.image_ref && (
               <InfoRow label="Image" value={<span className="font-mono text-xs">{app.image_ref}</span>} />
@@ -1242,6 +1257,7 @@ function AddAppDialog({
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
   const [gitToken, setGitToken] = useState('')
+  const [declaredFramework, setDeclaredFramework] = useState('')
   const [target, setTarget] = useState<'k8s' | 'container' | 'vm' | 'ecs' | 'aci'>('k8s')
   const [vmResourceId, setVmResourceId] = useState('')
   const [ecsResourceId, setEcsResourceId] = useState('')
@@ -1262,7 +1278,7 @@ function AddAppDialog({
 
   function reset() {
     setKind('git')
-    setName(''); setRepo(''); setBranch('main'); setGitToken(''); setTarget('k8s'); setVmResourceId(''); setDomain('')
+    setName(''); setRepo(''); setBranch('main'); setGitToken(''); setDeclaredFramework(''); setTarget('k8s'); setVmResourceId(''); setDomain('')
     setEcsResourceId(''); setAciResourceId('')
     setImageRef(''); setPort(''); setVolumePath(''); setEnvRows([]); setSecretFileRows([])
     setError(''); setSuccess(null)
@@ -1318,6 +1334,7 @@ function AddAppDialog({
       if (target === 'aci') body.target_resource_id = effectiveAciResourceId
       if (gitToken) body.git_auth = { type: 'token', token: gitToken }
       if (domain) body.domain = domain
+      if (declaredFramework) body.declared_framework = declaredFramework
       if (Object.keys(secretFiles).length > 0) body.secret_files = secretFiles
       const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>(`/deployments/${stackId}/apps`, {
         method: 'POST', body: JSON.stringify(body),
@@ -1380,6 +1397,25 @@ function AddAppDialog({
                   <input value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
                 </FormField>
               </div>
+              <FormField label="Framework" hint="auto-generates Procfile + DB env vars">
+                <div className="flex flex-wrap gap-1.5">
+                  {DECLARED_FRAMEWORK_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value} type="button"
+                      onClick={() => setDeclaredFramework(opt.value)}
+                      className={cn(
+                        'rounded-full border px-2.5 py-1 text-xs transition-colors',
+                        declaredFramework === opt.value
+                          ? 'border-primary bg-primary/10 text-primary font-medium'
+                          : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground',
+                      )}
+                    >
+                      {opt.label}
+                      {opt.sub && <span className="ml-1 opacity-60">{opt.sub}</span>}
+                    </button>
+                  ))}
+                </div>
+              </FormField>
             </>
           ) : (
             <>

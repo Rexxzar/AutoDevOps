@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { TargetPill, FormField, DomainField, inputCls, selectCls } from '@/components/deploy-form-fields'
 import { ComposeImportForm } from '@/components/compose-import-form'
 import { type ProvisionedResource, provisionedTypeLabel } from '@/lib/resources'
+import { DECLARED_FRAMEWORK_OPTIONS } from '@/lib/frameworks'
 
 type Step = 'form' | 'success'
 type Mode = 'scratch' | 'import'
@@ -26,6 +27,7 @@ export function NewDeploymentPage() {
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
   const [token, setToken] = useState('')
+  const [declaredFramework, setDeclaredFramework] = useState('')
   const [targetLocation, setTargetLocation] = useState<TargetLocation>('local')
   const [localTarget, setLocalTarget] = useState<LocalTarget>('k8s')
   const [cloudTarget, setCloudTarget] = useState<CloudTarget>('vm')
@@ -75,6 +77,7 @@ export function NewDeploymentPage() {
           : effectiveAciResourceId
       }
       if (token) body.git_auth = { type: 'token', token }
+      if (declaredFramework) body.declared_framework = declaredFramework
       if (localDomain) body.domain = localDomain
       const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>('/deployments', {
         method: 'POST', body: JSON.stringify(body),
@@ -132,6 +135,25 @@ export function NewDeploymentPage() {
                       <input value={token} onChange={e => setToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
                     </FormField>
                   </div>
+                  <FormField label="Framework" hint="auto-generates Procfile + DB env vars">
+                    <div className="flex flex-wrap gap-1.5">
+                      {DECLARED_FRAMEWORK_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value} type="button"
+                          onClick={() => setDeclaredFramework(opt.value)}
+                          className={cn(
+                            'rounded-full border px-2.5 py-1 text-xs transition-colors',
+                            declaredFramework === opt.value
+                              ? 'border-primary bg-primary/10 text-primary font-medium'
+                              : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground',
+                          )}
+                        >
+                          {opt.label}
+                          {opt.sub && <span className="ml-1 opacity-60">{opt.sub}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </FormField>
                   <FormField label="Target">
                     <div className="flex gap-2">
                       <TargetPill label="Local" sub="this machine" active={targetLocation === 'local'} onClick={() => selectTargetLocation('local')} />

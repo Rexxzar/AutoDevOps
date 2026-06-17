@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -69,23 +70,24 @@ func namespaceName(stackName string) string {
 //   - other / no deployer wired:  stays at status=deploying
 func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 	var (
-		stackName        string
-		appName          string
-		repoURL          string
-		branch           string
-		targetKind       string
-		targetResourceID *string
-		gitCredsSecretID *string
-		buildContext     string
-		secretFilesID    *string
-		domain           string
+		stackName         string
+		appName           string
+		repoURL           string
+		branch            string
+		targetKind        string
+		targetResourceID  *string
+		gitCredsSecretID  *string
+		buildContext      string
+		secretFilesID     *string
+		domain            string
+		declaredFramework string
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text, COALESCE(da.domain, '')
+		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text, COALESCE(da.domain, ''), COALESCE(da.declared_framework, '')
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1
-	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID, &domain)
+	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID, &domain, &declaredFramework)
 	if err != nil {
 		return fmt.Errorf("deploy: look up app %s: %w", appID, err)
 	}
@@ -111,6 +113,21 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 	}
 	o.publishStep(appID, StepClone, StepDone)
 
+	// Auto-write a Procfile based on the declared framework when the repo
+	// doesn't already have one — saves the user from having to create it manually.
+	if declaredFramework != "" {
+		procfilePath := filepath.Join(repoPath, "Procfile")
+		if _, statErr := os.Stat(procfilePath); os.IsNotExist(statErr) {
+			if content, ok := ProcfileForFramework(declaredFramework); ok {
+				if writeErr := os.WriteFile(procfilePath, []byte(content+"\n"), 0o644); writeErr != nil {
+					slog.Warn("deploy: write auto-procfile", "framework", declaredFramework, "error", writeErr)
+				} else {
+					slog.Info("deploy: wrote auto-procfile", "framework", declaredFramework, "app", appName)
+				}
+			}
+		}
+	}
+
 	o.publishStep(appID, StepDetect, StepActive)
 	framework, err := DetectFramework(repoPath)
 	if err != nil {
@@ -132,6 +149,9 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		o.publishStep(appID, StepBuild, StepFailed)
 		return fmt.Errorf("deploy: resolve links for %s: %w", appID, err)
 	}
+	// Map generic AUTODEVOPS_* link vars to framework-specific vars (e.g.
+	// DATABASE_URL for NestJS/Django, DB_HOST/DB_USERNAME for Laravel).
+	extraEnv = applyFrameworkEnv(declaredFramework, extraEnv)
 
 	secretFiles, err := o.loadSecretFiles(ctx, secretFilesID)
 	if err != nil {

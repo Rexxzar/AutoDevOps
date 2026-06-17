@@ -46,9 +46,9 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 	r.Use(requestLogger)
 	r.Use(corsMiddleware)
 
-	// GitHub webhook — public endpoint, no /api/ prefix so stored webhook URLs
-	// (already distributed to GitHub repos) never need to change.
+	// Webhook endpoints — public, no /api/ prefix so distributed URLs never change.
 	r.Post("/webhooks/github/{id}", s.handleGitHubWebhook)
+	r.Post("/webhooks/gitlab/{id}", s.handleGitLabWebhook)
 
 	// All API routes under /api/ so the Go binary can serve the React SPA at /*
 	// without route conflicts. The Vite dev proxy rewrites /api/* → /* before

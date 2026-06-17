@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -232,20 +233,21 @@ type gitAuthRequest struct {
 // (default, zero value) uses RepoURL/Branch/GitAuth; "image" (Phase 4, only
 // reachable via handleAddApp) uses ImageRef/Port/Env instead.
 type appCreateRequest struct {
-	Name             string
-	Kind             string // "git" (default) | "image"
-	RepoURL          string
-	Branch           string
-	TargetKind       string // "local_k8s" | "local_docker" | "cloud_vm"
-	TargetResourceID string // cloud_vm: provisioned_resources.id (a "vm" resource)
-	Domain           string
-	GitAuth          *gitAuthRequest
-	BuildContext     string            // kind == "git", optional — see Phase 9 build_context
-	ImageRef         string            // kind == "image"
-	Port             int               // kind == "image"
-	Env              map[string]string // kind == "image", optional
-	VolumePath       string            // kind == "image", optional — see Phase 4 volume_path
-	SecretFiles      map[string]string // container path -> base64 content, optional — see secret_files
+	Name              string
+	Kind              string // "git" (default) | "image"
+	RepoURL           string
+	Branch            string
+	TargetKind        string // "local_k8s" | "local_docker" | "cloud_vm"
+	TargetResourceID  string // cloud_vm: provisioned_resources.id (a "vm" resource)
+	Domain            string
+	GitAuth           *gitAuthRequest
+	BuildContext      string            // kind == "git", optional — see Phase 9 build_context
+	DeclaredFramework string            // kind == "git", optional — user-declared framework for Procfile/DB env mapping
+	ImageRef          string            // kind == "image"
+	Port              int               // kind == "image"
+	Env               map[string]string // kind == "image", optional
+	VolumePath        string            // kind == "image", optional — see Phase 4 volume_path
+	SecretFiles       map[string]string // container path -> base64 content, optional — see secret_files
 }
 
 // storeSecretFiles encrypts files (container path -> base64 content) into the
@@ -325,15 +327,16 @@ func (s *Server) createApp(ctx context.Context, deploymentID string, req appCrea
 	}
 
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context, secret_files_id, secret_file_paths)
+		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context, secret_files_id, secret_file_paths, declared_framework)
 		SELECT $1, $2, $3, $4, $5, NULLIF($6, '')::uuid, NULLIF($7, ''),
 		       (SELECT id FROM secrets WHERE name = $8),
 		       (SELECT id FROM secrets WHERE name = $9),
 		       NULLIF($10, ''),
 		       (SELECT id FROM secrets WHERE name = $11),
-		       $12
+		       $12,
+		       NULLIF($13, '')
 		RETURNING id::text
-	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext, secretFilesName, secretFilePaths).Scan(&appID)
+	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext, secretFilesName, secretFilePaths, req.DeclaredFramework).Scan(&appID)
 	if err != nil {
 		return "", "", fmt.Errorf("insert app: %w", err)
 	}
@@ -461,15 +464,16 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 // the user to paste into GitHub's repo → Settings → Webhooks.
 func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name             string            `json:"name"`
-		RepoURL          string            `json:"repo_url"`
-		Branch           string            `json:"branch"`
-		TargetType       string            `json:"target_type"`
-		TargetResourceID string            `json:"target_resource_id,omitempty"`
-		Domain           string            `json:"domain,omitempty"`
-		GitAuth          *gitAuthRequest   `json:"git_auth,omitempty"`
-		BuildContext     string            `json:"build_context,omitempty"`
-		SecretFiles      map[string]string `json:"secret_files,omitempty"`
+		Name              string            `json:"name"`
+		RepoURL           string            `json:"repo_url"`
+		Branch            string            `json:"branch"`
+		TargetType        string            `json:"target_type"`
+		TargetResourceID  string            `json:"target_resource_id,omitempty"`
+		Domain            string            `json:"domain,omitempty"`
+		GitAuth           *gitAuthRequest   `json:"git_auth,omitempty"`
+		BuildContext      string            `json:"build_context,omitempty"`
+		DeclaredFramework string            `json:"declared_framework,omitempty"`
+		SecretFiles       map[string]string `json:"secret_files,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -505,15 +509,16 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 	}
 
 	appID, webhookSecret, err := s.createApp(ctx, deploymentID, appCreateRequest{
-		Name:             req.Name,
-		RepoURL:          req.RepoURL,
-		Branch:           req.Branch,
-		TargetKind:       targetKind,
-		TargetResourceID: req.TargetResourceID,
-		Domain:           req.Domain,
-		GitAuth:          req.GitAuth,
-		BuildContext:     req.BuildContext,
-		SecretFiles:      req.SecretFiles,
+		Name:              req.Name,
+		RepoURL:           req.RepoURL,
+		Branch:            req.Branch,
+		TargetKind:        targetKind,
+		TargetResourceID:  req.TargetResourceID,
+		Domain:            req.Domain,
+		GitAuth:           req.GitAuth,
+		BuildContext:      req.BuildContext,
+		DeclaredFramework: req.DeclaredFramework,
+		SecretFiles:       req.SecretFiles,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create deployment")
@@ -524,7 +529,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":             deploymentID,
-		"webhook_url":    "/webhooks/github/" + appID,
+		"webhook_url":    webhookPath(req.RepoURL, appID),
 		"webhook_secret": webhookSecret,
 	})
 }
@@ -588,20 +593,21 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name             string            `json:"name"`
-		Kind             string            `json:"kind,omitempty"` // "git" (default) | "image"
-		RepoURL          string            `json:"repo_url,omitempty"`
-		Branch           string            `json:"branch,omitempty"`
-		TargetType       string            `json:"target_type"`
-		TargetResourceID string            `json:"target_resource_id,omitempty"`
-		Domain           string            `json:"domain,omitempty"`
-		GitAuth          *gitAuthRequest   `json:"git_auth,omitempty"`
-		BuildContext     string            `json:"build_context,omitempty"`
-		ImageRef         string            `json:"image_ref,omitempty"`
-		Port             int               `json:"port,omitempty"`
-		Env              map[string]string `json:"env,omitempty"`
-		VolumePath       string            `json:"volume_path,omitempty"`
-		SecretFiles      map[string]string `json:"secret_files,omitempty"`
+		Name              string            `json:"name"`
+		Kind              string            `json:"kind,omitempty"` // "git" (default) | "image"
+		RepoURL           string            `json:"repo_url,omitempty"`
+		Branch            string            `json:"branch,omitempty"`
+		TargetType        string            `json:"target_type"`
+		TargetResourceID  string            `json:"target_resource_id,omitempty"`
+		Domain            string            `json:"domain,omitempty"`
+		GitAuth           *gitAuthRequest   `json:"git_auth,omitempty"`
+		BuildContext      string            `json:"build_context,omitempty"`
+		DeclaredFramework string            `json:"declared_framework,omitempty"`
+		ImageRef          string            `json:"image_ref,omitempty"`
+		Port              int               `json:"port,omitempty"`
+		Env               map[string]string `json:"env,omitempty"`
+		VolumePath        string            `json:"volume_path,omitempty"`
+		SecretFiles       map[string]string `json:"secret_files,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -651,20 +657,21 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appID, webhookSecret, err := s.createApp(r.Context(), deploymentID, appCreateRequest{
-		Name:             req.Name,
-		Kind:             req.Kind,
-		RepoURL:          req.RepoURL,
-		Branch:           req.Branch,
-		TargetKind:       targetKind,
-		TargetResourceID: req.TargetResourceID,
-		Domain:           req.Domain,
-		GitAuth:          req.GitAuth,
-		BuildContext:     req.BuildContext,
-		ImageRef:         req.ImageRef,
-		Port:             req.Port,
-		Env:              req.Env,
-		VolumePath:       req.VolumePath,
-		SecretFiles:      req.SecretFiles,
+		Name:              req.Name,
+		Kind:              req.Kind,
+		RepoURL:           req.RepoURL,
+		Branch:            req.Branch,
+		TargetKind:        targetKind,
+		TargetResourceID:  req.TargetResourceID,
+		Domain:            req.Domain,
+		GitAuth:           req.GitAuth,
+		BuildContext:      req.BuildContext,
+		DeclaredFramework: req.DeclaredFramework,
+		ImageRef:          req.ImageRef,
+		Port:              req.Port,
+		Env:               req.Env,
+		VolumePath:        req.VolumePath,
+		SecretFiles:       req.SecretFiles,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -690,7 +697,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":             appID,
-		"webhook_url":    "/webhooks/github/" + appID,
+		"webhook_url":    webhookPath(req.RepoURL, appID),
 		"webhook_secret": webhookSecret,
 	})
 }
@@ -716,7 +723,8 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(image_ref, ''), COALESCE(port, 0), COALESCE(domain, ''), status, created_at, updated_at,
 		       COALESCE(volume_path, ''), COALESCE(secret_file_paths, '{}'), tls_status, COALESCE(tls_error, ''),
 		       git_credentials_secret_id IS NOT NULL,
-		       image_env_secret_id IS NOT NULL
+		       image_env_secret_id IS NOT NULL,
+		       COALESCE(declared_framework, '')
 		FROM deployment_apps WHERE deployment_id = $1 ORDER BY created_at ASC
 	`, id)
 	if err != nil {
@@ -726,29 +734,30 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type appDetail struct {
-		ID              string    `json:"id"`
-		Name            string    `json:"name"`
-		Kind            string    `json:"kind"`
-		Role            string    `json:"role,omitempty"`
-		RepoURL         string    `json:"repo_url,omitempty"`
-		Branch          string    `json:"branch"`
-		Framework       string    `json:"framework,omitempty"`
-		TargetType      string    `json:"target_type"`
-		Namespace       string    `json:"namespace,omitempty"`
-		ImageRef        string    `json:"image_ref,omitempty"`
-		Port            int       `json:"port,omitempty"`
-		Domain          string    `json:"domain,omitempty"`
-		HostPort        uint32    `json:"host_port,omitempty"`
-		Status          string    `json:"status"`
-		CreatedAt       time.Time `json:"created_at"`
-		UpdatedAt       time.Time `json:"updated_at"`
-		VolumePath      string    `json:"volume_path,omitempty"`
-		SecretFilePaths []string  `json:"secret_file_paths,omitempty"`
-		TLSStatus          string    `json:"tls_status,omitempty"`
-		TLSError           string    `json:"tls_error,omitempty"`
-		HasGitCredentials  bool      `json:"has_git_credentials"`
-		HasImageEnv        bool      `json:"has_image_env"`
-		Links              []appLink `json:"links"`
+		ID                string    `json:"id"`
+		Name              string    `json:"name"`
+		Kind              string    `json:"kind"`
+		Role              string    `json:"role,omitempty"`
+		RepoURL           string    `json:"repo_url,omitempty"`
+		Branch            string    `json:"branch"`
+		Framework         string    `json:"framework,omitempty"`
+		DeclaredFramework string    `json:"declared_framework,omitempty"`
+		TargetType        string    `json:"target_type"`
+		Namespace         string    `json:"namespace,omitempty"`
+		ImageRef          string    `json:"image_ref,omitempty"`
+		Port              int       `json:"port,omitempty"`
+		Domain            string    `json:"domain,omitempty"`
+		HostPort          uint32    `json:"host_port,omitempty"`
+		Status            string    `json:"status"`
+		CreatedAt         time.Time `json:"created_at"`
+		UpdatedAt         time.Time `json:"updated_at"`
+		VolumePath        string    `json:"volume_path,omitempty"`
+		SecretFilePaths   []string  `json:"secret_file_paths,omitempty"`
+		TLSStatus            string    `json:"tls_status,omitempty"`
+		TLSError             string    `json:"tls_error,omitempty"`
+		HasGitCredentials    bool      `json:"has_git_credentials"`
+		HasImageEnv          bool      `json:"has_image_env"`
+		Links                []appLink `json:"links"`
 		// Steps hydrates the deploy-progress pipeline for pages that load (or
 		// reconnect their SSE stream) mid-deploy — deploy.step events aren't
 		// replayed on reconnect, so the frontend seeds stepsByApp from here.
@@ -760,7 +769,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		var a appDetail
 		var targetKind string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Role, &a.RepoURL, &a.Branch,
-			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus, &a.TLSError, &a.HasGitCredentials, &a.HasImageEnv); err != nil {
+			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus, &a.TLSError, &a.HasGitCredentials, &a.HasImageEnv, &a.DeclaredFramework); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan app")
 			return
 		}
@@ -1114,6 +1123,73 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "unsupported event"})
+	}
+}
+
+// webhookPath returns the right webhook path for a repo URL — /webhooks/gitlab/
+// for gitlab.com repos, /webhooks/github/ for everything else.
+func webhookPath(repoURL, appID string) string {
+	if strings.Contains(repoURL, "gitlab.com") {
+		return "/webhooks/gitlab/" + appID
+	}
+	return "/webhooks/github/" + appID
+}
+
+// handleGitLabWebhook receives GitLab push hook deliveries. GitLab authenticates
+// with a plain X-Gitlab-Token header (constant-time compared against the stored
+// secret) rather than GitHub's HMAC-SHA256 scheme. The push payload's "ref"
+// field is identical in both providers, so ProcessPush is shared.
+func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
+	appID := chi.URLParam(r, "id")
+
+	var branch, webhookSecretID string
+	err := s.db.QueryRow(r.Context(), `
+		SELECT branch, webhook_secret_id::text FROM deployment_apps WHERE id = $1
+	`, appID).Scan(&branch, &webhookSecretID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "deployment app not found")
+		return
+	}
+
+	secret, err := s.vault.GetByID(r.Context(), webhookSecretID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to verify token")
+		return
+	}
+
+	// GitLab sends the secret as a plaintext header, not HMAC — constant-time compare.
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Gitlab-Token")), secret) != 1 {
+		writeError(w, http.StatusUnauthorized, "invalid token")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+
+	switch event := r.Header.Get("X-Gitlab-Event"); event {
+	case "Push Hook", "Tag Push Hook":
+		var payload struct {
+			Ref string `json:"ref"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid push payload")
+			return
+		}
+		if payload.Ref != "refs/heads/"+branch {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "branch mismatch"})
+			return
+		}
+		go func() {
+			if err := s.deploy.ProcessPush(context.Background(), appID); err != nil {
+				slog.Error("deploy: process push (gitlab)", "app_id", appID, "error", err)
+			}
+		}()
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 	default:
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "unsupported event"})

@@ -71,7 +71,8 @@ func buildURL(scheme, host string, port int) string {
 // way regardless of consumerTargetKind.
 func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consumerTargetKind string) (map[string]string, error) {
 	rows, err := o.pool.Query(ctx, `
-		SELECT l.alias, da.name, da.target_kind, da.kind, COALESCE(da.port, 0)
+		SELECT l.alias, da.name, da.target_kind, da.kind, COALESCE(da.port, 0),
+		       COALESCE(da.image_ref, ''), COALESCE(da.image_env_secret_id::text, '')
 		FROM deployment_app_links l
 		JOIN deployment_apps da ON da.id = l.depends_on_app_id
 		WHERE l.app_id = $1 AND l.depends_on_app_id IS NOT NULL
@@ -83,9 +84,9 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 
 	env := make(map[string]string)
 	for rows.Next() {
-		var alias, depName, depTargetKind, depKind string
+		var alias, depName, depTargetKind, depKind, imageRef, imageEnvSecretID string
 		var depPort int
-		if err := rows.Scan(&alias, &depName, &depTargetKind, &depKind, &depPort); err != nil {
+		if err := rows.Scan(&alias, &depName, &depTargetKind, &depKind, &depPort, &imageRef, &imageEnvSecretID); err != nil {
 			return nil, fmt.Errorf("deploy: scan link for %s: %w", appID, err)
 		}
 
@@ -117,6 +118,35 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 		env[prefix+"HOST"] = host
 		env[prefix+"PORT"] = fmt.Sprintf("%d", port)
 		env[prefix+"URL"] = buildURL(scheme, host, port)
+
+		// For image-kind dependencies (e.g. postgres:16-alpine, mysql:8),
+		// also inject credentials so framework env mapping can construct
+		// DATABASE_URL or DB_* vars without the user having to hardcode them.
+		if depKind == "image" && imageRef != "" && imageEnvSecretID != "" {
+			plaintext, err := o.vault.GetByID(ctx, imageEnvSecretID)
+			if err != nil {
+				slog.Warn("deploy: decrypt image env for link creds", "alias", alias, "error", err)
+			} else {
+				var imageEnv map[string]string
+				if err := json.Unmarshal(plaintext, &imageEnv); err != nil {
+					slog.Warn("deploy: decode image env for link creds", "alias", alias, "error", err)
+				} else {
+					user, pass, db, dbScheme := dbImageCreds(imageRef, imageEnv)
+					if dbScheme != "" {
+						env[prefix+"SCHEME"] = dbScheme
+					}
+					if user != "" {
+						env[prefix+"USER"] = user
+					}
+					if pass != "" {
+						env[prefix+"PASSWORD"] = pass
+					}
+					if db != "" {
+						env[prefix+"DATABASE"] = db
+					}
+				}
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("deploy: iterate links for %s: %w", appID, err)
