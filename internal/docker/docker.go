@@ -89,7 +89,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, workDir, registryPush, registryPull s
 		registryPush: registryPush,
 		registryPull: registryPull,
 	}
-	m.healer = newHealer(cli, hub)
+	m.healer = newHealer(cli, pool, hub)
 	return m, nil
 }
 
@@ -234,6 +234,9 @@ func classify(id, name, kind, cname string, inspect dockertypes.ContainerJSON, i
 	switch inspect.State.Status {
 	case "running":
 		h.Status = "running"
+	case "restarting":
+		h.Status = "restarting"
+		h.Reason = fmt.Sprintf("exit code %d", inspect.State.ExitCode)
 	case "exited":
 		h.Status = "stopped"
 		h.Reason = fmt.Sprintf("exit code %d", inspect.State.ExitCode)

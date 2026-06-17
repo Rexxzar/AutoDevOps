@@ -714,7 +714,9 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		SELECT id::text, name, kind, COALESCE(role, ''), COALESCE(repo_url, ''), branch,
 		       COALESCE(framework, ''), target_kind, COALESCE(namespace, ''),
 		       COALESCE(image_ref, ''), COALESCE(port, 0), COALESCE(domain, ''), status, created_at, updated_at,
-		       COALESCE(volume_path, ''), COALESCE(secret_file_paths, '{}'), tls_status, COALESCE(tls_error, '')
+		       COALESCE(volume_path, ''), COALESCE(secret_file_paths, '{}'), tls_status, COALESCE(tls_error, ''),
+		       git_credentials_secret_id IS NOT NULL,
+		       image_env_secret_id IS NOT NULL
 		FROM deployment_apps WHERE deployment_id = $1 ORDER BY created_at ASC
 	`, id)
 	if err != nil {
@@ -742,9 +744,11 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt       time.Time `json:"updated_at"`
 		VolumePath      string    `json:"volume_path,omitempty"`
 		SecretFilePaths []string  `json:"secret_file_paths,omitempty"`
-		TLSStatus       string    `json:"tls_status,omitempty"`
-		TLSError        string    `json:"tls_error,omitempty"`
-		Links           []appLink `json:"links"`
+		TLSStatus          string    `json:"tls_status,omitempty"`
+		TLSError           string    `json:"tls_error,omitempty"`
+		HasGitCredentials  bool      `json:"has_git_credentials"`
+		HasImageEnv        bool      `json:"has_image_env"`
+		Links              []appLink `json:"links"`
 		// Steps hydrates the deploy-progress pipeline for pages that load (or
 		// reconnect their SSE stream) mid-deploy — deploy.step events aren't
 		// replayed on reconnect, so the frontend seeds stepsByApp from here.
@@ -756,7 +760,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		var a appDetail
 		var targetKind string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Role, &a.RepoURL, &a.Branch,
-			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus, &a.TLSError); err != nil {
+			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus, &a.TLSError, &a.HasGitCredentials, &a.HasImageEnv); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan app")
 			return
 		}
@@ -2848,6 +2852,38 @@ func (s *Server) handleTriggerApp(w http.ResponseWriter, r *http.Request) {
 // for a single app in a stack. The file is ready to commit verbatim to
 // .github/workflows/autodevops.yml — credentials are never embedded, only
 // referenced as repository secrets (AUTODEVOPS_WEBHOOK_SECRET, AUTODEVOPS_URL).
+// handleGetAppEnv decrypts and returns the image env vars for an image-kind app.
+// GET /deployments/{id}/apps/{appId}/env
+func (s *Server) handleGetAppEnv(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var secretID *string
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT image_env_secret_id::text FROM deployment_apps
+		 WHERE id = $1 AND deployment_id = $2 AND kind = 'image' AND status != 'destroyed'`,
+		appID, deploymentID,
+	).Scan(&secretID); err != nil {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+	if secretID == nil {
+		writeJSON(w, http.StatusOK, map[string]map[string]string{"env": {}})
+		return
+	}
+	raw, err := s.vault.GetByID(r.Context(), *secretID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load env")
+		return
+	}
+	var env map[string]string
+	if err := json.Unmarshal(raw, &env); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to parse env")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]map[string]string{"env": env})
+}
+
 func (s *Server) handleGetAppWorkflow(w http.ResponseWriter, r *http.Request) {
 	deploymentID := chi.URLParam(r, "id")
 	appID := chi.URLParam(r, "appId")

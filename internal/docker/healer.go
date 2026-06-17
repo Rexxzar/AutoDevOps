@@ -11,6 +11,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/docker/docker/api/types/container"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -28,14 +29,16 @@ type containerRecord struct {
 
 type healer struct {
 	client  *dockerclient.Client
+	pool    *pgxpool.Pool
 	hub     *sse.Hub
 	mu      sync.Mutex
 	records map[string]*containerRecord
 }
 
-func newHealer(client *dockerclient.Client, hub *sse.Hub) *healer {
+func newHealer(client *dockerclient.Client, pool *pgxpool.Pool, hub *sse.Hub) *healer {
 	return &healer{
 		client:  client,
+		pool:    pool,
 		hub:     hub,
 		records: make(map[string]*containerRecord),
 	}
@@ -61,6 +64,7 @@ func (h *healer) handle(ctx context.Context, ch ContainerHealth) {
 			h.mu.Unlock()
 			slog.Warn("docker: container missing, giving up", "container", ch.ContainerName)
 			h.hub.Publish(sse.Event{Type: "container.heal.gaveup", Payload: ch})
+			h.persistFailed(ctx, ch)
 			return
 		}
 		h.mu.Unlock()
@@ -81,6 +85,7 @@ func (h *healer) handle(ctx context.Context, ch ContainerHealth) {
 		h.mu.Unlock()
 		slog.Warn("docker: heal gave up", "container", ch.ContainerName, "attempts", healMaxAttempts)
 		h.hub.Publish(sse.Event{Type: "container.heal.gaveup", Payload: ch})
+		h.persistFailed(ctx, ch)
 		return
 	}
 	if time.Now().Before(rec.nextAllowedAt) {
@@ -129,6 +134,32 @@ func (h *healer) reset(name string) {
 	h.mu.Lock()
 	delete(h.records, name)
 	h.mu.Unlock()
+}
+
+// persistFailed writes status='failed' to deployment_apps for deployment-kind
+// containers and publishes a deploy.status SSE event so the deployment page
+// updates without requiring a page reload. No-op for resource-kind containers.
+func (h *healer) persistFailed(ctx context.Context, ch ContainerHealth) {
+	if ch.Kind != "deployment" || ch.AppID == "" {
+		return
+	}
+	var deploymentID string
+	if err := h.pool.QueryRow(ctx,
+		`UPDATE deployment_apps SET status = 'failed', updated_at = NOW()
+		 WHERE id = $1 AND status = 'running'
+		 RETURNING deployment_id::text`,
+		ch.AppID,
+	).Scan(&deploymentID); err != nil {
+		return // already failed or app doesn't exist — nothing to do
+	}
+	h.hub.Publish(sse.Event{
+		Type: "deploy.status",
+		Payload: map[string]any{
+			"id":            ch.AppID,
+			"deployment_id": deploymentID,
+			"status":        "failed",
+		},
+	})
 }
 
 // backoffDelay grows exponentially from healBaseDelay, capped at healMaxDelay,

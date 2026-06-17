@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  ArrowLeft, Plus, Trash2, Loader2, RefreshCw, Download, AlertCircle, CheckCircle2, ExternalLink, X,
+  ArrowLeft, Plus, Trash2, Loader2, RefreshCw, Download, AlertCircle, CheckCircle2, ExternalLink, X, FileText, Database, Eye, EyeOff, Copy, Check,
 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
@@ -12,12 +12,15 @@ import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { targetLabel, frameworkLabel } from '@/components/meta-tags'
 import { TargetPill, FormField, DomainField, inputCls, selectCls } from '@/components/deploy-form-fields'
 import { Pipeline } from '@/components/pipeline'
+import { RepoEditor } from '@/components/repo-editor'
+import { AddDatabaseDialog } from '@/components/add-database-dialog'
 import { apiFetch } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { useSSE } from '@/lib/use-sse'
 import { formatRelativeTime, provisionedTypeLabel, type ProvisionedResource } from '@/lib/resources'
 import { cn } from '@/lib/utils'
 import type { Target, PipelineStage } from '@/lib/mock-data'
+import { diagnoseApp } from '@/lib/diagnose'
 
 interface AppLink {
   id: string
@@ -50,6 +53,8 @@ interface AppDetail {
   secret_file_paths?: string[]
   tls_status?: string
   tls_error?: string
+  has_git_credentials: boolean
+  has_image_env: boolean
   links: AppLink[]
   // Hydrates the deploy-progress pipeline on page load / SSE reconnect — see
   // DeployStepEvent and internal/api/handlers.go's handleGetDeployment.
@@ -232,11 +237,16 @@ export function DeploymentDetailPage() {
   const navigate = useNavigate()
   const [stack, setStack] = useState<StackDetail | null>(null)
   const [addOpen, setAddOpen] = useState(false)
+  const [addDbOpen, setAddDbOpen] = useState(false)
   const [actingId, setActingId] = useState<string | null>(null)
   const [confirmTarget, setConfirmTarget] = useState<{ kind: 'app'; app: AppDetail } | { kind: 'stack' } | null>(null)
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [actionError, setActionError] = useState('')
   // Per-app live deploy-progress state, keyed by deployment_app_id — fed by
+  // Live container health — overlays DB status with real-time Docker state.
+  // Keyed by app id; values: "running" | "restarting" | "stopped" | "failed" | "missing".
+  const [containerHealthByApp, setContainerHealthByApp] = useState<Record<string, string>>({})
+
   // deploy.step/deploy.log SSE events, rendered as <Pipeline> in AppCard.
   const [stepsByApp, setStepsByApp] = useState<Record<string, PipelineStage[]>>({})
   const [logsByApp, setLogsByApp] = useState<Record<string, string[]>>({})
@@ -348,6 +358,14 @@ export function DeploymentDetailPage() {
       })
       return
     }
+
+    if (type === 'container.health') {
+      const e = data as { app_id?: string; kind?: string; status?: string }
+      if (e.kind === 'deployment' && e.app_id && e.status) {
+        setContainerHealthByApp((prev) => ({ ...prev, [e.app_id!]: e.status! }))
+      }
+      return
+    }
   }, [id]))
 
   async function handleRedeploy(appId: string) {
@@ -450,6 +468,12 @@ export function DeploymentDetailPage() {
           Back
         </Button>
         <StatusBadge status={aggregateStatus} pulse={aggregateStatus === 'building'} />
+        {apps.some((a) => a.target_type === 'k8s' || a.target_type === 'container') && (
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setAddDbOpen(true)}>
+            <Database className="size-3.5" />
+            Add database
+          </Button>
+        )}
         <Button size="sm" className="gap-1.5" onClick={() => setAddOpen(true)}>
           <Plus className="size-3.5" />
           Add app
@@ -477,6 +501,7 @@ export function DeploymentDetailPage() {
           <AppCard
             key={app.id}
             app={app}
+            containerHealth={containerHealthByApp[app.id]}
             stackId={stack.id}
             allApps={apps}
             resources={linkableResources}
@@ -490,6 +515,7 @@ export function DeploymentDetailPage() {
             onDelete={() => requestDeleteApp(app)}
             onDownloadWorkflow={() => handleDownloadWorkflow(app)}
             onLinksChanged={() => refetch()}
+            onOpenAddDb={() => setAddDbOpen(true)}
           />
         ))}
       </div>
@@ -502,6 +528,14 @@ export function DeploymentDetailPage() {
         open={addOpen}
         onClose={() => setAddOpen(false)}
         onCreated={() => refetch()}
+      />
+
+      <AddDatabaseDialog
+        stackId={stack.id}
+        allApps={apps}
+        open={addDbOpen}
+        onClose={() => setAddDbOpen(false)}
+        onAdded={() => refetch()}
       />
 
       <Dialog
@@ -531,10 +565,24 @@ export function DeploymentDetailPage() {
   )
 }
 
+function CopyValue({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={() => { navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
+      className="shrink-0 text-muted-foreground hover:text-foreground"
+    >
+      {copied ? <Check className="size-3 text-green-500" /> : <Copy className="size-3" />}
+    </button>
+  )
+}
+
+
 function AppCard({
-  app, stackId, allApps, resources, ingressDomain, publicHost, findings, acting, steps, logs, onRedeploy, onDelete, onDownloadWorkflow, onLinksChanged,
+  app, containerHealth, stackId, allApps, resources, ingressDomain, publicHost, findings, acting, steps, logs, onRedeploy, onDelete, onDownloadWorkflow, onLinksChanged, onOpenAddDb,
 }: {
   app: AppDetail
+  containerHealth?: string
   stackId: string
   allApps: AppDetail[]
   resources: ProvisionedResource[]
@@ -546,6 +594,7 @@ function AppCard({
   logs?: string[]
   onRedeploy: () => void
   onDelete: () => void
+  onOpenAddDb: () => void
   onDownloadWorkflow: () => void
   onLinksChanged: () => void
 }) {
@@ -556,10 +605,22 @@ function AppCard({
   const [removingSecretPath, setRemovingSecretPath] = useState<string | null>(null)
   const [secretFileError, setSecretFileError] = useState('')
   const [showLogs, setShowLogs] = useState(false)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [envVisible, setEnvVisible] = useState(false)
+  const [envData, setEnvData] = useState<Record<string, string> | null>(null)
+  const [envLoading, setEnvLoading] = useState(false)
+  const [envRevealed, setEnvRevealed] = useState<Set<string>>(new Set())
   const logRef = useRef<HTMLPreElement>(null)
   const siblings = allApps.filter((a) => a.id !== app.id)
 
-  const statusKind = appStatusMap[app.status] ?? 'unknown'
+  // Container health from SSE overrides stale DB status for live restarts.
+  const liveStatus: string = (() => {
+    if (!containerHealth || containerHealth === 'running') return app.status
+    if (containerHealth === 'restarting') return 'restarting'
+    return 'failed'
+  })()
+  const statusKind = appStatusMap[liveStatus] ?? (liveStatus === 'restarting' ? 'building' : 'unknown')
+  const hints = diagnoseApp(app, logs, allApps)
   const isTransitional = app.status === 'building' || app.status === 'deploying'
   // Show the live pipeline while a deploy is in flight, or after a failure so
   // the user can see which step broke — hidden once a redeploy is started
@@ -622,7 +683,11 @@ function AppCard({
             <p className="mt-0.5 truncate text-xs text-muted-foreground">{app.repo_url}</p>
           )}
         </div>
-        <StatusBadge status={statusKind} pulse={statusKind === 'building'} />
+        <StatusBadge
+          status={statusKind}
+          pulse={statusKind === 'building'}
+          label={liveStatus === 'restarting' ? 'Restarting…' : undefined}
+        />
       </CardHeader>
       <CardContent className="space-y-1">
         <InfoRow label="Target" value={targetLabel[targetMap[app.target_type]] ?? app.target_type} />
@@ -636,6 +701,47 @@ function AppCard({
             )}
             {app.volume_path && (
               <InfoRow label="Volume" value={<span className="font-mono text-xs">{app.volume_path}</span>} />
+            )}
+            {app.has_image_env && (
+              <div className="pt-1">
+                <button
+                  className="text-xs text-primary hover:underline"
+                  onClick={async () => {
+                    if (envData) { setEnvVisible((v) => !v); return }
+                    setEnvLoading(true)
+                    try {
+                      const d = await apiFetch<{ env: Record<string, string> }>(`/deployments/${stackId}/apps/${app.id}/env`)
+                      setEnvData(d.env)
+                      setEnvVisible(true)
+                    } finally { setEnvLoading(false) }
+                  }}
+                >
+                  {envLoading ? <Loader2 className="inline size-3 animate-spin mr-1" /> : null}
+                  {envVisible ? 'Hide credentials' : 'Show credentials'}
+                </button>
+                {envVisible && envData && (
+                  <div className="mt-2 rounded-lg border divide-y text-xs">
+                    {Object.entries(envData).map(([k, v]) => {
+                      const isSecret = k.toLowerCase().includes('password') || k.toLowerCase().includes('pass') || k.toLowerCase().includes('secret')
+                      const shown = envRevealed.has(k)
+                      return (
+                        <div key={k} className="flex items-center gap-2 px-3 py-1.5">
+                          <span className="font-mono text-muted-foreground shrink-0 w-44 truncate">{k}</span>
+                          <span className={`font-mono flex-1 truncate ${isSecret && !shown ? 'blur-sm select-none' : ''}`}>
+                            {isSecret && !shown ? '••••••••••' : v}
+                          </span>
+                          {isSecret && (
+                            <button onClick={() => setEnvRevealed((p) => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n })} className="shrink-0 text-muted-foreground hover:text-foreground">
+                              {shown ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                            </button>
+                          )}
+                          <CopyValue value={v} />
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             )}
           </>
         ) : (
@@ -698,15 +804,54 @@ function AppCard({
         )}
         <InfoRow label="Updated" value={formatRelativeTime(app.updated_at)} />
 
+        {hints.length > 0 && (
+          <div className="mt-2 space-y-2">
+            {hints.map((h) => (
+              <div
+                key={h.id}
+                className={cn(
+                  'flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs',
+                  h.level === 'error' && 'border-critical/25 bg-critical/8 text-critical',
+                  h.level === 'warning' && 'border-yellow-500/25 bg-yellow-500/8 text-yellow-700 dark:text-yellow-400',
+                  h.level === 'info' && 'border-info/25 bg-info/8 text-info',
+                )}
+              >
+                <AlertCircle className="size-3.5 mt-0.5 shrink-0" />
+                <div className="flex-1 space-y-1.5">
+                  <p>{h.message}</p>
+                  {h.action === 'add_db' && (
+                    <button onClick={onOpenAddDb} className="font-medium underline underline-offset-2 hover:no-underline">
+                      {h.actionLabel ?? 'Add database'}
+                    </button>
+                  )}
+                  {h.action === 'edit_files' && (
+                    <button onClick={() => setEditorOpen(true)} className="font-medium underline underline-offset-2 hover:no-underline">
+                      {h.actionLabel ?? 'Edit files'}
+                    </button>
+                  )}
+                  {h.action === 'add_link' && (
+                    <button onClick={() => setLinkOpen(true)} className="font-medium underline underline-offset-2 hover:no-underline">
+                      {h.actionLabel ?? 'Add link'}
+                    </button>
+                  )}
+                  {h.action === 'redeploy' && (
+                    <button onClick={onRedeploy} className="font-medium underline underline-offset-2 hover:no-underline">
+                      {h.actionLabel ?? 'Redeploy'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {showPipeline && (
           <div className="space-y-1.5 pt-2">
             <div className="flex items-center justify-between">
               <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Pipeline</p>
-              {(!!logs?.length || app.status === 'failed') && (
-                <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setShowLogs((v) => !v)}>
+              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setShowLogs((v) => !v)}>
                   {showLogs ? 'Hide logs' : 'Show logs'}
                 </Button>
-              )}
             </div>
             <Pipeline stages={steps!} compact />
             {showLogs && (
@@ -815,6 +960,12 @@ function AppCard({
 
         <div className="flex justify-end gap-2 pt-2">
           {app.kind === 'git' && (
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setEditorOpen(true)}>
+              <FileText className="size-3.5" />
+              Edit files
+            </Button>
+          )}
+          {app.kind === 'git' && (
             <Button size="sm" variant="outline" className="gap-1.5" onClick={onDownloadWorkflow}>
               <Download className="size-3.5" />
               CI/CD workflow
@@ -847,6 +998,16 @@ function AppCard({
         open={secretFileOpen}
         onClose={() => setSecretFileOpen(false)}
         onAdded={onLinksChanged}
+      />
+
+      <RepoEditor
+        stackId={stackId}
+        appId={app.id}
+        appName={app.name}
+        hasGitCredentials={app.has_git_credentials}
+        open={editorOpen}
+        onClose={() => setEditorOpen(false)}
+        onRedeployNeeded={onRedeploy}
       />
     </Card>
   )
