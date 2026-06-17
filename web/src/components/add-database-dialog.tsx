@@ -13,6 +13,7 @@ interface AppStub {
   name: string
   kind: string
   target_type: string
+  framework?: string
 }
 
 interface AddDatabaseDialogProps {
@@ -39,7 +40,7 @@ interface DbConfig {
   defaultDbName: string
   defaultUser: string
   envFn: (dbName: string, user: string, pass: string) => Record<string, string>
-  connStrFn: (dbName: string, user: string, pass: string) => string
+  connStrFn: (dbName: string, user: string, pass: string, host: string) => string
   hasAuth: boolean
 }
 
@@ -58,8 +59,8 @@ const DB_CONFIGS: Record<DbType, DbConfig> = {
       POSTGRES_USER: user,
       POSTGRES_PASSWORD: pass,
     }),
-    connStrFn: (dbName, user, pass) =>
-      `postgresql://${user}:${pass}@$AUTODEVOPS_DB_HOST:5432/${dbName}`,
+    connStrFn: (dbName, user, pass, host) =>
+      `postgresql://${user}:${pass}@${host}:5432/${dbName}`,
   },
   mysql: {
     label: 'MySQL',
@@ -76,8 +77,8 @@ const DB_CONFIGS: Record<DbType, DbConfig> = {
       MYSQL_PASSWORD: pass,
       MYSQL_ROOT_PASSWORD: pass + '_root',
     }),
-    connStrFn: (dbName, user, pass) =>
-      `mysql://${user}:${pass}@$AUTODEVOPS_DB_HOST:3306/${dbName}`,
+    connStrFn: (dbName, user, pass, host) =>
+      `mysql://${user}:${pass}@${host}:3306/${dbName}`,
   },
   redis: {
     label: 'Redis',
@@ -89,7 +90,7 @@ const DB_CONFIGS: Record<DbType, DbConfig> = {
     defaultUser: '',
     hasAuth: false,
     envFn: () => ({}),
-    connStrFn: () => 'redis://$AUTODEVOPS_REDIS_HOST:6379',
+    connStrFn: (_dbName, _user, _pass, host) => `redis://${host}:6379`,
   },
   mongo: {
     label: 'MongoDB',
@@ -105,8 +106,8 @@ const DB_CONFIGS: Record<DbType, DbConfig> = {
       MONGO_INITDB_ROOT_PASSWORD: pass,
       MONGO_INITDB_DATABASE: dbName,
     }),
-    connStrFn: (dbName, user, pass) =>
-      `mongodb://${user}:${pass}@$AUTODEVOPS_MONGO_HOST:27017/${dbName}`,
+    connStrFn: (dbName, user, pass, host) =>
+      `mongodb://${user}:${pass}@${host}:27017/${dbName}`,
   },
 }
 
@@ -125,6 +126,7 @@ function CopyBtn({ value }: { value: string }) {
 interface DoneState {
   connStr: string
   credentials: { label: string; value: string; secret?: boolean }[]
+  linkedFrameworks: string[]
 }
 
 function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
@@ -226,7 +228,10 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
             { label: 'Port env var', value: `AUTODEVOPS_${cfg.alias}_PORT` },
           ]
 
-      setDone({ connStr: cfg.connStrFn(dbName, dbUser, dbPass), credentials: creds })
+      const linkedFrameworks = allApps
+        .filter((a) => linkedAppIds.has(a.id) && a.framework)
+        .map((a) => a.framework!)
+      setDone({ connStr: cfg.connStrFn(dbName, dbUser, dbPass, name.trim()), credentials: creds, linkedFrameworks })
       onAdded()
     } catch (e) {
       setError(String(e))
@@ -239,7 +244,7 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
     <Dialog open={open} onClose={handleClose} title="Add database">
       <div className="space-y-4 p-4">
         {done ? (
-          <SuccessScreen done={done} alias={cfg.alias} onClose={handleClose} />
+          <SuccessScreen done={done} alias={cfg.alias} dbType={dbType} onClose={handleClose} />
         ) : (
           <>
             {/* DB type */}
@@ -318,8 +323,56 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
   )
 }
 
-function SuccessScreen({ done, alias, onClose }: { done: DoneState; alias: string; onClose: () => void }) {
+function nextSteps(dbType: DbType, connStr: string, frameworks: string[]): { file: string; content: string; note: string }[] {
+  const steps: { file: string; content: string; note: string }[] = []
+  const hasNodeOrPrisma = frameworks.includes('nodejs') || frameworks.length === 0
+  const hasPHP = frameworks.includes('php')
+  const hasReact = frameworks.includes('react')
+
+  if (dbType === 'postgres' || dbType === 'mysql' || dbType === 'mongo') {
+    if (hasNodeOrPrisma && !hasReact) {
+      steps.push({
+        file: '.env',
+        content: dbType === 'postgres'
+          ? `DATABASE_URL=${connStr}`
+          : dbType === 'mysql'
+            ? `DATABASE_URL=${connStr}`
+            : `MONGODB_URI=${connStr}`,
+        note: 'Create this file at the repo root. Prisma, Mongoose, Sequelize and most ORMs read DATABASE_URL automatically.',
+      })
+      steps.push({
+        file: 'Procfile',
+        content: dbType === 'postgres' || dbType === 'mysql'
+          ? 'web: npx prisma migrate deploy && node dist/main.js'
+          : 'web: node dist/main.js',
+        note: 'Run migrations before starting the app. Update the node path to match your compiled output (e.g. dist/api/main.js).',
+      })
+    }
+    if (hasPHP) {
+      steps.push({
+        file: '.env',
+        content: dbType === 'postgres'
+          ? `DB_CONNECTION=pgsql\nDB_HOST=$AUTODEVOPS_DB_HOST\nDB_PORT=5432\nDB_DATABASE=app\nDB_USERNAME=autodevops\nDB_PASSWORD=<your-password>`
+          : `DB_CONNECTION=mysql\nDB_HOST=$AUTODEVOPS_DB_HOST\nDB_PORT=3306\nDB_DATABASE=app\nDB_USERNAME=autodevops\nDB_PASSWORD=<your-password>`,
+        note: 'Laravel reads these env vars automatically. Replace <your-password> with the password shown above.',
+      })
+    }
+  }
+
+  if (dbType === 'redis' && (hasNodeOrPrisma || frameworks.length === 0)) {
+    steps.push({
+      file: '.env',
+      content: `REDIS_URL=redis://$AUTODEVOPS_REDIS_HOST:6379`,
+      note: 'Or use AUTODEVOPS_REDIS_HOST and AUTODEVOPS_REDIS_PORT separately in your app config.',
+    })
+  }
+
+  return steps
+}
+
+function SuccessScreen({ done, alias, dbType, onClose }: { done: DoneState; alias: string; dbType: DbType; onClose: () => void }) {
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
+  const steps = nextSteps(dbType, done.connStr, done.linkedFrameworks)
 
   function toggle(label: string) {
     setRevealed((prev) => { const n = new Set(prev); n.has(label) ? n.delete(label) : n.add(label); return n })
@@ -330,42 +383,64 @@ function SuccessScreen({ done, alias, onClose }: { done: DoneState; alias: strin
       <p className="text-sm text-muted-foreground">
         Database created. Linked apps have{' '}
         <code className="rounded bg-muted px-1 text-xs">AUTODEVOPS_{alias}_HOST</code> and{' '}
-        <code className="rounded bg-muted px-1 text-xs">AUTODEVOPS_{alias}_PORT</code> injected.
-        Save these credentials — the password is not recoverable from the UI after closing.
+        <code className="rounded bg-muted px-1 text-xs">AUTODEVOPS_{alias}_PORT</code> injected automatically.
       </p>
 
-      <div className="rounded-lg border divide-y text-xs">
-        {done.credentials.map((c) => {
-          const isHidden = c.secret && !revealed.has(c.label)
-          return (
-            <div key={c.label} className="flex items-center justify-between px-3 py-2 gap-3">
-              <span className="text-muted-foreground shrink-0 w-28">{c.label}</span>
-              <div className="flex items-center min-w-0 flex-1">
-                <code className={`truncate font-mono ${isHidden ? 'blur-sm select-none' : ''}`}>
-                  {isHidden ? '••••••••••••••••••' : c.value}
-                </code>
-                {c.secret && (
-                  <button onClick={() => toggle(c.label)} className="ml-1 shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground">
-                    {revealed.has(c.label) ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
-                  </button>
-                )}
-                {!isHidden && <CopyBtn value={c.value} />}
+      {/* Credentials */}
+      <div>
+        <p className="mb-1.5 text-xs font-medium text-muted-foreground">Credentials — save the password now, it won't be shown again</p>
+        <div className="rounded-lg border divide-y text-xs">
+          {done.credentials.map((c) => {
+            const isHidden = c.secret && !revealed.has(c.label)
+            return (
+              <div key={c.label} className="flex items-center justify-between px-3 py-2 gap-3">
+                <span className="text-muted-foreground shrink-0 w-28">{c.label}</span>
+                <div className="flex items-center min-w-0 flex-1">
+                  <code className={`truncate font-mono ${isHidden ? 'blur-sm select-none' : ''}`}>
+                    {isHidden ? '••••••••••••••••••' : c.value}
+                  </code>
+                  {c.secret && (
+                    <button onClick={() => toggle(c.label)} className="ml-1 shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground">
+                      {revealed.has(c.label) ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                    </button>
+                  )}
+                  {!isHidden && <CopyBtn value={c.value} />}
+                </div>
               </div>
+            )
+          })}
+          <div className="flex items-center justify-between px-3 py-2 gap-3">
+            <span className="text-muted-foreground shrink-0 w-28">Connection URL</span>
+            <div className="flex items-center min-w-0 flex-1">
+              <code className="truncate font-mono text-[0.65rem]">{done.connStr}</code>
+              <CopyBtn value={done.connStr} />
             </div>
-          )
-        })}
-        <div className="flex items-center justify-between px-3 py-2 gap-3">
-          <span className="text-muted-foreground shrink-0 w-28">Connection URL</span>
-          <div className="flex items-center min-w-0 flex-1">
-            <code className="truncate font-mono text-[0.65rem]">{done.connStr}</code>
-            <CopyBtn value={done.connStr} />
           </div>
         </div>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        Redeploy your backend app(s) to pick up the injected env vars. You can also view these credentials later from the DB app's card.
-      </p>
+      {/* Next steps */}
+      {steps.length > 0 && (
+        <div>
+          <p className="mb-2 text-xs font-medium text-muted-foreground">What to do next — edit these files in your repo</p>
+          <div className="space-y-2">
+            {steps.map((s) => (
+              <div key={s.file} className="rounded-lg border bg-muted/30 text-xs">
+                <div className="flex items-center justify-between border-b px-3 py-1.5">
+                  <code className="font-mono font-medium">{s.file}</code>
+                  <CopyBtn value={s.content} />
+                </div>
+                <pre className="px-3 py-2 font-mono text-[0.65rem] overflow-x-auto">{s.content}</pre>
+                <p className="border-t px-3 py-1.5 text-muted-foreground">{s.note}</p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Use <span className="font-medium text-foreground">Edit files</span> on the backend app card to add these without leaving the dashboard, then Commit &amp; push to trigger a redeploy.
+          </p>
+        </div>
+      )}
+
       <div className="flex justify-end">
         <Button size="sm" onClick={onClose}>Done</Button>
       </div>

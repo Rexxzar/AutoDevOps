@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Loader2, Save, GitCommit, FileText, ChevronRight } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Loader2, Save, GitCommit, FileText, ChevronRight, Plus, X } from 'lucide-react'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
@@ -28,6 +28,9 @@ export function RepoEditor({ stackId, appId, appName, hasGitCredentials, open, o
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
   const [committed, setCommitted] = useState(false)
+  const [newFileName, setNewFileName] = useState('')
+  const [showNewFile, setShowNewFile] = useState(false)
+  const newFileInputRef = useRef<HTMLInputElement>(null)
 
   const isDirty = content !== originalContent
 
@@ -63,6 +66,37 @@ export function RepoEditor({ stackId, appId, appName, hasGitCredentials, open, o
     } finally {
       setLoadingContent(false)
     }
+  }
+
+  function openNewFile() {
+    setShowNewFile(true)
+    setNewFileName('')
+    setTimeout(() => newFileInputRef.current?.focus(), 0)
+  }
+
+  async function confirmNewFile() {
+    const path = newFileName.trim()
+    if (!path) return
+    if (isDirty && selectedFile) {
+      if (!confirm(`Discard unsaved changes to ${selectedFile}?`)) return
+    }
+    // Save empty file to workspace, then open it in editor
+    setError('')
+    try {
+      await apiFetch(`/deployments/${stackId}/apps/${appId}/repo/files/${path}`, {
+        method: 'PUT',
+        body: JSON.stringify({ content: '' }),
+      })
+      setFiles((prev) => prev.includes(path) ? prev : [...prev, path].sort())
+      setSelectedFile(path)
+      setContent('')
+      setOriginalContent('')
+      setSaved(false)
+    } catch (e) {
+      setError(String(e))
+    }
+    setShowNewFile(false)
+    setNewFileName('')
   }
 
   async function saveFile() {
@@ -130,11 +164,39 @@ export function RepoEditor({ stackId, appId, appName, hasGitCredentials, open, o
         <div className="flex min-h-0 flex-1">
           {/* File tree */}
           <div className="w-56 shrink-0 overflow-y-auto border-r bg-muted/30 py-2 text-xs">
+            {/* New file row */}
+            <div className="flex items-center justify-between px-3 pb-1.5 mb-1 border-b">
+              <span className="font-medium text-muted-foreground">Files</span>
+              <button
+                onClick={openNewFile}
+                title="New file"
+                className="rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              >
+                <Plus className="size-3.5" />
+              </button>
+            </div>
+            {showNewFile && (
+              <div className="flex items-center gap-1 px-2 pb-1.5">
+                <input
+                  ref={newFileInputRef}
+                  className="h-6 flex-1 rounded border bg-background px-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                  placeholder="filename e.g. .env"
+                  value={newFileName}
+                  onChange={(e) => setNewFileName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') confirmNewFile()
+                    if (e.key === 'Escape') { setShowNewFile(false); setNewFileName('') }
+                  }}
+                />
+                <button onClick={confirmNewFile} className="text-primary hover:text-primary/80"><Plus className="size-3.5" /></button>
+                <button onClick={() => { setShowNewFile(false); setNewFileName('') }} className="text-muted-foreground hover:text-foreground"><X className="size-3.5" /></button>
+              </div>
+            )}
             {loadingFiles ? (
               <div className="flex items-center gap-2 px-3 py-2 text-muted-foreground">
                 <Loader2 className="size-3 animate-spin" /> Loading…
               </div>
-            ) : files.length === 0 ? (
+            ) : files.length === 0 && !showNewFile ? (
               <p className="px-3 py-2 text-muted-foreground">No cloned workspace yet — trigger a deploy first.</p>
             ) : (
               dirs.map((dir) => (
