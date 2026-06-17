@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -47,8 +48,32 @@ func (l *slogPackLogger) Errorf(f string, v ...interface{}) {
 	slog.Error(msg, "source", "pack")
 	l.emit(msg)
 }
-func (l *slogPackLogger) Writer() io.Writer { return io.Discard }
-func (l *slogPackLogger) IsVerbose() bool   { return false }
+func (l *slogPackLogger) Writer() io.Writer { return &lineWriter{emit: l.emit} }
+func (l *slogPackLogger) IsVerbose() bool   { return true }
+
+// lineWriter splits raw bytes from the pack lifecycle into lines and forwards
+// each one to emit — captures the ===> DETECTING / [builder] output that pack
+// writes directly to the Writer rather than through the structured log methods.
+type lineWriter struct {
+	emit func(string)
+	buf  []byte
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		idx := bytes.IndexByte(w.buf, '\n')
+		if idx < 0 {
+			break
+		}
+		line := strings.TrimRight(string(w.buf[:idx]), "\r")
+		w.buf = w.buf[idx+1:]
+		if line != "" {
+			w.emit(line)
+		}
+	}
+	return len(p), nil
+}
 
 func (l *slogPackLogger) emit(line string) {
 	if l.logLine != nil {
