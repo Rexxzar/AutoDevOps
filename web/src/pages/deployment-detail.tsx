@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { targetLabel, frameworkLabel } from '@/components/meta-tags'
-import { TargetPill, FormField, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { TargetPill, FormField, DomainField, inputCls, selectCls } from '@/components/deploy-form-fields'
 import { Pipeline } from '@/components/pipeline'
 import { apiFetch } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
@@ -702,19 +702,21 @@ function AppCard({
           <div className="space-y-1.5 pt-2">
             <div className="flex items-center justify-between">
               <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Pipeline</p>
-              {!!logs?.length && (
+              {(!!logs?.length || app.status === 'failed') && (
                 <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setShowLogs((v) => !v)}>
                   {showLogs ? 'Hide logs' : 'Show logs'}
                 </Button>
               )}
             </div>
             <Pipeline stages={steps!} compact />
-            {showLogs && !!logs?.length && (
+            {showLogs && (
               <pre
                 ref={logRef}
                 className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background px-3 py-2 font-mono text-[0.65rem] text-muted-foreground"
               >
-                {logs.join('\n')}
+                {logs?.length
+                  ? logs.join('\n')
+                  : 'No logs captured — logs are only kept while the server is running.\nRedeploy to see fresh output.'}
               </pre>
             )}
           </div>
@@ -1361,9 +1363,7 @@ function AddAppDialog({
             </FormField>
           )}
           {kind === 'git' && (
-            <FormField label="Custom domain" hint="optional">
-              <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="app.example.com" className={inputCls} />
-            </FormField>
+            <DomainField value={domain} onChange={setDomain} />
           )}
           {error && (
             <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">

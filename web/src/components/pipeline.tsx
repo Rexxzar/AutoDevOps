@@ -37,21 +37,22 @@ export function Pipeline({
               {stage.status === 'pending' && <span className="size-1 rounded-full bg-current" />}
               {stage.status === 'skipped' && <Minus className={compact ? 'size-3' : 'size-3.5'} />}
             </div>
-            {!compact && (
-              <div className="flex flex-col items-center">
-                <span
-                  className={cn(
-                    'text-[0.7rem] font-medium',
-                    stage.status === 'active' ? 'text-foreground' : 'text-muted-foreground',
-                  )}
-                >
-                  {stage.name}
-                </span>
+            <div className="flex flex-col items-center">
+              <span
+                className={cn(
+                  'font-medium',
+                  compact ? 'text-[0.6rem]' : 'text-[0.7rem]',
+                  stage.status === 'active' ? 'text-foreground' : 'text-muted-foreground',
+                )}
+              >
+                {stage.name}
+              </span>
+              {!compact && (
                 <span className="font-mono text-[0.6rem] text-muted-foreground/70">
                   {fmt(stage.durationMs)}
                 </span>
-              </div>
-            )}
+              )}
+            </div>
           </div>
           {i < stages.length - 1 && (
             <div
