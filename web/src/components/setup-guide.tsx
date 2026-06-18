@@ -40,21 +40,44 @@ interface SetupGuideProps {
 // ── Framework classification ──────────────────────────────────────────────────
 
 const FRONTEND_FRAMEWORKS = new Set(['react', 'vite', 'nextjs'])
+const BACKEND_FRAMEWORKS = new Set(['php', 'laravel', 'django', 'rails', 'nestjs', 'go', 'java', 'ruby'])
 const DB_FRAMEWORKS = new Set(['nestjs', 'laravel', 'php', 'django', 'rails', 'nodejs'])
 
-function isFrontend(app: AppInfo): boolean {
-  if (app.kind !== 'git') return false
-  if (app.declared_framework && FRONTEND_FRAMEWORKS.has(app.declared_framework)) return true
-  if (!app.declared_framework && app.framework === 'static') return true
-  return false
-}
+function classifyApps(apps: AppInfo[]) {
+  const frontends: AppInfo[] = []
+  const backends: AppInfo[] = []
+  const databases: AppInfo[] = []
 
-function isBackend(app: AppInfo): boolean {
-  return app.kind === 'git' && !isFrontend(app)
-}
+  const hasExplicitBackend = apps.some(a => {
+    const fw = a.declared_framework || a.framework || ''
+    return a.kind === 'git' && BACKEND_FRAMEWORKS.has(fw)
+  })
 
-function isDatabase(app: AppInfo): boolean {
-  return app.kind === 'image' && !!app.image_ref && /postgres|mysql|mongo|redis/i.test(app.image_ref)
+  for (const app of apps) {
+    if (app.kind === 'image' && app.image_ref && /postgres|mysql|mongo|redis/i.test(app.image_ref)) {
+      databases.push(app)
+      continue
+    }
+    if (app.kind !== 'git') continue
+
+    const fw = app.declared_framework || ''
+    const detected = app.framework || ''
+
+    if (FRONTEND_FRAMEWORKS.has(fw)) {
+      frontends.push(app)
+    } else if (BACKEND_FRAMEWORKS.has(fw)) {
+      backends.push(app)
+    } else if (detected === 'static' || detected === 'react') {
+      frontends.push(app)
+    } else if (BACKEND_FRAMEWORKS.has(detected)) {
+      backends.push(app)
+    } else if (detected === 'node' && hasExplicitBackend) {
+      frontends.push(app)
+    } else {
+      backends.push(app)
+    }
+  }
+  return { frontends, backends, databases }
 }
 
 function backendNeedsDb(app: AppInfo): boolean {
@@ -112,9 +135,7 @@ process.env.DATABASE_URL
 // ── Step computation ──────────────────────────────────────────────────────────
 
 function computeSteps(apps: AppInfo[]): SetupStep[] {
-  const frontends = apps.filter(isFrontend)
-  const backends = apps.filter(isBackend)
-  const databases = apps.filter(isDatabase)
+  const { frontends, backends, databases } = classifyApps(apps)
   const steps: SetupStep[] = []
 
   const fe = frontends[0]
