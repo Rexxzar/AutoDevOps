@@ -456,7 +456,12 @@ func (m *Manager) RemoveContainer(ctx context.Context, name string) error {
 	if _, err := m.client.Ping(ctx); err != nil {
 		return &ErrDockerNotFound{Cause: err}
 	}
-	return m.removeContainer(ctx, containerName(name))
+	cname := containerName(name)
+	if err := m.removeContainer(ctx, cname); err != nil {
+		return err
+	}
+	m.removeVolume(ctx, cname)
+	return nil
 }
 
 // RemoveAppContainer stops and removes a single app's container within a
@@ -466,7 +471,21 @@ func (m *Manager) RemoveAppContainer(ctx context.Context, stackName, appName str
 	if _, err := m.client.Ping(ctx); err != nil {
 		return &ErrDockerNotFound{Cause: err}
 	}
-	return m.removeContainer(ctx, appContainerName(stackName, appName))
+	cname := appContainerName(stackName, appName)
+	if err := m.removeContainer(ctx, cname); err != nil {
+		return err
+	}
+	m.removeVolume(ctx, cname)
+	return nil
+}
+
+// removeVolume removes the data volume associated with a container.
+// Best-effort: missing or in-use volumes are logged and ignored.
+func (m *Manager) removeVolume(ctx context.Context, cname string) {
+	volName := cname + "-data"
+	if err := m.client.VolumeRemove(ctx, volName, true); err != nil && !dockerclient.IsErrNotFound(err) {
+		slog.Warn("docker: remove volume", "volume", volName, "error", err)
+	}
 }
 
 // RemoveStackNetwork removes the per-stack Docker bridge network — called by
