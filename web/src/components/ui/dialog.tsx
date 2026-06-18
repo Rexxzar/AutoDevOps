@@ -25,17 +25,18 @@ export function Dialog({ open, onClose, title, children, className }: Props) {
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div className={cn(
         'relative z-10 w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl',
+        'flex flex-col max-h-[85vh]',
         className,
       )}>
         {title && (
-          <div className="flex items-center justify-between border-b border-border px-6 py-4">
+          <div className="flex items-center justify-between border-b border-border px-6 py-4 shrink-0">
             <h2 className="text-sm font-semibold">{title}</h2>
             <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">
               <X className="size-4" />
             </button>
           </div>
         )}
-        {children}
+        <div className="overflow-y-auto">{children}</div>
       </div>
     </div>
   )

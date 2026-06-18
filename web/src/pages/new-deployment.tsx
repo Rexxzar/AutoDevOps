@@ -1,7 +1,7 @@
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Loader2, CheckCircle2, AlertCircle, Globe, RefreshCw } from 'lucide-react'
+import { ArrowLeft, Loader2, CheckCircle2, AlertCircle, Server, Cloud, Container, Box, GitBranch, Layers } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -10,27 +10,120 @@ import { ComposeImportForm } from '@/components/compose-import-form'
 import { type ProvisionedResource, provisionedTypeLabel } from '@/lib/resources'
 import { DECLARED_FRAMEWORK_OPTIONS } from '@/lib/frameworks'
 
-type Step = 'form' | 'success'
-type Mode = 'scratch' | 'import'
-type LocalTarget = 'k8s' | 'container'
-type TargetLocation = 'local' | 'cloud'
-type CloudTarget = 'vm' | 'ecs' | 'aci'
+type WizardStep = 1 | 2 | 3 | 4
+type FormStep = 'form' | 'success'
+type Location = 'local' | 'cloud'
+type LocalTarget = 'k8s' | 'docker'
+type CloudProvider = 'aws' | 'azure'
+type DockerMode = 'scratch' | 'compose'
+type CloudTarget = 'ec2' | 'ecs' | 'vm' | 'aci'
+
+// ─── Two-card choice layout ──────────────────────────────────────
+
+interface ChoiceOption {
+  title: string
+  description: string
+  icon: React.ElementType
+  tags: string[]
+  onClick: () => void
+}
+
+function CardChoice({ left, right }: { left: ChoiceOption; right: ChoiceOption }) {
+  return (
+    <div className="flex items-stretch gap-0">
+      <ChoiceCard opt={left} />
+      <div className="flex flex-col items-center justify-center px-6 gap-2">
+        <div className="flex-1 w-px bg-border" />
+        <span className="text-[0.65rem] font-medium text-muted-foreground/60 uppercase tracking-widest">or</span>
+        <div className="flex-1 w-px bg-border" />
+      </div>
+      <ChoiceCard opt={right} />
+    </div>
+  )
+}
+
+function ChoiceCard({ opt }: { opt: ChoiceOption }) {
+  const Icon = opt.icon
+  return (
+    <button
+      onClick={opt.onClick}
+      className="group flex flex-1 flex-col items-center gap-5 rounded-2xl border border-border bg-card p-10 text-center transition-all duration-200 hover:scale-[1.03] hover:border-ring/40 hover:shadow-xl"
+    >
+      <div className="flex size-16 items-center justify-center rounded-2xl border border-border bg-background transition-colors group-hover:border-ring/30 group-hover:bg-accent">
+        <Icon className="size-7 text-foreground" />
+      </div>
+      <div className="space-y-1.5">
+        <p className="text-lg font-semibold">{opt.title}</p>
+        <p className="text-xs text-muted-foreground leading-relaxed max-w-[180px]">
+          {opt.description}
+        </p>
+      </div>
+      <div className="flex gap-2 flex-wrap justify-center">
+        {opt.tags.map((t) => (
+          <span key={t} className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">{t}</span>
+        ))}
+      </div>
+    </button>
+  )
+}
+
+// ─── Breadcrumb labels ───────────────────────────────────────────
+
+function breadcrumb(
+  location: Location | null,
+  localTarget: LocalTarget | null,
+  cloudProvider: CloudProvider | null,
+  dockerMode: DockerMode | null,
+  cloudTarget: CloudTarget | null,
+  wizardStep: WizardStep,
+): string {
+  const parts: string[] = []
+  if (location === 'local') {
+    parts.push('Local')
+    if (localTarget === 'k8s') parts.push('Kubernetes')
+    else if (localTarget === 'docker') {
+      parts.push('Docker')
+      if (dockerMode === 'scratch') parts.push('Git Repo')
+      else if (dockerMode === 'compose') parts.push('Compose Import')
+    }
+  } else if (location === 'cloud') {
+    parts.push('Cloud')
+    if (cloudProvider === 'aws') {
+      parts.push('AWS')
+      if (cloudTarget === 'ec2') parts.push('EC2')
+      else if (cloudTarget === 'ecs') parts.push('ECS')
+    } else if (cloudProvider === 'azure') {
+      parts.push('Azure')
+      if (cloudTarget === 'vm') parts.push('VM')
+      else if (cloudTarget === 'aci') parts.push('ACI')
+    }
+  }
+  if (parts.length === 0) return 'Choose a target'
+  if (wizardStep === 4) return parts.join(' > ')
+  return parts.join(' > ')
+}
 
 // ─── Main page ────────────────────────────────────────────────────
+
 export function NewDeploymentPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const [step, setStep] = useState<Step>('form')
-  const [mode, setMode] = useState<Mode>('scratch')
 
+  // Wizard navigation
+  const [wizardStep, setWizardStep] = useState<WizardStep>(1)
+  const [formStep, setFormStep] = useState<FormStep>('form')
+  const [location, setLocation] = useState<Location | null>(null)
+  const [localTarget, setLocalTarget] = useState<LocalTarget | null>(null)
+  const [cloudProvider, setCloudProvider] = useState<CloudProvider | null>(null)
+  const [dockerMode, setDockerMode] = useState<DockerMode | null>(null)
+  const [cloudTarget, setCloudTarget] = useState<CloudTarget | null>(null)
+
+  // Form fields
   const [name, setName] = useState('')
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
   const [token, setToken] = useState('')
   const [declaredFramework, setDeclaredFramework] = useState('')
-  const [targetLocation, setTargetLocation] = useState<TargetLocation>('local')
-  const [localTarget, setLocalTarget] = useState<LocalTarget>('k8s')
-  const [cloudTarget, setCloudTarget] = useState<CloudTarget>('vm')
   const [vmResourceId, setVmResourceId] = useState('')
   const [ecsResourceId, setEcsResourceId] = useState('')
   const [aciResourceId, setAciResourceId] = useState('')
@@ -40,42 +133,91 @@ export function NewDeploymentPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ webhookURL: string; webhookSecret: string; name: string; targetType: string } | null>(null)
 
-  // Applied AWS/Azure resources — offered as the cloud target picker, same
-  // resource_type filters AddAppDialog uses (deployment-detail.tsx).
+  // Applied cloud resources
   const { data: allResources = [] } = useQuery({
     queryKey: ['resources'],
     queryFn: () => apiFetch<ProvisionedResource[]>('/resources'),
   })
   const appliedResources = allResources.filter((r) => r.status === 'applied')
-  const vmResources = appliedResources.filter((r) => r.resource_type === 'vm')
+  const awsVmResources = appliedResources.filter((r) => r.resource_type === 'vm' && r.provider === 'aws')
+  const azureVmResources = appliedResources.filter((r) => r.resource_type === 'vm' && r.provider === 'azure')
   const ecsResources = appliedResources.filter((r) => r.resource_type === 'ecs')
   const aciResources = appliedResources.filter((r) => r.resource_type === 'aci')
-  const hasCloudResources = vmResources.length > 0 || ecsResources.length > 0 || aciResources.length > 0
 
-  const effectiveVmResourceId = vmResourceId || vmResources[0]?.id || ''
+  const effectiveVmResourceId = vmResourceId || (cloudProvider === 'aws' ? awsVmResources : azureVmResources)[0]?.id || ''
   const effectiveEcsResourceId = ecsResourceId || ecsResources[0]?.id || ''
   const effectiveAciResourceId = aciResourceId || aciResources[0]?.id || ''
 
-  function selectTargetLocation(loc: TargetLocation) {
-    setTargetLocation(loc)
-    if (loc === 'cloud') {
-      if (vmResources.length > 0) setCloudTarget('vm')
-      else if (ecsResources.length > 0) setCloudTarget('ecs')
-      else if (aciResources.length > 0) setCloudTarget('aci')
-    }
+  function resolveTargetType(): string {
+    if (location === 'local') return localTarget === 'k8s' ? 'k8s' : 'container'
+    if (cloudTarget === 'ec2' || cloudTarget === 'vm') return 'vm'
+    if (cloudTarget === 'ecs') return 'ecs'
+    if (cloudTarget === 'aci') return 'aci'
+    return 'k8s'
   }
+
+  function resolveResourceId(): string | undefined {
+    if (location !== 'cloud') return undefined
+    if (cloudTarget === 'ec2') return effectiveVmResourceId
+    if (cloudTarget === 'ecs') return effectiveEcsResourceId
+    if (cloudTarget === 'vm') return effectiveVmResourceId
+    if (cloudTarget === 'aci') return effectiveAciResourceId
+    return undefined
+  }
+
+  // The resource list for the current cloud path
+  function cloudResources(): ProvisionedResource[] {
+    if (cloudTarget === 'ec2') return awsVmResources
+    if (cloudTarget === 'ecs') return ecsResources
+    if (cloudTarget === 'vm') return azureVmResources
+    if (cloudTarget === 'aci') return aciResources
+    return []
+  }
+
+  function cloudResourceLabel(): string {
+    if (cloudTarget === 'ec2') return 'EC2 instance'
+    if (cloudTarget === 'ecs') return 'ECS service'
+    if (cloudTarget === 'vm') return 'Azure VM'
+    if (cloudTarget === 'aci') return 'ACI container group'
+    return 'Resource'
+  }
+
+  function cloudResourceEffectiveId(): string {
+    if (cloudTarget === 'ec2' || cloudTarget === 'vm') return effectiveVmResourceId
+    if (cloudTarget === 'ecs') return effectiveEcsResourceId
+    if (cloudTarget === 'aci') return effectiveAciResourceId
+    return ''
+  }
+
+  function handleBack() {
+    if (formStep === 'success') {
+      navigate('/deployments')
+      return
+    }
+    if (wizardStep === 1) {
+      navigate(-1)
+      return
+    }
+    if (wizardStep === 4) {
+      if (location === 'local' && localTarget === 'k8s') {
+        setWizardStep(2)
+      } else {
+        setWizardStep(3)
+      }
+      return
+    }
+    setWizardStep((wizardStep - 1) as WizardStep)
+  }
+
+  const isComposeForm = wizardStep === 4 && location === 'local' && localTarget === 'docker' && dockerMode === 'compose'
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setLoading(true); setError('')
     try {
-      const targetType: string = targetLocation === 'local' ? localTarget : cloudTarget
+      const targetType = resolveTargetType()
       const body: Record<string, unknown> = { name, repo_url: repo, branch, target_type: targetType }
-      if (targetLocation === 'cloud') {
-        body.target_resource_id =
-          cloudTarget === 'vm' ? effectiveVmResourceId
-          : cloudTarget === 'ecs' ? effectiveEcsResourceId
-          : effectiveAciResourceId
-      }
+      const resourceId = resolveResourceId()
+      if (resourceId) body.target_resource_id = resourceId
       if (token) body.git_auth = { type: 'token', token }
       if (declaredFramework) body.declared_framework = declaredFramework
       if (localDomain) body.domain = localDomain
@@ -83,45 +225,214 @@ export function NewDeploymentPage() {
         method: 'POST', body: JSON.stringify(body),
       })
       setSuccess({ webhookURL: resp.webhook_url, webhookSecret: resp.webhook_secret, name, targetType })
-      setStep('success')
+      setFormStep('success')
       qc.invalidateQueries({ queryKey: ['deployments'] })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create deployment')
     } finally { setLoading(false) }
   }
 
+  const bc = breadcrumb(location, localTarget, cloudProvider, dockerMode, cloudTarget, wizardStep)
+
   return (
     <div className="flex min-h-screen flex-col bg-background">
       {/* Top bar */}
       <div className="flex h-14 items-center gap-3 border-b border-border px-6">
-        <button
-          onClick={() => step === 'form' ? navigate(-1) : navigate('/deployments')}
-          className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <ArrowLeft className="size-4" />
-          {step === 'form' ? 'Back' : 'View deployments'}
-        </button>
+        {!isComposeForm && (
+          <button
+            onClick={handleBack}
+            className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <ArrowLeft className="size-4" />
+            {formStep === 'success' ? 'View deployments' : 'Back'}
+          </button>
+        )}
         <span className="text-sm font-semibold">New Deployment</span>
+        {wizardStep > 1 && formStep !== 'success' && (
+          <span className="text-xs text-muted-foreground">{bc}</span>
+        )}
       </div>
 
       <div className="flex flex-1 items-start justify-center p-8 pt-12">
 
-        {/* ── Form ── */}
-        {step === 'form' && (
-          <div className="flex w-full max-w-2xl flex-col items-center gap-6">
-            <div className="flex w-full max-w-md gap-2">
-              <TargetPill label="From scratch" sub="single repo" active={mode === 'scratch'} onClick={() => setMode('scratch')} />
-              <TargetPill label="Import docker-compose" sub="multiple services" active={mode === 'import'} onClick={() => setMode('import')} />
-            </div>
+        {formStep === 'form' && (
+          <>
+            {/* ── Step 1: Local vs Cloud ── */}
+            {wizardStep === 1 && (
+              <div className="w-full max-w-2xl space-y-6">
+                <div className="space-y-1 text-center">
+                  <h1 className="text-xl font-bold">New Deployment</h1>
+                  <p className="text-sm text-muted-foreground">Where should this deployment run?</p>
+                </div>
+                <CardChoice
+                  left={{
+                    title: 'Local',
+                    description: 'Run on this machine using Kubernetes or Docker',
+                    icon: Server,
+                    tags: ['K8s Pod', 'Docker Container'],
+                    onClick: () => { setLocation('local'); setWizardStep(2) },
+                  }}
+                  right={{
+                    title: 'Cloud',
+                    description: 'Deploy to a pre-provisioned AWS or Azure resource',
+                    icon: Cloud,
+                    tags: ['EC2', 'ECS', 'Azure VM', 'ACI'],
+                    onClick: () => { setLocation('cloud'); setWizardStep(2) },
+                  }}
+                />
+              </div>
+            )}
 
-            {mode === 'scratch' ? (
+            {/* ── Step 2 (Local): K8s vs Docker ── */}
+            {wizardStep === 2 && location === 'local' && (
+              <div className="w-full max-w-2xl space-y-6">
+                <div className="space-y-1 text-center">
+                  <h1 className="text-xl font-bold">Local Target</h1>
+                  <p className="text-sm text-muted-foreground">Choose a runtime for your deployment</p>
+                </div>
+                <CardChoice
+                  left={{
+                    title: 'Kubernetes',
+                    description: 'Deploy as a pod in the local kind cluster with ingress',
+                    icon: Box,
+                    tags: ['Pod', 'Service', 'Ingress'],
+                    onClick: () => { setLocalTarget('k8s'); setWizardStep(4) },
+                  }}
+                  right={{
+                    title: 'Docker Container',
+                    description: 'Run as a standalone container via the Docker SDK',
+                    icon: Container,
+                    tags: ['Container', 'Compose'],
+                    onClick: () => { setLocalTarget('docker'); setWizardStep(3) },
+                  }}
+                />
+              </div>
+            )}
+
+            {/* ── Step 2 (Cloud): AWS vs Azure ── */}
+            {wizardStep === 2 && location === 'cloud' && (
+              <div className="w-full max-w-2xl space-y-6">
+                <div className="space-y-1 text-center">
+                  <h1 className="text-xl font-bold">Cloud Provider</h1>
+                  <p className="text-sm text-muted-foreground">Which cloud provider are you deploying to?</p>
+                </div>
+                <CardChoice
+                  left={{
+                    title: 'AWS',
+                    description: 'Deploy to an Amazon Web Services resource',
+                    icon: Cloud,
+                    tags: ['EC2', 'ECS Fargate'],
+                    onClick: () => { setCloudProvider('aws'); setWizardStep(3) },
+                  }}
+                  right={{
+                    title: 'Azure',
+                    description: 'Deploy to a Microsoft Azure resource',
+                    icon: Cloud,
+                    tags: ['Virtual Machine', 'ACI'],
+                    onClick: () => { setCloudProvider('azure'); setWizardStep(3) },
+                  }}
+                />
+              </div>
+            )}
+
+            {/* ── Step 3 (Docker): Git Repo vs Compose ── */}
+            {wizardStep === 3 && location === 'local' && localTarget === 'docker' && (
+              <div className="w-full max-w-2xl space-y-6">
+                <div className="space-y-1 text-center">
+                  <h1 className="text-xl font-bold">Docker Deployment</h1>
+                  <p className="text-sm text-muted-foreground">How would you like to set up your deployment?</p>
+                </div>
+                <CardChoice
+                  left={{
+                    title: 'Git Repo',
+                    description: 'Build and deploy a single application from a Git repository',
+                    icon: GitBranch,
+                    tags: ['Single App', 'Paketo', 'Dockerfile'],
+                    onClick: () => { setDockerMode('scratch'); setWizardStep(4) },
+                  }}
+                  right={{
+                    title: 'Docker Compose',
+                    description: 'Import services from a docker-compose.yml in a Git repository',
+                    icon: Layers,
+                    tags: ['Multi-Service', 'Auto-Import'],
+                    onClick: () => { setDockerMode('compose'); setWizardStep(4) },
+                  }}
+                />
+              </div>
+            )}
+
+            {/* ── Step 3 (AWS): EC2 vs ECS ── */}
+            {wizardStep === 3 && location === 'cloud' && cloudProvider === 'aws' && (
+              <div className="w-full max-w-2xl space-y-6">
+                <div className="space-y-1 text-center">
+                  <h1 className="text-xl font-bold">AWS Target</h1>
+                  <p className="text-sm text-muted-foreground">Choose which type of AWS resource to deploy to</p>
+                </div>
+                <CardChoice
+                  left={{
+                    title: 'EC2',
+                    description: 'Deploy to an EC2 instance via SSH',
+                    icon: Server,
+                    tags: ['Virtual Machine', 'SSH Deploy'],
+                    onClick: () => { setCloudTarget('ec2'); setWizardStep(4) },
+                  }}
+                  right={{
+                    title: 'ECS Fargate',
+                    description: 'Deploy to an ECS Fargate service with container registry',
+                    icon: Container,
+                    tags: ['Serverless', 'ECR', 'ALB'],
+                    onClick: () => { setCloudTarget('ecs'); setWizardStep(4) },
+                  }}
+                />
+              </div>
+            )}
+
+            {/* ── Step 3 (Azure): VM vs ACI ── */}
+            {wizardStep === 3 && location === 'cloud' && cloudProvider === 'azure' && (
+              <div className="w-full max-w-2xl space-y-6">
+                <div className="space-y-1 text-center">
+                  <h1 className="text-xl font-bold">Azure Target</h1>
+                  <p className="text-sm text-muted-foreground">Choose which type of Azure resource to deploy to</p>
+                </div>
+                <CardChoice
+                  left={{
+                    title: 'Azure VM',
+                    description: 'Deploy to a Virtual Machine via SSH',
+                    icon: Server,
+                    tags: ['Virtual Machine', 'SSH Deploy'],
+                    onClick: () => { setCloudTarget('vm'); setWizardStep(4) },
+                  }}
+                  right={{
+                    title: 'ACI',
+                    description: 'Deploy to an Azure Container Instances group',
+                    icon: Container,
+                    tags: ['Container Group', 'ACR'],
+                    onClick: () => { setCloudTarget('aci'); setWizardStep(4) },
+                  }}
+                />
+              </div>
+            )}
+
+            {/* ── Step 4: Form ── */}
+            {wizardStep === 4 && !isComposeForm && (
               <div className="w-full max-w-md space-y-6">
                 <div className="space-y-1">
                   <h1 className="text-xl font-bold">New Deployment</h1>
-                  <p className="text-sm text-muted-foreground">Connect a Git repo and choose a target</p>
+                  <p className="text-sm text-muted-foreground">Connect a Git repo to deploy</p>
                 </div>
+
+                {/* Cloud: resource picker */}
+                {location === 'cloud' && cloudResources().length === 0 && (
+                  <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-sm text-muted-foreground">
+                    You don&apos;t have any applied {cloudResourceLabel()} resources yet.{' '}
+                    <button type="button" onClick={() => navigate('/new-resource')} className="underline text-foreground">
+                      Go provision one
+                    </button>{' '}first, then come back here.
+                  </div>
+                )}
+
                 <form onSubmit={submit} className="space-y-4">
-                  <FormField label="App name">
+                  <FormField label="Stack name">
                     <input value={name} onChange={e => setName(e.target.value)} placeholder="my-app" required className={inputCls} />
                   </FormField>
                   <FormField label="Git repository URL">
@@ -154,98 +465,52 @@ export function NewDeploymentPage() {
                       ))}
                     </div>
                   </FormField>
-                  <FormField label="Target">
-                    <div className="flex gap-2">
-                      <TargetPill label="Local" sub="this machine" active={targetLocation === 'local'} onClick={() => selectTargetLocation('local')} />
-                      <TargetPill label="Cloud" sub="AWS / Azure" active={targetLocation === 'cloud'} onClick={() => selectTargetLocation('cloud')} />
-                    </div>
-                  </FormField>
-                  {targetLocation === 'local' && (
-                    <FormField label="Local target">
-                      <div className="flex gap-2">
-                        <TargetPill label="Kubernetes" sub="kind cluster" active={localTarget === 'k8s'} onClick={() => setLocalTarget('k8s')} />
-                        <TargetPill label="Container" sub="Docker SDK" active={localTarget === 'container'} onClick={() => setLocalTarget('container')} />
-                      </div>
+
+                  {/* Cloud resource picker */}
+                  {location === 'cloud' && cloudResources().length > 0 && (
+                    <FormField label={cloudResourceLabel()} hint="from the Resources page">
+                      <select
+                        value={cloudResourceEffectiveId()}
+                        onChange={(e) => {
+                          if (cloudTarget === 'ec2' || cloudTarget === 'vm') setVmResourceId(e.target.value)
+                          else if (cloudTarget === 'ecs') setEcsResourceId(e.target.value)
+                          else if (cloudTarget === 'aci') setAciResourceId(e.target.value)
+                        }}
+                        className={selectCls}
+                        required
+                      >
+                        {cloudResources().map((res) => (
+                          <option key={res.id} value={res.id}>
+                            {res.name} ({provisionedTypeLabel[res.provider]?.[res.resource_type] ?? res.resource_type})
+                          </option>
+                        ))}
+                      </select>
                     </FormField>
                   )}
-                  {targetLocation === 'cloud' && !hasCloudResources && (
-                    <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-sm text-muted-foreground">
-                      You don&apos;t have any applied cloud resources yet.{' '}
-                      <button type="button" onClick={() => navigate('/new-resource')} className="underline text-foreground">
-                        Go provision one
-                      </button>{' '}first (EC2/Azure VM, ECS, or ACI), then come back here.
-                    </div>
-                  )}
-                  {targetLocation === 'cloud' && hasCloudResources && (
-                    <>
-                      <FormField label="Cloud target">
-                        <div className="flex gap-2">
-                          {vmResources.length > 0 && (
-                            <TargetPill label="Cloud VM" sub="SSH deploy" active={cloudTarget === 'vm'} onClick={() => setCloudTarget('vm')} />
-                          )}
-                          {ecsResources.length > 0 && (
-                            <TargetPill label="AWS ECS" sub="Fargate service" active={cloudTarget === 'ecs'} onClick={() => setCloudTarget('ecs')} />
-                          )}
-                          {aciResources.length > 0 && (
-                            <TargetPill label="Azure ACI" sub="container group" active={cloudTarget === 'aci'} onClick={() => setCloudTarget('aci')} />
-                          )}
-                        </div>
-                      </FormField>
-                      {cloudTarget === 'vm' && vmResources.length > 0 && (
-                        <FormField label="VM resource" hint="from the Resources page">
-                          <select value={effectiveVmResourceId} onChange={(e) => setVmResourceId(e.target.value)} className={selectCls} required>
-                            {vmResources.map((res) => (
-                              <option key={res.id} value={res.id}>
-                                {res.name} ({provisionedTypeLabel[res.provider]?.[res.resource_type] ?? res.resource_type})
-                              </option>
-                            ))}
-                          </select>
-                        </FormField>
-                      )}
-                      {cloudTarget === 'ecs' && ecsResources.length > 0 && (
-                        <FormField label="ECS service" hint="from the Resources page">
-                          <select value={effectiveEcsResourceId} onChange={(e) => setEcsResourceId(e.target.value)} className={selectCls} required>
-                            {ecsResources.map((res) => (
-                              <option key={res.id} value={res.id}>
-                                {res.name} ({provisionedTypeLabel[res.provider]?.[res.resource_type] ?? res.resource_type})
-                              </option>
-                            ))}
-                          </select>
-                        </FormField>
-                      )}
-                      {cloudTarget === 'aci' && aciResources.length > 0 && (
-                        <FormField label="ACI container group" hint="from the Resources page">
-                          <select value={effectiveAciResourceId} onChange={(e) => setAciResourceId(e.target.value)} className={selectCls} required>
-                            {aciResources.map((res) => (
-                              <option key={res.id} value={res.id}>
-                                {res.name} ({provisionedTypeLabel[res.provider]?.[res.resource_type] ?? res.resource_type})
-                              </option>
-                            ))}
-                          </select>
-                        </FormField>
-                      )}
-                    </>
-                  )}
-                  {targetLocation === 'local' && <DomainField value={localDomain} onChange={setLocalDomain} />}
+
+                  {/* Domain field for local targets */}
+                  {location === 'local' && <DomainField value={localDomain} onChange={setLocalDomain} />}
+
                   {error && (
                     <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
                       <AlertCircle className="size-4 shrink-0" />{error}
                     </div>
                   )}
-                  <Button type="submit" className="w-full h-10 gap-2 mt-2" disabled={loading}>
+                  <Button type="submit" className="w-full h-10 gap-2 mt-2" disabled={loading || (location === 'cloud' && cloudResources().length === 0)}>
                     {loading && <Loader2 className="size-4 animate-spin" />}
                     {loading ? 'Creating deployment…' : 'Create deployment'}
                   </Button>
                 </form>
               </div>
-            ) : (
-              <ComposeImportForm />
             )}
-          </div>
+
+            {/* ── Step 4: Compose import ── */}
+            {isComposeForm && <ComposeImportForm />}
+          </>
         )}
 
         {/* ── Success ── */}
-        {step === 'success' && success && (
+        {formStep === 'success' && success && (
           <div className="w-full max-w-md space-y-6">
             <div className="flex items-center gap-3">
               <CheckCircle2 className="size-6 text-success shrink-0" />
@@ -275,7 +540,13 @@ export function NewDeploymentPage() {
               <span className="font-mono">autodev deploy --name {success.name} --repo &lt;url&gt; --target {success.targetType} --trigger</span>
             </p>
             <div className="flex gap-3">
-              <Button variant="outline" className="flex-1" onClick={() => { setStep('form'); setName(''); setRepo(''); setBranch('main'); setToken('') }}>
+              <Button variant="outline" className="flex-1" onClick={() => {
+                setFormStep('form'); setWizardStep(1); setLocation(null); setLocalTarget(null)
+                setCloudProvider(null); setDockerMode(null); setCloudTarget(null)
+                setName(''); setRepo(''); setBranch('main'); setToken(''); setDeclaredFramework('')
+                setLocalDomain(''); setVmResourceId(''); setEcsResourceId(''); setAciResourceId('')
+                setSuccess(null)
+              }}>
                 New deployment
               </Button>
               <Button className="flex-1" onClick={() => navigate('/deployments')}>View deployments</Button>

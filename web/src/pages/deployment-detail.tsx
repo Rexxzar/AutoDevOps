@@ -1375,7 +1375,7 @@ function AddAppDialog({
   }
 
   return (
-    <Dialog open={open} onClose={handleClose} title="Add app">
+    <Dialog open={open} onClose={handleClose} title="Add app" className="max-w-xl">
       {success ? (
         <div className="p-4 space-y-4">
           <div className="flex items-center gap-2 text-success">
