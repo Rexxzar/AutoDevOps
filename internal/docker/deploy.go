@@ -126,13 +126,18 @@ func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef
 		return fmt.Errorf("docker: write compose file: %w", err)
 	}
 
-	slog.Info("docker: pulling image", "name", appName, "image", hostRef)
-	reader, err := m.client.ImagePull(ctx, hostRef, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("docker: pull image %s: %w", hostRef, err)
+	// Skip the registry pull if the image is already in the local daemon (e.g.,
+	// just built by buildImage). Pull is only needed for re-deploys where the
+	// daemon no longer has the image but the registry does.
+	if _, _, inspErr := m.client.ImageInspectWithRaw(ctx, hostRef); inspErr != nil {
+		slog.Info("docker: pulling image", "name", appName, "image", hostRef)
+		reader, err := m.client.ImagePull(ctx, hostRef, image.PullOptions{})
+		if err != nil {
+			return fmt.Errorf("docker: pull image %s: %w", hostRef, err)
+		}
+		io.Copy(io.Discard, reader)
+		reader.Close()
 	}
-	io.Copy(io.Discard, reader)
-	reader.Close()
 
 	// Remove any pre-existing container so re-deploys are clean.
 	if err := m.removeContainer(ctx, cname); err != nil {
