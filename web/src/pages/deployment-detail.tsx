@@ -12,6 +12,7 @@ import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { targetLabel, frameworkLabel } from '@/components/meta-tags'
 import { TargetPill, FormField, DomainField, inputCls, selectCls } from '@/components/deploy-form-fields'
 import { Pipeline } from '@/components/pipeline'
+import { SetupGuide } from '@/components/setup-guide'
 import { RepoEditor } from '@/components/repo-editor'
 import { AddDatabaseDialog } from '@/components/add-database-dialog'
 import { apiFetch } from '@/lib/api'
@@ -244,6 +245,7 @@ export function DeploymentDetailPage() {
   const [confirmTarget, setConfirmTarget] = useState<{ kind: 'app'; app: AppDetail } | { kind: 'stack' } | null>(null)
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [guideDismissed, setGuideDismissed] = useState(() => localStorage.getItem(`autodevops_guide_dismissed_${id}`) === 'true')
   // Per-app live deploy-progress state, keyed by deployment_app_id — fed by
   // Live container health — overlays DB status with real-time Docker state.
   // Keyed by app id; values: "running" | "restarting" | "stopped" | "failed" | "missing".
@@ -379,6 +381,20 @@ export function DeploymentDetailPage() {
     finally { setActingId(null) }
   }
 
+  function dismissGuide() {
+    localStorage.setItem(`autodevops_guide_dismissed_${id}`, 'true')
+    setGuideDismissed(true)
+  }
+
+  function scrollToApp(appId: string) {
+    const el = document.getElementById(`app-card-${appId}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('ring-2', 'ring-primary', 'ring-offset-2')
+      setTimeout(() => el.classList.remove('ring-2', 'ring-primary', 'ring-offset-2'), 2000)
+    }
+  }
+
   function requestDeleteApp(app: AppDetail) {
     setActionError('')
     setConfirmTarget({ kind: 'app', app })
@@ -491,6 +507,16 @@ export function DeploymentDetailPage() {
           <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
             <AlertCircle className="size-4 shrink-0" />{actionError}
           </div>
+        )}
+        {!guideDismissed && apps.length >= 2 && (
+          <SetupGuide
+            apps={apps}
+            stackId={stack.id}
+            onDismiss={dismissGuide}
+            onScrollToApp={scrollToApp}
+            onOpenAddDb={() => setAddDbOpen(true)}
+            onRedeploy={handleRedeploy}
+          />
         )}
         {apps.length === 0 && (
           <Card>
@@ -677,7 +703,7 @@ function AppCard({
   }
 
   return (
-    <Card>
+    <Card id={`app-card-${app.id}`} className="transition-shadow">
       <CardHeader>
         <div className="min-w-0">
           <CardTitle className="truncate">{app.name}</CardTitle>
