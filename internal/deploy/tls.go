@@ -392,12 +392,18 @@ func proxyPassTarget(proxy *NginxProxy, hostPort uint32) string {
 	return fmt.Sprintf("http://%s:%d", ip, hostPort)
 }
 
+// tlsSanitizeName mirrors internal/docker.sanitizeDockerName — lowercase +
+// underscores→hyphens, so the FNV hash matches the actual container name.
+func tlsSanitizeName(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+}
+
 // tlsAppHostPort duplicates internal/docker.AppHostPort (package-boundary
 // rule — same pattern as sanitizeSecretKey duplication in Phase 10).
-// fnv32a hash of "<stack>-<app>", modulo 900, offset 8100.
+// fnv32a hash of "<sanitized-stack>-<sanitized-app>", modulo 900, offset 8100.
 func tlsAppHostPort(stackName, appName string) uint32 {
 	h := fnv.New32a()
-	h.Write([]byte(stackName + "-" + appName))
+	h.Write([]byte(tlsSanitizeName(stackName) + "-" + tlsSanitizeName(appName)))
 	return 8100 + (h.Sum32() % 900)
 }
 
