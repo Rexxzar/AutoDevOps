@@ -163,7 +163,7 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 	if buildContext != "" {
 		contextDir = filepath.Join(repoPath, buildContext)
 	}
-	if err := o.buildImage(ctx, appID, appName, repoPath, contextDir, extraEnv); err != nil {
+	if err := o.buildImage(ctx, appID, appName, repoPath, contextDir, declaredFramework, extraEnv); err != nil {
 		return err // buildImage already persisted status=failed, published SSE, and marked its step failed
 	}
 

@@ -113,6 +113,32 @@ func hasDockerfile(repoPath string) bool {
 	return err == nil
 }
 
+// herokuBuilder is the CNB builder image used for PHP apps. It ships a mature
+// nginx + php-fpm buildpack that auto-configures a production HTTP server on
+// $PORT — the same technology Heroku uses for PHP/Laravel, exposed here as a
+// first-class path alongside the Paketo builder for non-PHP frameworks.
+const herokuBuilder = "heroku/builder:22"
+
+// isPhpApp reports whether the build context is a PHP application by checking
+// for composer.json — the same marker Heroku's PHP buildpack uses for detection.
+func isPhpApp(contextDir string) bool {
+	_, err := os.Stat(filepath.Join(contextDir, "composer.json"))
+	return err == nil
+}
+
+// selectBuilder returns the CNB builder image appropriate for the app.
+// PHP apps (composer.json present, or declared_framework is laravel/php) use
+// heroku/builder:22 which ships a production-grade nginx+fpm buildpack.
+// Everything else uses the configured Paketo builder.
+func selectBuilder(contextDir, declaredFramework, defaultBuilder string) string {
+	if declaredFramework == DeclaredFrameworkLaravel ||
+		declaredFramework == DeclaredFrameworkPHP ||
+		isPhpApp(contextDir) {
+		return herokuBuilder
+	}
+	return defaultBuilder
+}
+
 // ensurePackProcfile writes a Procfile to contextDir if the repo is a static
 // frontend build (has a "build" npm script but no "start" script and no
 // existing Procfile). Without a Procfile, Paketo's lifecycle exits with
@@ -230,7 +256,7 @@ func headSHA12(repoPath string) (string, error) {
 //
 // The pack client is initialised per call — cheap (just an HTTP client to the
 // Docker daemon) and safe across daemon restarts between deployments.
-func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath, contextDir string, extraEnv map[string]string) (retErr error) {
+func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath, contextDir, declaredFramework string, extraEnv map[string]string) (retErr error) {
 	// On any error path, persist "failed" so status never stays stuck at "building".
 	defer func() {
 		if retErr != nil {
@@ -268,10 +294,11 @@ func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath,
 			return fmt.Errorf("deploy: docker build %s: %w", pushRef, err)
 		}
 	} else {
+		builderImage := selectBuilder(contextDir, declaredFramework, o.builderImage)
 		slog.Info("deploy: starting pack build",
 			"app_id", appID,
 			"push_ref", pushRef,
-			"builder", o.builderImage,
+			"builder", builderImage,
 		)
 
 		ensurePackProcfile(contextDir)
@@ -300,8 +327,8 @@ func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath,
 		// "paketobuildpacks/builder-jammy-full:latest" (with tag) doesn't match and
 		// pack falls back to the untrusted 5-phase flow — which hits a
 		// "/layers/group.toml: permission denied" error on this Docker setup.
-		// builderImage is server config (not user input) and is one of pack's
-		// officially trusted Paketo builders, so trusting it here is safe.
+		// Both Paketo and Heroku builders are known-safe, so trusting unconditionally
+		// is correct — builderImage is server config, never user input.
 		packPublish := o.registryLifecycle != ""
 		packImageRef := pushRef
 		if packPublish {
@@ -310,7 +337,7 @@ func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath,
 		}
 		if err := packClient.Build(ctx, packclient.BuildOptions{
 			Image:        packImageRef,
-			Builder:      o.builderImage,
+			Builder:      builderImage,
 			AppPath:      contextDir,
 			Publish:      packPublish,
 			PullPolicy:   image.PullIfNotPresent,

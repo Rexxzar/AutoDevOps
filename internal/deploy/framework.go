@@ -43,8 +43,12 @@ var DeclaredFrameworkLabels = map[string]string{
 // the entry point is too variable to guess (Node.js, plain PHP).
 func ProcfileForFramework(fw string) (content string, ok bool) {
 	switch fw {
-	case DeclaredFrameworkLaravel:
-		return "web: php artisan migrate --force && php artisan serve --host=0.0.0.0 --port=8080", true
+	case DeclaredFrameworkLaravel, DeclaredFrameworkPHP:
+		// vendor/bin/heroku-php-nginx is provided by heroku/builder:22's PHP
+		// buildpack — reads $PORT (AutoDevOps injects PORT=8080) and configures
+		// nginx + php-fpm automatically. php artisan serve is a dev-only server
+		// and must not be used here.
+		return "web: vendor/bin/heroku-php-nginx public/", true
 	case DeclaredFrameworkNestJS:
 		return "web: node dist/main.js", true
 	case DeclaredFrameworkDjango:
