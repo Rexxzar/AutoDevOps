@@ -127,15 +127,9 @@ func isPhpApp(contextDir string) bool {
 }
 
 // selectBuilder returns the CNB builder image appropriate for the app.
-// PHP apps (composer.json present, or declared_framework is laravel/php) use
-// heroku/builder:22 which ships a production-grade nginx+fpm buildpack.
-// Everything else uses the configured Paketo builder.
+// All apps use the Paketo builder — PHP apps use PHP's built-in server
+// via Procfile, no special builder needed.
 func selectBuilder(contextDir, declaredFramework, defaultBuilder string) string {
-	if declaredFramework == DeclaredFrameworkLaravel ||
-		declaredFramework == DeclaredFrameworkPHP ||
-		isPhpApp(contextDir) {
-		return herokuBuilder
-	}
 	return defaultBuilder
 }
 
