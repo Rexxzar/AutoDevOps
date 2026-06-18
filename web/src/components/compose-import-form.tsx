@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowRight, AlertCircle, AlertTriangle, CheckCircle2, Loader
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { TargetPill, FormField, inputCls } from '@/components/deploy-form-fields'
+import { TargetPill, FormField, DomainField, inputCls } from '@/components/deploy-form-fields'
 
 type LocalTarget = 'k8s' | 'container'
 
@@ -35,6 +35,7 @@ interface ComposePlanResponse {
 interface ServiceRow extends ComposeServicePlan {
   included: boolean
   portInput: string
+  domainInput: string
 }
 
 interface LinkRow extends ComposeLinkPlan {
@@ -99,6 +100,7 @@ export function ComposeImportForm() {
         ...s,
         included: s.kind !== '',
         portInput: s.port ? String(s.port) : '',
+        domainInput: '',
       }))
       const includedNames = new Set(svcRows.filter(s => s.included).map(s => s.name))
       const linkRows: LinkRow[] = (plan.links ?? []).map(l => ({
@@ -134,6 +136,10 @@ export function ComposeImportForm() {
     setServices(rows => rows.map(r => (r.name === name ? { ...r, portInput: value } : r)))
   }
 
+  function setDomainFor(name: string, value: string) {
+    setServices(rows => rows.map(r => (r.name === name ? { ...r, domainInput: value } : r)))
+  }
+
   function toggleLink(index: number) {
     setLinks(rows => rows.map((l, i) => (i === index ? { ...l, included: !l.included } : l)))
   }
@@ -165,6 +171,7 @@ export function ComposeImportForm() {
       const createBody: Record<string, unknown> = { name: stackName.trim(), repo_url: repo, branch, target_type: target }
       if (gitAuth) createBody.git_auth = gitAuth
       if (first.build_context) createBody.build_context = first.build_context
+      if (first.domainInput) createBody.domain = first.domainInput
 
       const stackResp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>('/deployments', {
         method: 'POST', body: JSON.stringify(createBody),
@@ -180,6 +187,7 @@ export function ComposeImportForm() {
             const body: Record<string, unknown> = { name: svc.name, kind: 'git', repo_url: repo, branch, target_type: target }
             if (gitAuth) body.git_auth = gitAuth
             if (svc.build_context) body.build_context = svc.build_context
+            if (svc.domainInput) body.domain = svc.domainInput
             const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>(`/deployments/${deploymentId}/apps`, {
               method: 'POST', body: JSON.stringify(body),
             })
@@ -326,6 +334,11 @@ export function ComposeImportForm() {
                   <p className="text-xs text-muted-foreground">
                     Build context: <span className="font-mono text-foreground">{svc.build_context || '(repo root)'}</span>
                   </p>
+                )}
+                {svc.kind === 'git' && svc.included && (
+                  <div className="pt-1.5 max-w-sm">
+                    <DomainField value={svc.domainInput} onChange={v => setDomainFor(svc.name, v)} />
+                  </div>
                 )}
                 {svc.kind === 'image' && (
                   <>
