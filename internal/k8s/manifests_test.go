@@ -309,6 +309,23 @@ func TestBuildResourceService(t *testing.T) {
 	}
 }
 
+func TestResourceName(t *testing.T) {
+	cases := map[string]string{
+		"ShopHup":        "shophup",
+		"front":          "front",
+		"my_app":         "my-app",
+		"App.Plant 2":    "app-plant-2",
+		"-weird-":        "weird",
+		"":               "app",
+		"ALLCAPS":        "allcaps",
+	}
+	for in, want := range cases {
+		if got := resourceName(in); got != want {
+			t.Errorf("resourceName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestBuildIngress(t *testing.T) {
 	ing := buildIngress("svc", "autodevops-svc", "svc.autodevops.local", false)
 

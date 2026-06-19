@@ -95,7 +95,9 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 		var port int
 		switch {
 		case consumerTargetKind == "local_k8s" && depTargetKind == "local_k8s":
-			scheme, host, port = "http", depName, 80
+			// In-cluster Service DNS — must match the sanitized name KubeDeploy
+			// used as the Service's metadata.name (e.g. "ShopHup" -> "shophup").
+			scheme, host, port = "http", k8sResourceName(depName), 80
 		case consumerTargetKind == "local_docker" && depTargetKind == "local_docker":
 			depPortNum := 8080
 			if depKind == "image" && depPort > 0 {
@@ -103,14 +105,14 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 			}
 			scheme, host, port = "http", depName, depPortNum
 		case consumerTargetKind == "local_docker" && depTargetKind == "local_k8s":
-			scheme, host, port = "https", depName+"."+o.ingressDomain, 443
+			scheme, host, port = "https", k8sResourceName(depName)+"."+o.ingressDomain, 443
 		case consumerTargetKind == "local_k8s" && depTargetKind == "local_docker":
 			scheme, host, port = "http", "host.docker.internal", int(dockerAppHostPort(stackName, depName))
 		case consumerTargetKind == "cloud_vm" && depTargetKind == "local_k8s":
 			// Same treatment as a local_docker consumer: reach the k8s app via
 			// its public Ingress hostname. local_docker/cloud_vm dependencies
 			// are not reachable from a cloud VM in v1 (documented gap).
-			scheme, host, port = "https", depName+"."+o.ingressDomain, 443
+			scheme, host, port = "https", k8sResourceName(depName)+"."+o.ingressDomain, 443
 		default:
 			continue
 		}
@@ -165,6 +167,28 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 	}
 
 	return env, nil
+}
+
+// k8sResourceName duplicates internal/k8s.resourceName (package-boundary rule):
+// the in-cluster Service name a K8s app is reachable at is the lowercased
+// RFC 1123 form of its app name, so link hosts must sanitize the same way.
+func k8sResourceName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 63 {
+		out = strings.Trim(out[:63], "-")
+	}
+	if out == "" {
+		out = "app"
+	}
+	return out
 }
 
 // resolveResourceLinks resolves an app's outgoing links to provisioned cloud

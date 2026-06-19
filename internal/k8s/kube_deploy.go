@@ -28,6 +28,7 @@ var (
 // and Ingress. Blocks until at least one pod reports Available or the context
 // deadline is reached.
 func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef, domain string, extraEnv map[string]string, secretFiles map[string][]byte, k8sConfigJSON []byte) error {
+	name = resourceName(name) // K8s resource names must be lowercase RFC 1123
 	cfg := parseK8sConfig(k8sConfigJSON)
 
 	// When a real public domain is set, central nginx terminates TLS and
@@ -149,6 +150,7 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 // Ingress is created — image apps are link targets for sibling apps, not
 // externally exposed. Blocks until at least one pod reports Available.
 func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string, secretFiles map[string][]byte) error {
+	name = resourceName(name) // K8s resource names must be lowercase RFC 1123
 	slog.Info("k8s: deploying image app", "name", name, "namespace", namespace, "image", imageRef, "port", port, "volume_path", volumePath)
 
 	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
@@ -187,6 +189,7 @@ func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, im
 // separately, once every app has been removed). Missing resources are
 // treated as already-removed, not an error.
 func (c *Controller) KubeDeleteApp(ctx context.Context, namespace, name string) error {
+	name = resourceName(name) // match the sanitized names KubeDeploy created
 	if err := c.clientset.AppsV1().Deployments(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
 		return fmt.Errorf("k8s: delete deployment %s/%s: %w", namespace, name, err)
 	}

@@ -200,6 +200,32 @@ func buildHPA(name, namespace string, h HPAConfig) *autoscalingv2.HorizontalPodA
 	}
 }
 
+// resourceName converts an app/stack name into a valid RFC 1123 subdomain for
+// use as a K8s resource name (Deployment/Service/Ingress/HPA metadata.name and
+// the "app" selector label): lowercased, every non-alphanumeric character
+// replaced with '-', leading/trailing '-' trimmed, capped at 63 chars. Mirrors
+// the lowercasing internal/docker applies to container names so an app named
+// "ShopHup" maps to "shophup" on both targets. internal/deploy duplicates this
+// (as k8sResourceName) for link host resolution, per the package-boundary rule.
+func resourceName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 63 {
+		out = strings.Trim(out[:63], "-")
+	}
+	if out == "" {
+		out = "app"
+	}
+	return out
+}
+
 // NamespaceName derives the deterministic K8s namespace for a deployment:
 // "autodevops-<name>" with underscores→hyphens and lower-cased, capped at 63
 // characters to satisfy the DNS label format.
