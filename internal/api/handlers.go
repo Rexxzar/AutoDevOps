@@ -3012,6 +3012,123 @@ func (s *Server) handleGetAppEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]map[string]string{"env": env})
 }
 
+// handleGetK8sManifests returns the K8s manifest YAML for an app. When the
+// app is deployed (status=running), it fetches the live objects from the
+// cluster. Otherwise it generates the template from the app's config.
+// Query param ?mode=template forces template mode even when running.
+func (s *Server) handleGetK8sManifests(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var name, kind, targetKind, namespace, imageRef, domain, volumePath, status string
+	var port int
+	var k8sConfig json.RawMessage
+	err := s.db.QueryRow(r.Context(), `
+		SELECT da.name, da.kind, da.target_kind, COALESCE(da.namespace, ''),
+		       COALESCE(da.image_ref, ''), COALESCE(da.domain, ''),
+		       COALESCE(da.volume_path, ''), da.status, COALESCE(da.port, 0),
+		       da.k8s_config
+		FROM deployment_apps da
+		WHERE da.id = $1 AND da.deployment_id = $2
+	`, appID, deploymentID).Scan(&name, &kind, &targetKind, &namespace, &imageRef, &domain, &volumePath, &status, &port, &k8sConfig)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+	if targetKind != "local_k8s" {
+		writeError(w, http.StatusBadRequest, "manifests are only available for Kubernetes deployments")
+		return
+	}
+	if s.k8sCtrl == nil {
+		writeError(w, http.StatusServiceUnavailable, "Kubernetes controller not available")
+		return
+	}
+
+	mode := r.URL.Query().Get("mode")
+
+	// Try live manifests first (unless template mode forced).
+	if mode != "template" && (status == "running" || status == "failed") {
+		yaml, err := s.k8sCtrl.GetLiveManifests(r.Context(), name, namespace)
+		if err == nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"yaml": yaml,
+				"mode": "live",
+			})
+			return
+		}
+	}
+
+	// Fall back to generated template.
+	yaml, err := k8s.GenerateManifests(k8s.ManifestParams{
+		Name:          name,
+		Namespace:     namespace,
+		ImageRef:      imageRef,
+		Domain:        domain,
+		Kind:          kind,
+		Port:          int32(port),
+		VolumePath:    volumePath,
+		K8sConfigJSON: k8sConfig,
+		IngressDomain: s.ingressDomain,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to generate manifests: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"yaml": yaml,
+		"mode": "template",
+	})
+}
+
+// handleApplyK8sManifest applies user-edited YAML directly to the cluster.
+// This is a one-shot operation — the next redeploy will regenerate manifests
+// from the app's stored config, overwriting these changes.
+func (s *Server) handleApplyK8sManifest(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var targetKind string
+	err := s.db.QueryRow(r.Context(),
+		`SELECT target_kind FROM deployment_apps WHERE id = $1 AND deployment_id = $2`,
+		appID, deploymentID,
+	).Scan(&targetKind)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+	if targetKind != "local_k8s" {
+		writeError(w, http.StatusBadRequest, "apply is only available for Kubernetes deployments")
+		return
+	}
+	if s.k8sCtrl == nil {
+		writeError(w, http.StatusServiceUnavailable, "Kubernetes controller not available")
+		return
+	}
+
+	var req struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		writeError(w, http.StatusBadRequest, "yaml is required")
+		return
+	}
+
+	applied, err := s.k8sCtrl.ApplyManifestYAML(r.Context(), req.YAML)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("apply failed: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"applied": applied,
+		"message": fmt.Sprintf("Applied %d K8s object(s). Note: changes will be overwritten on next redeploy.", applied),
+	})
+}
+
 func (s *Server) handleGetAppWorkflow(w http.ResponseWriter, r *http.Request) {
 	deploymentID := chi.URLParam(r, "id")
 	appID := chi.URLParam(r, "appId")

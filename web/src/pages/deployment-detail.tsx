@@ -647,6 +647,7 @@ function AppCard({
   const [secretFileError, setSecretFileError] = useState('')
   const [showLogs, setShowLogs] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
+  const [manifestsOpen, setManifestsOpen] = useState(false)
   const [envVisible, setEnvVisible] = useState(false)
   const [envData, setEnvData] = useState<Record<string, string> | null>(null)
   const [envLoading, setEnvLoading] = useState(false)
@@ -1087,6 +1088,12 @@ function AppCard({
               CI/CD workflow
             </Button>
           )}
+          {app.target_type === 'k8s' && (
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setManifestsOpen(true)}>
+              <FileText className="size-3.5" />
+              Manifests
+            </Button>
+          )}
           <Button size="sm" variant="outline" className="gap-1.5" disabled={acting || isTransitional} onClick={onRedeploy}>
             {acting ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
             Redeploy
@@ -1125,6 +1132,16 @@ function AppCard({
         onClose={() => setEditorOpen(false)}
         onRedeployNeeded={onRedeploy}
       />
+
+      {app.target_type === 'k8s' && (
+        <K8sManifestsDialog
+          stackId={stackId}
+          appId={app.id}
+          appName={app.name}
+          open={manifestsOpen}
+          onClose={() => setManifestsOpen(false)}
+        />
+      )}
     </Card>
   )
 }
@@ -1715,6 +1732,181 @@ function AddAppDialog({
           </div>
         </form>
       )}
+    </Dialog>
+  )
+}
+
+function K8sManifestsDialog({
+  stackId, appId, appName, open, onClose,
+}: {
+  stackId: string
+  appId: string
+  appName: string
+  open: boolean
+  onClose: () => void
+}) {
+  const [yaml, setYaml] = useState('')
+  const [editedYaml, setEditedYaml] = useState('')
+  const [mode, setMode] = useState<'live' | 'template'>('live')
+  const [loading, setLoading] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [error, setError] = useState('')
+  const [applyResult, setApplyResult] = useState('')
+  const [isEditing, setIsEditing] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const fetchManifests = useCallback(async (forceTemplate = false) => {
+    setLoading(true)
+    setError('')
+    setApplyResult('')
+    try {
+      const url = `/deployments/${stackId}/apps/${appId}/k8s-manifests${forceTemplate ? '?mode=template' : ''}`
+      const data = await apiFetch<{ yaml: string; mode: 'live' | 'template' }>(url)
+      setYaml(data.yaml)
+      setEditedYaml(data.yaml)
+      setMode(data.mode)
+      setIsEditing(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load manifests')
+    } finally {
+      setLoading(false)
+    }
+  }, [stackId, appId])
+
+  useEffect(() => {
+    if (open) fetchManifests()
+  }, [open, fetchManifests])
+
+  async function handleApply() {
+    setApplying(true)
+    setError('')
+    setApplyResult('')
+    try {
+      const data = await apiFetch<{ applied: number; message: string }>(
+        `/deployments/${stackId}/apps/${appId}/k8s-apply`,
+        { method: 'POST', body: JSON.stringify({ yaml: editedYaml }) },
+      )
+      setApplyResult(data.message)
+      setIsEditing(false)
+      setTimeout(() => fetchManifests(), 1000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply manifests')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  function handleDownload() {
+    const blob = new Blob([isEditing ? editedYaml : yaml], { type: 'text/yaml' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${appName}-k8s-manifests.yaml`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function handleClose() {
+    setYaml('')
+    setEditedYaml('')
+    setError('')
+    setApplyResult('')
+    setIsEditing(false)
+    onClose()
+  }
+
+  return (
+    <Dialog open={open} onClose={handleClose} title={`K8s Manifests — ${appName}`} className="max-w-3xl">
+      <div className="p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className={cn(
+              'inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-medium',
+              mode === 'live'
+                ? 'bg-green-500/15 text-green-700 dark:text-green-400'
+                : 'bg-blue-500/15 text-blue-700 dark:text-blue-400',
+            )}>
+              {mode === 'live' ? 'Live cluster state' : 'Generated template'}
+            </span>
+            {mode === 'live' && (
+              <button
+                className="text-xs text-primary hover:underline"
+                onClick={() => fetchManifests(true)}
+                disabled={loading}
+              >
+                Switch to template
+              </button>
+            )}
+            {mode === 'template' && (
+              <button
+                className="text-xs text-primary hover:underline"
+                onClick={() => fetchManifests(false)}
+                disabled={loading}
+              >
+                Switch to live
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={handleDownload} disabled={loading || !yaml}>
+              <Download className="size-3" />
+              Download
+            </Button>
+            {!isEditing ? (
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => { setIsEditing(true); setEditedYaml(yaml) }} disabled={loading || !yaml}>
+                <FileText className="size-3" />
+                Edit
+              </Button>
+            ) : (
+              <>
+                <Button size="sm" variant="outline" className="gap-1.5" onClick={() => { setIsEditing(false); setEditedYaml(yaml) }}>
+                  Cancel
+                </Button>
+                <Button size="sm" className="gap-1.5" onClick={handleApply} disabled={applying || !editedYaml.trim()}>
+                  {applying ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+                  {applying ? 'Applying…' : 'Apply to cluster'}
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {isEditing && (
+          <div className="flex items-center gap-2 rounded-lg border border-yellow-500/25 bg-yellow-500/8 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-400">
+            <AlertCircle className="size-3.5 shrink-0" />
+            Manual edits will be overwritten on the next git push or redeploy.
+          </div>
+        )}
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="size-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : isEditing ? (
+          <textarea
+            ref={textareaRef}
+            value={editedYaml}
+            onChange={(e) => setEditedYaml(e.target.value)}
+            className="w-full min-h-[28rem] rounded-lg border border-border bg-card p-4 text-xs font-mono leading-relaxed whitespace-pre resize-y focus:outline-none focus:ring-2 focus:ring-ring"
+            spellCheck={false}
+          />
+        ) : (
+          <pre className="max-h-[28rem] overflow-auto rounded-lg border border-border bg-card p-4 text-xs font-mono leading-relaxed whitespace-pre">
+            {yaml || 'No manifests available'}
+          </pre>
+        )}
+
+        {applyResult && (
+          <div className="flex items-center gap-2 rounded-lg border border-green-500/25 bg-green-500/8 px-3 py-2.5 text-xs text-green-700 dark:text-green-400">
+            <CheckCircle2 className="size-3.5 shrink-0" />{applyResult}
+          </div>
+        )}
+        {error && (
+          <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-xs text-critical">
+            <AlertCircle className="size-3.5 shrink-0" />{error}
+          </div>
+        )}
+      </div>
     </Dialog>
   )
 }
