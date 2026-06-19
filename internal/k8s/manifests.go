@@ -580,7 +580,11 @@ func buildResourceDeployment(name, namespace, imageRef string, port int32, env m
 }
 
 // buildResourceService is like buildService but with a caller-supplied
-// target port (the standalone Resource's container port, not paketoPort).
+// port (the standalone Resource's / image-kind app's container port).
+// Unlike buildService (which always exposes port 80 for HTTP apps), this
+// exposes the actual container port as the Service port — e.g. 3306 for
+// MySQL, 5432 for Postgres — so callers use the standard port and K8s
+// auto-injected env vars (DB_PORT etc.) carry the real port number.
 func buildResourceService(name, namespace string, port int32) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -592,7 +596,7 @@ func buildResourceService(name, namespace string, port int32) *corev1.Service {
 			Selector: map[string]string{"app": name},
 			Ports: []corev1.ServicePort{
 				{
-					Port:       80,
+					Port:       port,
 					TargetPort: intstr.FromInt32(port),
 					Protocol:   corev1.ProtocolTCP,
 				},
@@ -608,7 +612,11 @@ func buildResourceService(name, namespace string, port int32) *corev1.Service {
 // doesn't 308-loop the HTTP→HTTPS hop, no cert-manager annotation/TLS block is
 // added (nginx owns the cert). When false (dev/sslip.io) the ingress keeps the
 // self-signed cert-manager TLS block and forces ssl-redirect.
-func buildIngress(name, namespace, host string, publicDomain bool) *networkingv1.Ingress {
+func buildIngress(name, namespace, host string, publicDomain bool, servicePort ...int32) *networkingv1.Ingress {
+	svcPort := int32(80)
+	if len(servicePort) > 0 && servicePort[0] > 0 {
+		svcPort = servicePort[0]
+	}
 	pathType := networkingv1.PathTypePrefix
 	className := ingressClassName
 
@@ -649,7 +657,7 @@ func buildIngress(name, namespace, host string, publicDomain bool) *networkingv1
 									Backend: networkingv1.IngressBackend{
 										Service: &networkingv1.IngressServiceBackend{
 											Name: name,
-											Port: networkingv1.ServiceBackendPort{Number: 80},
+											Port: networkingv1.ServiceBackendPort{Number: svcPort},
 										},
 									},
 								},

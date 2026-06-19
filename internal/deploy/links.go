@@ -97,7 +97,14 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 		case consumerTargetKind == "local_k8s" && depTargetKind == "local_k8s":
 			// In-cluster Service DNS — must match the sanitized name KubeDeploy
 			// used as the Service's metadata.name (e.g. "ShopHup" -> "shophup").
-			scheme, host, port = "http", k8sResourceName(depName), 80
+			// Git-kind apps expose port 80 (buildService maps 80→paketoPort);
+			// image-kind apps expose their actual container port (buildResourceService
+			// uses port=port, e.g. 3306 for MySQL, 5432 for Postgres).
+			svcPort := 80
+			if depKind == "image" && depPort > 0 {
+				svcPort = depPort
+			}
+			scheme, host, port = "http", k8sResourceName(depName), svcPort
 		case consumerTargetKind == "local_docker" && depTargetKind == "local_docker":
 			depPortNum := 8080
 			if depKind == "image" && depPort > 0 {

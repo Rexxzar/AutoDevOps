@@ -301,8 +301,8 @@ func TestBuildResourceService(t *testing.T) {
 	if svc.Name != "my-resource" || svc.Namespace != "resource-my-resource" {
 		t.Errorf("service name/namespace = %q/%q", svc.Name, svc.Namespace)
 	}
-	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 {
-		t.Errorf("service port = %v, want 80", svc.Spec.Ports)
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 6379 {
+		t.Errorf("service port = %v, want 6379", svc.Spec.Ports)
 	}
 	if svc.Spec.Ports[0].TargetPort.IntVal != 6379 {
 		t.Errorf("service target port = %v, want 6379", svc.Spec.Ports[0].TargetPort)

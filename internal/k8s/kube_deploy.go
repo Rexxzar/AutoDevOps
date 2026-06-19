@@ -126,7 +126,7 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 		if err := c.applyCRD(ctx, certGVR, buildCertificate(name, namespace, host)); err != nil {
 			slog.Warn("k8s: certificate not applied (cert-manager may not be installed)", "error", err)
 		}
-		if err := c.applyIngress(ctx, buildIngress(name, namespace, host, false)); err != nil {
+		if err := c.applyIngress(ctx, buildIngress(name, namespace, host, false, port)); err != nil {
 			return "", "", fmt.Errorf("k8s: apply ingress %s: %w", name, err)
 		}
 	}
@@ -145,10 +145,10 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 // optionally a PVC (buildResourcePVC, when volumePath is set), optionally a
 // Secret for secretFiles, Deployment (buildResourceDeployment —
 // caller-supplied port + env + volume/secret mounts, no sidecar) and Service
-// (buildResourceService — port 80 -> the container's port, so resolveLinks'
-// local_k8s->local_k8s case needs no special-casing for image apps). No
-// Ingress is created — image apps are link targets for sibling apps, not
-// externally exposed. Blocks until at least one pod reports Available.
+// (buildResourceService — exposes the container's actual port as the Service
+// port, e.g. 3306 for MySQL, 5432 for Postgres). No Ingress is created —
+// image apps are link targets for sibling apps, not externally exposed.
+// Blocks until at least one pod reports Available.
 func (c *Controller) KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string, secretFiles map[string][]byte) error {
 	name = resourceName(name) // K8s resource names must be lowercase RFC 1123
 	slog.Info("k8s: deploying image app", "name", name, "namespace", namespace, "image", imageRef, "port", port, "volume_path", volumePath)
