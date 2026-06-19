@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -13,7 +14,11 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -247,7 +252,102 @@ func (p *TLSProvisioner) detectNginxProxy(ctx context.Context) (*NginxProxy, err
 		}
 	}
 
-	return nil, fmt.Errorf("no nginx found on port 80 — either a Docker container or a host nginx installation is required")
+	// Nothing found — auto-bootstrap an nginx container.
+	return p.bootstrapNginx(ctx)
+}
+
+const (
+	nginxContainerName = "autodevops-nginx"
+	nginxImage         = "nginx:1-alpine"
+	nginxConfDir       = "/etc/autodevops/nginx/conf.d"
+	nginxCertDir       = "/etc/letsencrypt"
+)
+
+// bootstrapNginx creates and starts an nginx Docker container with the right
+// volume mounts for AutoDevOps TLS provisioning — called automatically when
+// detectNginxProxy finds no existing nginx on port 80.
+func (p *TLSProvisioner) bootstrapNginx(ctx context.Context) (*NginxProxy, error) {
+	slog.Info("tls: no nginx found, auto-bootstrapping nginx container")
+
+	// Ensure host dirs exist.
+	for _, dir := range []string{nginxConfDir, nginxCertDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create dir %s: %w", dir, err)
+		}
+	}
+
+	// Pull the image if not present.
+	if _, _, err := p.docker.ImageInspectWithRaw(ctx, nginxImage); err != nil {
+		slog.Info("tls: pulling nginx image", "image", nginxImage)
+		reader, err := p.docker.ImagePull(ctx, "docker.io/library/"+nginxImage, image.PullOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("pull nginx image: %w", err)
+		}
+		io.Copy(io.Discard, reader)
+		reader.Close()
+	}
+
+	// Remove stale container with the same name (e.g. from a previous run).
+	p.docker.ContainerRemove(ctx, nginxContainerName, container.RemoveOptions{Force: true})
+
+	port80 := nat.Port("80/tcp")
+	port443 := nat.Port("443/tcp")
+
+	cfg := &container.Config{
+		Image: nginxImage,
+		ExposedPorts: nat.PortSet{
+			port80:  struct{}{},
+			port443: struct{}{},
+		},
+		Labels: map[string]string{
+			"autodevops.io/managed-by": "autodevops",
+			"autodevops.io/role":       "nginx-proxy",
+		},
+	}
+	hostCfg := &container.HostConfig{
+		PortBindings: nat.PortMap{
+			port80:  []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "80"}},
+			port443: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "443"}},
+		},
+		Mounts: []mount.Mount{
+			{Type: mount.TypeBind, Source: nginxConfDir, Target: "/etc/nginx/conf.d", ReadOnly: false},
+			{Type: mount.TypeBind, Source: nginxCertDir, Target: "/etc/letsencrypt", ReadOnly: false},
+		},
+		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+	}
+
+	resp, err := p.docker.ContainerCreate(ctx, cfg, hostCfg, &network.NetworkingConfig{}, nil, nginxContainerName)
+	if err != nil {
+		return nil, fmt.Errorf("create nginx container: %w", err)
+	}
+	if err := p.docker.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return nil, fmt.Errorf("start nginx container: %w", err)
+	}
+
+	slog.Info("tls: nginx container started", "id", resp.ID[:12], "name", nginxContainerName)
+
+	// Inspect to get the gateway IP.
+	inspect, err := p.docker.ContainerInspect(ctx, resp.ID)
+	if err != nil {
+		return nil, fmt.Errorf("inspect nginx container: %w", err)
+	}
+
+	gatewayIP := "172.17.0.1"
+	for _, net := range inspect.NetworkSettings.Networks {
+		if net.Gateway != "" {
+			gatewayIP = net.Gateway
+			break
+		}
+	}
+
+	return &NginxProxy{
+		Containerized: true,
+		ContainerID:   resp.ID,
+		ConfDirHost:   nginxConfDir,
+		CertDirHost:   nginxCertDir,
+		CertDirInCtn:  "/etc/letsencrypt",
+		GatewayIP:     gatewayIP,
+	}, nil
 }
 
 // reloadNginx signals nginx to reload its configuration.
