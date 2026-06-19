@@ -352,16 +352,16 @@ func (o *Orchestrator) buildImage(ctx context.Context, appID, appName, repoPath,
 	o.publishStep(appID, StepBuild, StepDone)
 
 	o.publishStep(appID, StepPush, StepActive)
-	if o.registryLifecycle != "" {
-		// Image was published directly to the registry by the lifecycle container
-		// under lifecycleRef (gateway-IP addr). Re-tag it under pushRef (localhost
-		// addr) so pullRef lookups work — both hostnames reach the same registry.
+	if o.registryLifecycle != "" && !hasDockerfile(contextDir) {
+		// Paketo lifecycle containers published directly to the registry via the
+		// gateway-IP addr. Re-tag under pushRef (localhost) so pullRef lookups
+		// work — both hostnames reach the same registry.
 		lifecycleRef := o.registryLifecycle + "/" + imageNameOnly(pushRef)
 		if err := o.pusher.TagImage(ctx, lifecycleRef, pushRef); err != nil {
-			// Non-fatal: log and continue.
 			slog.Warn("deploy: retag lifecycle image", "from", lifecycleRef, "to", pushRef, "error", err)
 		}
 	} else {
+		// Dockerfile builds only tag locally — always push explicitly.
 		if err := o.pusher.PushImage(ctx, pushRef, nil); err != nil {
 			o.publishStep(appID, StepPush, StepFailed)
 			return fmt.Errorf("deploy: push %s: %w", pushRef, err)

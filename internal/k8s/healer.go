@@ -49,7 +49,9 @@ func (h *healer) handle(ctx context.Context, ph PodHealth) {
 		h.reset(ph.Namespace, ph.PodName)
 		return
 	case StatusUnhealthy:
-		// fall through to heal logic
+		if ph.Reason == "ErrImagePull" || ph.Reason == "ImagePullBackOff" {
+			return
+		}
 	default:
 		// Pending, Terminating, Unknown — do nothing
 		return
