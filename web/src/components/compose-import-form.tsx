@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowRight, AlertCircle, AlertTriangle, CheckCircle2, Loader
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { FormField, DomainField, inputCls } from '@/components/deploy-form-fields'
+import { FormField, DomainField, K8sOptions, type K8sConfigValue, inputCls } from '@/components/deploy-form-fields'
 
 type LocalTarget = 'k8s' | 'container'
 
@@ -81,6 +81,9 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
   const [links, setLinks] = useState<LinkRow[]>([])
   const [planWarnings, setPlanWarnings] = useState<string[]>([])
   const [stackName, setStackName] = useState('')
+
+  const [namespaceOverride, setNamespaceOverride] = useState('')
+  const [k8sConfig, setK8sConfig] = useState<K8sConfigValue | undefined>(undefined)
 
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
@@ -171,6 +174,8 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
       if (gitAuth) createBody.git_auth = gitAuth
       if (first.build_context) createBody.build_context = first.build_context
       if (first.domainInput) createBody.domain = first.domainInput
+      if (namespaceOverride) createBody.namespace_override = namespaceOverride
+      if (k8sConfig) createBody.k8s_config = k8sConfig
 
       const stackResp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>('/deployments', {
         method: 'POST', body: JSON.stringify(createBody),
@@ -187,6 +192,7 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
             if (gitAuth) body.git_auth = gitAuth
             if (svc.build_context) body.build_context = svc.build_context
             if (svc.domainInput) body.domain = svc.domainInput
+            if (k8sConfig) body.k8s_config = k8sConfig
             const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>(`/deployments/${deploymentId}/apps`, {
               method: 'POST', body: JSON.stringify(body),
             })
@@ -374,6 +380,15 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
         <FormField label="Stack name">
           <input value={stackName} onChange={e => setStackName(e.target.value)} placeholder="my-stack" required className={inputCls} />
         </FormField>
+
+        {target === 'k8s' && (
+          <>
+            <FormField label="Namespace override" hint="optional — defaults to autodevops-<stack>">
+              <input value={namespaceOverride} onChange={e => setNamespaceOverride(e.target.value)} placeholder="my-namespace" className={inputCls} />
+            </FormField>
+            <K8sOptions onChange={setK8sConfig} />
+          </>
+        )}
 
         {links.length > 0 && (
           <FormField label="Suggested links" hint="from depends_on">
