@@ -56,6 +56,17 @@ interface AppDetail {
   secret_file_paths?: string[]
   tls_status?: string
   tls_error?: string
+  k8s_config?: {
+    replicas?: number
+    cpu_request?: string
+    cpu_limit?: string
+    mem_request?: string
+    mem_limit?: string
+    hpa?: { min: number; max: number; target_cpu: number }
+    liveness?: { path: string; port: number }
+    readiness?: { path: string; port: number }
+    rolling_update?: { max_surge: string; max_unavailable: string }
+  }
   has_git_credentials: boolean
   has_image_env: boolean
   links: AppLink[]
@@ -800,6 +811,68 @@ function AppCard({
         )}
         {app.namespace && (
           <InfoRow label="Namespace" value={<span className="font-mono text-xs">{app.namespace}</span>} />
+        )}
+        {app.target_type === 'k8s' && app.k8s_config && (
+          <div className="mt-2 space-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2">
+            <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground mb-1">Kubernetes Config</p>
+            {app.k8s_config.replicas != null && (
+              <InfoRow label="Replicas" value={<span className="font-mono text-xs">{app.k8s_config.replicas}</span>} />
+            )}
+            {(app.k8s_config.cpu_request || app.k8s_config.cpu_limit) && (
+              <InfoRow
+                label="CPU"
+                value={
+                  <span className="font-mono text-xs">
+                    {app.k8s_config.cpu_request || '–'} / {app.k8s_config.cpu_limit || '–'}
+                    <span className="text-muted-foreground ml-1">(req / lim)</span>
+                  </span>
+                }
+              />
+            )}
+            {(app.k8s_config.mem_request || app.k8s_config.mem_limit) && (
+              <InfoRow
+                label="Memory"
+                value={
+                  <span className="font-mono text-xs">
+                    {app.k8s_config.mem_request || '–'} / {app.k8s_config.mem_limit || '–'}
+                    <span className="text-muted-foreground ml-1">(req / lim)</span>
+                  </span>
+                }
+              />
+            )}
+            {app.k8s_config.hpa && (
+              <InfoRow
+                label="HPA"
+                value={
+                  <span className="font-mono text-xs">
+                    {app.k8s_config.hpa.min}–{app.k8s_config.hpa.max} pods, target {app.k8s_config.hpa.target_cpu}% CPU
+                  </span>
+                }
+              />
+            )}
+            {app.k8s_config.liveness && (
+              <InfoRow
+                label="Liveness"
+                value={<span className="font-mono text-xs">{app.k8s_config.liveness.path}:{app.k8s_config.liveness.port}</span>}
+              />
+            )}
+            {app.k8s_config.readiness && (
+              <InfoRow
+                label="Readiness"
+                value={<span className="font-mono text-xs">{app.k8s_config.readiness.path}:{app.k8s_config.readiness.port}</span>}
+              />
+            )}
+            {app.k8s_config.rolling_update && (
+              <InfoRow
+                label="Rolling"
+                value={
+                  <span className="font-mono text-xs">
+                    surge {app.k8s_config.rolling_update.max_surge}, unavail {app.k8s_config.rolling_update.max_unavailable}
+                  </span>
+                }
+              />
+            )}
+          </div>
         )}
         {app.kind === 'git' && url && (
           <InfoRow
