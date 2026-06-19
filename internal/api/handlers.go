@@ -1243,6 +1243,44 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
+// handleListPods returns the current pod-health rows the K8s watch loop has
+// persisted (system namespaces excluded, deleted pods removed). The Clusters
+// page seeds its live SSE-driven map from this so it shows the real pod set
+// immediately on load and after any remount — instead of flickering from empty
+// until the next pod.health event arrives.
+func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), `
+		SELECT cluster_id::text, namespace, pod_name, status, restart_count
+		FROM pod_health ORDER BY namespace, pod_name
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list pods")
+		return
+	}
+	defer rows.Close()
+
+	type row struct {
+		ClusterID    string `json:"cluster_id"`
+		Namespace    string `json:"namespace"`
+		PodName      string `json:"pod_name"`
+		Status       string `json:"status"`
+		RestartCount int32  `json:"restart_count"`
+	}
+	var results []row
+	for rows.Next() {
+		var p row
+		if err := rows.Scan(&p.ClusterID, &p.Namespace, &p.PodName, &p.Status, &p.RestartCount); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan pod")
+			return
+		}
+		results = append(results, p)
+	}
+	if results == nil {
+		results = []row{}
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
 func (s *Server) handleListCloudAccounts(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
 		SELECT id::text, provider, name, created_at

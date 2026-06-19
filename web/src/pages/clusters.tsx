@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Boxes, Cpu, MemoryStick, Server, X } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/page-header'
@@ -20,6 +20,14 @@ interface ApiCluster {
   endpoint: string
   status: string
   created_at: string
+}
+
+interface ApiPod {
+  cluster_id: string
+  namespace: string
+  pod_name: string
+  status: string
+  restart_count: number
 }
 
 type PodMap = Record<string, Pod>
@@ -108,6 +116,32 @@ export function ClustersPage() {
     queryFn: () => apiFetch<ApiCluster[]>('/clusters'),
     refetchInterval: 15_000,
   })
+
+  // Hydrate pod state from the persisted pod_health table so the page shows the
+  // real pod set immediately on mount/remount (the watch loop keeps this table
+  // current — deleted pods are removed), rather than flickering from empty until
+  // the next live pod.health SSE event arrives. SSE events still apply instant
+  // deltas on top; each refetch reconciles (and drops pods that have gone away).
+  const { data: podRows } = useQuery({
+    queryKey: ['cluster-pods'],
+    queryFn: () => apiFetch<ApiPod[]>('/clusters/pods'),
+    refetchInterval: 10_000,
+  })
+
+  useEffect(() => {
+    if (!podRows) return
+    const next: PodMap = {}
+    for (const p of podRows) {
+      next[`${p.cluster_id}/${p.pod_name}`] = {
+        name: p.pod_name,
+        status: podStatusToKind(p.status),
+        restarts: p.restart_count,
+        cpu: 0, memory: 0, node: '', age: '',
+        ready: p.status === 'healthy',
+      }
+    }
+    setPodMap(next)
+  }, [podRows])
 
   const handleSSEEvent = useCallback((type: string, data: unknown) => {
     const d = data as Record<string, unknown>

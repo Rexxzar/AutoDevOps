@@ -80,6 +80,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 			r.Put("/deployments/{id}/apps/{appId}/repo/files/*", s.handlePutRepoFile)
 			r.Post("/deployments/{id}/apps/{appId}/repo/commit", s.handleCommitRepo)
 			r.Get("/clusters", s.handleListClusters)
+			r.Get("/clusters/pods", s.handleListPods)
 			r.Get("/cloud/accounts", s.handleListCloudAccounts)
 			r.Post("/cloud/accounts", s.handleCreateCloudAccount)
 			r.Delete("/cloud/accounts/{id}", s.handleDeleteCloudAccount)
