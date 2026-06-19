@@ -13,7 +13,7 @@ import { selectCls } from '@/components/deploy-form-fields'
 import { apiFetch } from '@/lib/api'
 import { useSSE } from '@/lib/use-sse'
 import { useAuth } from '@/lib/auth'
-import type { Provider } from '@/lib/mock-data'
+import type { Provider } from '@/lib/types'
 import { LocalFields, type LocalResource } from '@/pages/new-resource'
 import {
   type ProvisionedResource,

@@ -20,7 +20,7 @@ import { useAuth } from '@/lib/auth'
 import { useSSE } from '@/lib/use-sse'
 import { formatRelativeTime, provisionedTypeLabel, type ProvisionedResource } from '@/lib/resources'
 import { cn } from '@/lib/utils'
-import type { Target, PipelineStage } from '@/lib/mock-data'
+import type { Target, PipelineStage } from '@/lib/types'
 import { diagnoseApp } from '@/lib/diagnose'
 import { DECLARED_FRAMEWORK_LABELS, DECLARED_FRAMEWORK_HINTS, DECLARED_FRAMEWORK_OPTIONS } from '@/lib/frameworks'
 

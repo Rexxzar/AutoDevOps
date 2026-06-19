@@ -4,7 +4,7 @@ import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ProviderTag } from '@/components/meta-tags'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
-import type { Provider } from '@/lib/mock-data'
+import type { Provider } from '@/lib/types'
 import {
   type ProvisionedResource,
   type TerraformRun,

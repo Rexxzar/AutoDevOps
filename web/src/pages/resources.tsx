@@ -12,7 +12,7 @@ import { useSSE } from '@/lib/use-sse'
 import { useAuth } from '@/lib/auth'
 import { useProvisionedResources } from '@/lib/use-provisioned-resources'
 import { cn } from '@/lib/utils'
-import type { Provider } from '@/lib/mock-data'
+import type { Provider } from '@/lib/types'
 import { formatRelativeTime } from '@/lib/resources'
 
 interface CloudResource {

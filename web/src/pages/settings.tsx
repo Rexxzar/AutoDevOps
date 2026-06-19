@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { ProviderTag } from '@/components/meta-tags'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import type { Provider } from '@/lib/mock-data'
+import type { Provider } from '@/lib/types'
 
 interface ApiCluster { id: string; name: string; endpoint: string; status: string }
 interface ApiAccount { id: string; provider: string; name: string }

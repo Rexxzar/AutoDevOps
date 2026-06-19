@@ -1,6 +1,6 @@
 import { Check, X, Loader2, Minus } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { PipelineStage } from '@/lib/mock-data'
+import type { PipelineStage } from '@/lib/types'
 
 function fmt(ms?: number) {
   if (!ms) return ''

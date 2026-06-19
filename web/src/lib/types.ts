@@ -48,6 +48,17 @@ export type Pod = {
   node: string
   age: string
   ready: boolean
+  namespace?: string
+  reason?: string
+  appName?: string
+}
+
+export function extractAppName(podName: string): string {
+  const parts = podName.split('-')
+  if (parts.length >= 3) {
+    return parts.slice(0, -2).join('-')
+  }
+  return podName
 }
 
 export type Cluster = {

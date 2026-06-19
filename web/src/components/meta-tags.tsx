@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import type { Provider, Target, Framework } from '@/lib/mock-data'
+import type { Provider, Target, Framework } from '@/lib/types'
 
 const providerMeta: Record<Provider, { label: string; className: string }> = {
   aws: { label: 'AWS', className: 'text-aws border-aws/25 bg-aws/10' },

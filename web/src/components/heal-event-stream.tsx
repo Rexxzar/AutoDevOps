@@ -1,6 +1,6 @@
 import { Activity, RotateCcw, ShieldAlert, CheckCircle2, Info } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { HealEvent } from '@/lib/mock-data'
+import type { HealEvent } from '@/lib/types'
 
 const toneStyles: Record<HealEvent['tone'], { icon: typeof Info; text: string }> = {
   success: { icon: CheckCircle2, text: 'text-success' },

@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import type { Pod } from '@/lib/mock-data'
+import type { Pod } from '@/lib/types'
 import type { StatusKind } from '@/components/ui/status'
 
 const stateColor: Record<string, string> = {

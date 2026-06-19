@@ -15,7 +15,7 @@ import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { ProviderTag, targetLabel, frameworkLabel } from '@/components/meta-tags'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import type { Deployment, Provider, Target } from '@/lib/mock-data'
+import type { Deployment, Provider, Target } from '@/lib/types'
 
 interface ApiDeployment {
   id: string

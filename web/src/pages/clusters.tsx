@@ -1,18 +1,17 @@
-import { useState, useCallback, useEffect } from 'react'
-import { Boxes, Cpu, MemoryStick, Server, X } from 'lucide-react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
+import { Boxes, Cpu, Server, X, ChevronDown, ChevronRight, AlertCircle, RefreshCw } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card } from '@/components/ui/card'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { ProviderTag } from '@/components/meta-tags'
-import { PodGrid, PodLegend } from '@/components/pod-grid'
 import { HealEventStream } from '@/components/heal-event-stream'
 import { apiFetch } from '@/lib/api'
 import { useSSE } from '@/lib/use-sse'
 import { useAuth } from '@/lib/auth'
 import { cn } from '@/lib/utils'
-import { initialHealEvents } from '@/lib/mock-data'
-import type { Pod, HealEvent } from '@/lib/mock-data'
+import { initialHealEvents, extractAppName } from '@/lib/types'
+import type { Pod, HealEvent } from '@/lib/types'
 
 interface ApiCluster {
   id: string
@@ -28,6 +27,7 @@ interface ApiPod {
   pod_name: string
   status: string
   restart_count: number
+  reason?: string
 }
 
 type PodMap = Record<string, Pod>
@@ -50,6 +50,41 @@ function podStatusToKind(s: string): StatusKind {
   return map[s] ?? 'unknown'
 }
 
+function podStatusLabel(status: StatusKind, reason?: string): string {
+  if (reason) return reason
+  const labels: Record<string, string> = {
+    running: 'Running',
+    critical: 'Unhealthy',
+    pending: 'Pending',
+    warning: 'Terminating',
+    idle: 'Completed',
+    unknown: 'Unknown',
+  }
+  return labels[status] ?? status
+}
+
+const podStatusColor: Record<string, string> = {
+  running: 'bg-success',
+  healthy: 'bg-success',
+  pending: 'bg-info animate-pulse',
+  warning: 'bg-yellow-500',
+  critical: 'bg-critical animate-pulse',
+  failed: 'bg-critical',
+  idle: 'bg-muted-foreground/50',
+  unknown: 'bg-muted-foreground/50',
+}
+
+const podStatusBorder: Record<string, string> = {
+  running: 'border-success/30',
+  healthy: 'border-success/30',
+  pending: 'border-info/30',
+  warning: 'border-yellow-500/30',
+  critical: 'border-critical/30',
+  failed: 'border-critical/30',
+  idle: 'border-border',
+  unknown: 'border-border',
+}
+
 function nowStamp() {
   return new Date().toLocaleTimeString('en-GB', { hour12: false })
 }
@@ -66,40 +101,164 @@ function StatTile({ icon: Icon, label, value }: { icon: typeof Cpu; label: strin
   )
 }
 
+function NamespaceLabel({ ns }: { ns: string }) {
+  if (ns.startsWith('autodevops-')) {
+    const stackName = ns.slice('autodevops-'.length)
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className="font-medium">{stackName}</span>
+        <span className="text-[0.6rem] text-muted-foreground uppercase tracking-wider">stack</span>
+      </span>
+    )
+  }
+  if (ns.startsWith('resource-')) {
+    const resName = ns.slice('resource-'.length)
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className="font-medium">{resName}</span>
+        <span className="text-[0.6rem] text-muted-foreground uppercase tracking-wider">resource</span>
+      </span>
+    )
+  }
+  return <span className="font-medium">{ns}</span>
+}
+
+function PodCard({ pod, onClick }: { pod: Pod; onClick: () => void }) {
+  const label = podStatusLabel(pod.status, pod.reason)
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-all',
+        'hover:shadow-md hover:ring-1 hover:ring-ring/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        podStatusBorder[pod.status] ?? 'border-border',
+        'bg-card',
+      )}
+    >
+      <span className={cn('size-2.5 shrink-0 rounded-full', podStatusColor[pod.status] ?? 'bg-muted-foreground/50')} />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-medium">{pod.appName || pod.name}</p>
+        <p className="truncate text-[0.65rem] text-muted-foreground">
+          {label}
+          {pod.restarts > 0 && <span className="ml-1.5 text-yellow-600 dark:text-yellow-400">({pod.restarts} restart{pod.restarts !== 1 ? 's' : ''})</span>}
+        </p>
+      </div>
+    </button>
+  )
+}
+
+function NamespaceGroup({
+  namespace,
+  pods,
+  onSelectPod,
+}: {
+  namespace: string
+  pods: Pod[]
+  onSelectPod: (pod: Pod) => void
+}) {
+  const [collapsed, setCollapsed] = useState(false)
+  const healthy = pods.filter((p) => p.status === 'running').length
+  const unhealthy = pods.filter((p) => p.status === 'critical').length
+
+  return (
+    <div className="rounded-lg border border-border bg-background/40">
+      <button
+        onClick={() => setCollapsed((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-muted/30 rounded-t-lg transition-colors"
+      >
+        <div className="flex items-center gap-2 text-xs">
+          {collapsed ? <ChevronRight className="size-3.5 text-muted-foreground" /> : <ChevronDown className="size-3.5 text-muted-foreground" />}
+          <NamespaceLabel ns={namespace} />
+        </div>
+        <div className="flex items-center gap-2 text-[0.65rem] text-muted-foreground">
+          <span>{pods.length} pod{pods.length !== 1 ? 's' : ''}</span>
+          {healthy > 0 && <span className="text-success">{healthy} healthy</span>}
+          {unhealthy > 0 && <span className="text-critical">{unhealthy} unhealthy</span>}
+        </div>
+      </button>
+      {!collapsed && (
+        <div className="grid grid-cols-1 gap-1.5 px-3 pb-3 sm:grid-cols-2 lg:grid-cols-3">
+          {pods.map((pod) => (
+            <PodCard key={pod.name} pod={pod} onClick={() => onSelectPod(pod)} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function PodDetail({ pod, onClose }: { pod: Pod; onClose: () => void }) {
-  const rows: [string, string][] = [
-    ['Status', pod.status],
-    ['Ready', pod.ready ? 'True' : 'False'],
-    ['Restarts', String(pod.restarts)],
-    ['Node', pod.node || '—'],
-    ['Age', pod.age || '—'],
-    ['CPU', pod.cpu ? `${pod.cpu}m` : '—'],
-    ['Memory', pod.memory ? `${pod.memory}Mi` : '—'],
+  const label = podStatusLabel(pod.status, pod.reason)
+  const rows: [string, React.ReactNode][] = [
+    ['App', pod.appName || extractAppName(pod.name)],
+    ['Pod name', <span className="font-mono text-[0.7rem]">{pod.name}</span>],
+    ['Namespace', pod.namespace ? <span className="font-mono text-[0.7rem]">{pod.namespace}</span> : '—'],
+    ['Status', label],
+    ['Ready', pod.ready ? <span className="text-success">Yes</span> : <span className="text-critical">No</span>],
+    ['Restarts', pod.restarts > 0 ? (
+      <span className="inline-flex items-center gap-1">
+        <RefreshCw className="size-3 text-yellow-500" />
+        <span>{pod.restarts}</span>
+      </span>
+    ) : '0'],
   ]
+  if (pod.reason) {
+    rows.push(['Reason', (
+      <span className="inline-flex items-center gap-1 text-critical">
+        <AlertCircle className="size-3" />
+        {pod.reason}
+      </span>
+    )])
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-background/70 backdrop-blur-sm" onClick={onClose} />
       <div className="relative flex h-full w-full max-w-md flex-col border-l border-border bg-card shadow-2xl">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
-          <h3 className="truncate font-mono text-sm font-semibold">{pod.name}</h3>
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-sm font-semibold">{pod.appName || extractAppName(pod.name)}</h3>
+            <p className="truncate font-mono text-[0.65rem] text-muted-foreground mt-0.5">{pod.name}</p>
+          </div>
           <button onClick={onClose} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
             <X className="size-4" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-5">
-          <div className="mb-4">
-            <StatusBadge status={pod.status} pulse={pod.status === 'critical'} />
+          <div className="mb-4 flex items-center gap-2">
+            <span className={cn('size-3 rounded-full', podStatusColor[pod.status] ?? 'bg-muted-foreground/50')} />
+            <span className="text-sm font-medium">{label}</span>
           </div>
           <dl className="divide-y divide-border/60 rounded-lg border border-border">
             {rows.map(([k, v]) => (
-              <div key={k} className="flex items-center justify-between px-4 py-2.5">
+              <div key={k as string} className="flex items-center justify-between px-4 py-2.5">
                 <dt className="text-xs text-muted-foreground">{k}</dt>
-                <dd className="font-mono text-sm">{v}</dd>
+                <dd className="text-sm text-right">{v}</dd>
               </div>
             ))}
           </dl>
         </div>
       </div>
+    </div>
+  )
+}
+
+function PodLegend() {
+  const items: { label: string; color: string }[] = [
+    { label: 'Running', color: 'bg-success' },
+    { label: 'Pending', color: 'bg-info' },
+    { label: 'Terminating', color: 'bg-yellow-500' },
+    { label: 'Unhealthy', color: 'bg-critical' },
+    { label: 'Completed', color: 'bg-muted-foreground/50' },
+  ]
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      {items.map((i) => (
+        <div key={i.label} className="flex items-center gap-1.5">
+          <span className={cn('h-2.5 w-2.5 rounded-full', i.color)} />
+          <span className="text-xs text-muted-foreground">{i.label}</span>
+        </div>
+      ))}
     </div>
   )
 }
@@ -117,11 +276,6 @@ export function ClustersPage() {
     refetchInterval: 15_000,
   })
 
-  // Hydrate pod state from the persisted pod_health table so the page shows the
-  // real pod set immediately on mount/remount (the watch loop keeps this table
-  // current — deleted pods are removed), rather than flickering from empty until
-  // the next live pod.health SSE event arrives. SSE events still apply instant
-  // deltas on top; each refetch reconciles (and drops pods that have gone away).
   const { data: podRows } = useQuery({
     queryKey: ['cluster-pods'],
     queryFn: () => apiFetch<ApiPod[]>('/clusters/pods'),
@@ -132,12 +286,16 @@ export function ClustersPage() {
     if (!podRows) return
     const next: PodMap = {}
     for (const p of podRows) {
+      const appName = extractAppName(p.pod_name)
       next[`${p.cluster_id}/${p.pod_name}`] = {
         name: p.pod_name,
         status: podStatusToKind(p.status),
         restarts: p.restart_count,
         cpu: 0, memory: 0, node: '', age: '',
         ready: p.status === 'healthy',
+        namespace: p.namespace,
+        reason: p.reason,
+        appName,
       }
     }
     setPodMap(next)
@@ -150,6 +308,7 @@ export function ClustersPage() {
       const clusterID = String(d.cluster_id ?? '')
       const podName = String(d.pod_name ?? '')
       const key = `${clusterID}/${podName}`
+      const appName = extractAppName(podName)
       setPodMap((prev) => ({
         ...prev,
         [key]: {
@@ -161,23 +320,27 @@ export function ClustersPage() {
           node: '',
           age: '',
           ready: String(d.status) === 'healthy',
+          namespace: String(d.namespace ?? ''),
+          reason: d.reason ? String(d.reason) : undefined,
+          appName,
         },
       }))
     }
 
     if ((type === 'pod.heal.restart' || type === 'pod.heal.gaveup') && liveStream) {
       const isRestart = type === 'pod.heal.restart'
+      const podName = String(d.pod_name ?? '')
       const event: HealEvent = {
         id: `h_${Date.now()}`,
         ts: nowStamp(),
         cluster: String(d.cluster_id ?? ''),
-        pod: String(d.pod_name ?? ''),
+        pod: extractAppName(podName),
         action: isRestart
-          ? `Auto-restart scheduled (attempt ${d.attempt ?? '?'})`
-          : 'Heal gave up — restart budget exhausted',
+          ? `Auto-restart (attempt ${d.attempt ?? '?'})`
+          : 'Gave up — restart budget exhausted',
         detail: isRestart
-          ? `Reason: ${d.reason ?? 'unknown'}`
-          : `Pod ${d.pod_name} exceeded max restart attempts`,
+          ? `${d.reason ?? 'unknown'} · ${podName}`
+          : `Pod exceeded max restart attempts`,
         tone: isRestart ? 'info' : 'warning',
         backoff: isRestart ? undefined : undefined,
       }
@@ -225,6 +388,14 @@ export function ClustersPage() {
               const readyCount = pods.filter((p) => p.ready).length
               const status = statusToKind(c.status)
 
+              const namespaceGroups = pods.reduce<Record<string, Pod[]>>((acc, pod) => {
+                const ns = pod.namespace || 'default'
+                if (!acc[ns]) acc[ns] = []
+                acc[ns].push(pod)
+                return acc
+              }, {})
+              const sortedNamespaces = Object.keys(namespaceGroups).sort()
+
               return (
                 <Card key={c.id} className="overflow-hidden p-0">
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
@@ -247,16 +418,27 @@ export function ClustersPage() {
 
                   <div className="grid grid-cols-2 gap-2 px-5 py-4 sm:grid-cols-3">
                     <StatTile icon={Server} label="Endpoint" value={c.endpoint.length > 20 ? c.endpoint.slice(0, 20) + '…' : c.endpoint} />
-                    <StatTile icon={Boxes} label="Pods tracked" value={`${readyCount}/${pods.length}`} />
-                    <StatTile icon={Cpu} label="Status" value={c.status} />
+                    <StatTile icon={Boxes} label="Pods" value={`${readyCount} healthy / ${pods.length} total`} />
+                    <StatTile icon={Cpu} label="Namespaces" value={String(sortedNamespaces.length)} />
                   </div>
 
-                  <div className="border-t border-border px-5 py-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <span className="text-xs font-medium text-muted-foreground">Pod health (via SSE)</span>
+                  <div className="border-t border-border px-5 py-4 space-y-2">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-medium text-muted-foreground">Pod health by namespace</span>
                       <span className="font-mono text-xs text-muted-foreground">{pods.length} pods</span>
                     </div>
-                    <PodGrid pods={pods} onSelect={setSelectedPod} />
+                    {sortedNamespaces.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No pod data yet — waiting for health events.</p>
+                    ) : (
+                      sortedNamespaces.map((ns) => (
+                        <NamespaceGroup
+                          key={ns}
+                          namespace={ns}
+                          pods={namespaceGroups[ns]}
+                          onSelectPod={setSelectedPod}
+                        />
+                      ))
+                    )}
                   </div>
                 </Card>
               )
