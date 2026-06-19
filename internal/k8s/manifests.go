@@ -157,6 +157,8 @@ func orDefault(s, fallback string) string {
 	return s
 }
 
+func boolPtr(b bool) *bool { return &b }
+
 // buildHPA returns a CPU-utilisation HorizontalPodAutoscaler targeting the
 // app's Deployment. min<1 → 1, max<min → min, targetCPU<=0 → 80.
 func buildHPA(name, namespace string, h HPAConfig) *autoscalingv2.HorizontalPodAutoscaler {
@@ -414,6 +416,7 @@ func buildDeployment(name, namespace, imageRef string, extraEnv map[string]strin
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					EnableServiceLinks: boolPtr(false),
 					Containers: []corev1.Container{
 						appContainer,
 						buildHealthSidecar(name),
@@ -571,6 +574,7 @@ func buildResourceDeployment(name, namespace, imageRef string, port int32, env m
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					EnableServiceLinks: boolPtr(false),
 					Containers: []corev1.Container{container},
 					Volumes:    volumes,
 				},
