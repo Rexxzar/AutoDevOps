@@ -11,6 +11,8 @@ import (
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/jackc/pgx/v5/pgxpool"
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -124,6 +126,9 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 
 	slog.Info("k8s: watch loop running", "cluster_id", c.clusterID, "server", c.serverURL)
+
+	go c.reconcileLoop(ctx)
+
 	<-ctx.Done()
 	return nil
 }
@@ -220,6 +225,58 @@ func classify(pod *corev1.Pod) PodHealth {
 	}
 
 	return h
+}
+
+// reconcileLoop periodically compares pod_health DB rows against actual K8s
+// pods and prunes stale entries. Catches pods that were deleted while the
+// watch loop was disconnected or the server was down.
+func (c *Controller) reconcileLoop(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.reconcilePodHealth(ctx)
+		}
+	}
+}
+
+func (c *Controller) reconcilePodHealth(ctx context.Context) {
+	rows, err := c.pool.Query(ctx,
+		"SELECT namespace, pod_name FROM pod_health WHERE cluster_id = $1",
+		c.clusterID,
+	)
+	if err != nil {
+		slog.Error("k8s: reconcile query pod_health", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	type podKey struct{ namespace, name string }
+	var dbPods []podKey
+	for rows.Next() {
+		var k podKey
+		if err := rows.Scan(&k.namespace, &k.name); err != nil {
+			slog.Error("k8s: reconcile scan", "error", err)
+			return
+		}
+		dbPods = append(dbPods, k)
+	}
+
+	pruned := 0
+	for _, k := range dbPods {
+		_, err := c.clientset.CoreV1().Pods(k.namespace).Get(ctx, k.name, metav1.GetOptions{})
+		if err != nil && kerrors.IsNotFound(err) {
+			c.deletePodHealth(ctx, k.namespace, k.name)
+			pruned++
+		}
+	}
+	if pruned > 0 {
+		slog.Info("k8s: reconcile pruned stale pods from pod_health", "count", pruned)
+	}
 }
 
 func isSystemNamespace(ns string) bool {
