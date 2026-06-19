@@ -28,10 +28,11 @@ import (
 //     to stop nginx or have a webroot volume mount
 //  4. Reload nginx, run certbot, reload again with the final TLS vhost
 type TLSProvisioner struct {
-	docker    *dockerclient.Client
-	pool      *pgxpool.Pool
-	publicIP  string
-	certEmail string
+	docker          *dockerclient.Client
+	pool            *pgxpool.Pool
+	publicIP        string
+	certEmail       string
+	kindIngressPort uint32 // host port the kind ingress-nginx controller serves plain HTTP on (ProvisionK8s upstream)
 }
 
 // NginxProxy describes the detected nginx reverse proxy on the host.
@@ -46,9 +47,11 @@ type NginxProxy struct {
 
 // NewTLSProvisioner builds a TLSProvisioner. publicIP is the server's public
 // IPv4 (checked against DNS); certEmail is passed to certbot (may be empty —
-// certbot will use --register-unsafely-without-email).
-func NewTLSProvisioner(docker *dockerclient.Client, pool *pgxpool.Pool, publicIP, certEmail string) *TLSProvisioner {
-	return &TLSProvisioner{docker: docker, pool: pool, publicIP: publicIP, certEmail: certEmail}
+// certbot will use --register-unsafely-without-email). kindIngressPort is the
+// host port the kind ingress-nginx controller serves plain HTTP on — the
+// upstream ProvisionK8s proxies a K8s app's domain to.
+func NewTLSProvisioner(docker *dockerclient.Client, pool *pgxpool.Pool, publicIP, certEmail string, kindIngressPort uint32) *TLSProvisioner {
+	return &TLSProvisioner{docker: docker, pool: pool, publicIP: publicIP, certEmail: certEmail, kindIngressPort: kindIngressPort}
 }
 
 // CheckDNS verifies that domain's A record resolves to publicIP.
@@ -66,11 +69,28 @@ func CheckDNS(domain, publicIP string) error {
 	return fmt.Errorf("%s resolves to %v, not to this server (%s) — add an A record pointing to %s", domain, addrs, publicIP, publicIP)
 }
 
-// Provision runs the full TLS provisioning flow for a local_docker app.
+// Provision runs the full TLS provisioning flow for a local_docker app — the
+// nginx vhost proxies the domain to the app's deterministic container host port.
 // publishStep is o.publishStep from the Orchestrator — lets TLS publish its
 // own StepTLS events into the same pipeline SSE stream without coupling to
 // the Orchestrator struct directly.
 func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName, appName string, publishStep func(appID, step, status string)) error {
+	return p.provision(ctx, appID, domain, tlsAppHostPort(stackName, appName), publishStep)
+}
+
+// ProvisionK8s runs the same TLS flow for a local_k8s app, but the nginx vhost
+// proxies the domain to the kind ingress-nginx controller's host HTTP port
+// (p.kindIngressPort). The in-cluster ingress then Host-routes the request to
+// the right Service — so multiple K8s apps share the one ingress upstream, and
+// "proxy_set_header Host $host" in tlsFinalVhost is what disambiguates them.
+func (p *TLSProvisioner) ProvisionK8s(ctx context.Context, appID, domain string, publishStep func(appID, step, status string)) error {
+	return p.provision(ctx, appID, domain, p.kindIngressPort, publishStep)
+}
+
+// provision is the shared TLS flow for both targets — identical except for the
+// nginx proxy_pass upstream port (a docker container host port for Provision, the
+// kind ingress host port for ProvisionK8s).
+func (p *TLSProvisioner) provision(ctx context.Context, appID, domain string, upstreamPort uint32, publishStep func(appID, step, status string)) error {
 	pub := func(status string) { publishStep(appID, StepTLS, status) }
 
 	pub(StepActive)
@@ -135,8 +155,7 @@ func (p *TLSProvisioner) Provision(ctx context.Context, appID, domain, stackName
 	}
 
 	// 5. Write the final TLS vhost and reload.
-	hostPort := tlsAppHostPort(stackName, appName)
-	proxyTarget := proxyPassTarget(proxy, hostPort)
+	proxyTarget := proxyPassTarget(proxy, upstreamPort)
 	finalConf := tlsFinalVhost(domain, proxyTarget, proxy.CertDirInCtn)
 	if err := os.WriteFile(confPath, []byte(finalConf), 0o644); err != nil {
 		pub(StepFailed)

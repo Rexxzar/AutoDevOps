@@ -29,7 +29,7 @@ import (
 // secretFiles is the decrypted secret_files_id contents (container path ->
 // file content, may be nil) mounted read-only via a K8s Secret + Volume.
 type KubeDeployer interface {
-	KubeDeploy(ctx context.Context, name, namespace, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte) error
+	KubeDeploy(ctx context.Context, name, namespace, imageRef, domain string, extraEnv map[string]string, secretFiles map[string][]byte, k8sConfigJSON []byte) error
 	KubeDeployImageApp(ctx context.Context, name, namespace, imageRef string, port int32, env map[string]string, volumePath string, secretFiles map[string][]byte) error
 }
 

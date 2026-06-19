@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowRight, AlertCircle, AlertTriangle, CheckCircle2, Loader
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { TargetPill, FormField, DomainField, inputCls } from '@/components/deploy-form-fields'
+import { FormField, DomainField, inputCls } from '@/components/deploy-form-fields'
 
 type LocalTarget = 'k8s' | 'container'
 
@@ -66,7 +66,7 @@ type ImportStep = 'connect' | 'preview' | 'success'
 // endpoints with the confirmed plan. No dedicated "import commit" endpoint —
 // this is pure frontend orchestration over POST /deployments/import/preview's
 // ComposePlan.
-export function ComposeImportForm() {
+export function ComposeImportForm({ target }: { target: LocalTarget }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [step, setStep] = useState<ImportStep>('connect')
@@ -81,7 +81,6 @@ export function ComposeImportForm() {
   const [links, setLinks] = useState<LinkRow[]>([])
   const [planWarnings, setPlanWarnings] = useState<string[]>([])
   const [stackName, setStackName] = useState('')
-  const [target, setTarget] = useState<LocalTarget>('k8s')
 
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
@@ -214,11 +213,16 @@ export function ComposeImportForm() {
         errors.push('failed to resolve app ids — links were not created')
       }
 
+      // The first git service is created AS the stack, so the backend names it
+      // after the stack name, not its original compose service name. Remap so
+      // suggested links that reference it still resolve.
+      const actualName = (composeName: string) => (composeName === first.name ? stackName.trim() : composeName)
+
       const includedLinks = links.filter(l => l.included)
       let linksCreated = 0
       for (const link of includedLinks) {
-        const appId = nameToAppId[link.app_name]
-        const dependsOnId = nameToAppId[link.depends_on_name]
+        const appId = nameToAppId[actualName(link.app_name)]
+        const dependsOnId = nameToAppId[actualName(link.depends_on_name)]
         if (!appId || !dependsOnId) continue
         try {
           await apiFetch(`/deployments/${deploymentId}/apps/${appId}/links`, {
@@ -369,13 +373,6 @@ export function ComposeImportForm() {
 
         <FormField label="Stack name">
           <input value={stackName} onChange={e => setStackName(e.target.value)} placeholder="my-stack" required className={inputCls} />
-        </FormField>
-
-        <FormField label="Target" hint="applies to all included services">
-          <div className="flex gap-2">
-            <TargetPill label="Kubernetes" sub="kind cluster" active={target === 'k8s'} onClick={() => setTarget('k8s')} />
-            <TargetPill label="Container" sub="Docker SDK" active={target === 'container'} onClick={() => setTarget('container')} />
-          </div>
         </FormField>
 
         {links.length > 0 && (

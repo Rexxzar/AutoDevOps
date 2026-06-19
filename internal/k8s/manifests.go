@@ -1,10 +1,12 @@
 package k8s
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -21,6 +23,182 @@ const (
 	ingressClassName = "nginx"
 	clusterIssuerName = "selfsigned-issuer"
 )
+
+// K8sConfig is the per-app (git-kind) Kubernetes tuning stored in
+// deployment_apps.k8s_config (JSONB). Every field is optional — a nil config
+// or a nil/zero field falls back to the same defaults buildDeployment used
+// before this column existed, so pre-existing apps are unaffected.
+type K8sConfig struct {
+	Replicas      *int32               `json:"replicas,omitempty"`
+	CPURequest    string               `json:"cpu_request,omitempty"`
+	CPULimit      string               `json:"cpu_limit,omitempty"`
+	MemRequest    string               `json:"mem_request,omitempty"`
+	MemLimit      string               `json:"mem_limit,omitempty"`
+	HPA           *HPAConfig           `json:"hpa,omitempty"`
+	Liveness      *ProbeConfig         `json:"liveness,omitempty"`
+	Readiness     *ProbeConfig         `json:"readiness,omitempty"`
+	RollingUpdate *RollingUpdateConfig `json:"rolling_update,omitempty"`
+}
+
+// parseK8sConfig unmarshals deployment_apps.k8s_config (raw JSONB bytes) into a
+// *K8sConfig. Empty or malformed input returns nil — buildDeployment then uses
+// the original hardcoded defaults, so a bad config degrades gracefully rather
+// than failing the deploy.
+func parseK8sConfig(raw []byte) *K8sConfig {
+	if len(raw) == 0 {
+		return nil
+	}
+	var cfg K8sConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil
+	}
+	return &cfg
+}
+
+// HPAConfig drives a HorizontalPodAutoscaler (CPU-utilisation based).
+type HPAConfig struct {
+	Min       int32 `json:"min"`
+	Max       int32 `json:"max"`
+	TargetCPU int32 `json:"target_cpu"` // average CPU utilisation % that triggers scaling
+}
+
+// ProbeConfig is an HTTP GET liveness/readiness probe target.
+type ProbeConfig struct {
+	Path string `json:"path"`
+	Port int32  `json:"port"`
+}
+
+// RollingUpdateConfig tunes the Deployment's rolling-update strategy. Values
+// may be counts ("1") or percentages ("25%").
+type RollingUpdateConfig struct {
+	MaxSurge       string `json:"max_surge"`
+	MaxUnavailable string `json:"max_unavailable"`
+}
+
+// quantityOr parses a resource quantity string, falling back to a known-valid
+// constant on empty/invalid input (so a malformed form value can never panic
+// the deploy goroutine via resource.MustParse).
+func quantityOr(s, fallback string) resource.Quantity {
+	if s != "" {
+		if q, err := resource.ParseQuantity(s); err == nil {
+			return q
+		}
+	}
+	return resource.MustParse(fallback)
+}
+
+// appResources builds the app container's resource requests/limits from cfg,
+// defaulting each unset field to the original hardcoded values.
+func appResources(cfg *K8sConfig) corev1.ResourceRequirements {
+	cpuReq, cpuLim, memReq, memLim := "", "", "", ""
+	if cfg != nil {
+		cpuReq, cpuLim, memReq, memLim = cfg.CPURequest, cfg.CPULimit, cfg.MemRequest, cfg.MemLimit
+	}
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    quantityOr(cpuReq, "100m"),
+			corev1.ResourceMemory: quantityOr(memReq, "128Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    quantityOr(cpuLim, "500m"),
+			corev1.ResourceMemory: quantityOr(memLim, "512Mi"),
+		},
+	}
+}
+
+// buildProbe converts a ProbeConfig into a K8s HTTP-GET Probe (nil → no probe).
+// Probes are opt-in: apps that don't return 200 on the probe path would
+// crash-loop if probes were applied by default, so they're only added when the
+// user explicitly configures one.
+func buildProbe(p *ProbeConfig) *corev1.Probe {
+	if p == nil {
+		return nil
+	}
+	port := paketoPort
+	if p.Port > 0 {
+		port = p.Port
+	}
+	path := p.Path
+	if path == "" {
+		path = "/"
+	}
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromInt32(port)},
+		},
+		InitialDelaySeconds: 10,
+		PeriodSeconds:       15,
+		TimeoutSeconds:      3,
+		FailureThreshold:    3,
+	}
+}
+
+// rollingUpdateStrategy returns the Deployment strategy for cfg. A nil config
+// returns the zero value, which the API server defaults to RollingUpdate 25%/25%.
+func rollingUpdateStrategy(c *RollingUpdateConfig) appsv1.DeploymentStrategy {
+	if c == nil {
+		return appsv1.DeploymentStrategy{}
+	}
+	surge := intstr.Parse(orDefault(c.MaxSurge, "25%"))
+	unavail := intstr.Parse(orDefault(c.MaxUnavailable, "25%"))
+	return appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxSurge:       &surge,
+			MaxUnavailable: &unavail,
+		},
+	}
+}
+
+func orDefault(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+// buildHPA returns a CPU-utilisation HorizontalPodAutoscaler targeting the
+// app's Deployment. min<1 → 1, max<min → min, targetCPU<=0 → 80.
+func buildHPA(name, namespace string, h HPAConfig) *autoscalingv2.HorizontalPodAutoscaler {
+	min := h.Min
+	if min < 1 {
+		min = 1
+	}
+	max := h.Max
+	if max < min {
+		max = min
+	}
+	target := h.TargetCPU
+	if target <= 0 {
+		target = 80
+	}
+	return &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    managedLabels(name),
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       name,
+			},
+			MinReplicas: &min,
+			MaxReplicas: max,
+			Metrics: []autoscalingv2.MetricSpec{{
+				Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{
+					Name: corev1.ResourceCPU,
+					Target: autoscalingv2.MetricTarget{
+						Type:               autoscalingv2.UtilizationMetricType,
+						AverageUtilization: &target,
+					},
+				},
+			}},
+		},
+	}
+}
 
 // NamespaceName derives the deterministic K8s namespace for a deployment:
 // "autodevops-<name>" with underscores→hyphens and lower-cased, capped at 63
@@ -151,9 +329,21 @@ func secretFilesVolume(name string, secretFiles map[string][]byte) *corev1.Volum
 	}
 }
 
-func buildDeployment(name, namespace, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte) *appsv1.Deployment {
-	replicas := int32(1)
+func buildDeployment(name, namespace, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte, cfg *K8sConfig) *appsv1.Deployment {
 	labels := managedLabels(name)
+
+	// Replica count: explicit cfg.Replicas, else 1. When an HPA manages this
+	// Deployment, seed at HPA.Min so a redeploy (full Update) resets to the
+	// floor and the autoscaler scales back up — avoids fighting the HPA.
+	replicas := int32(1)
+	if cfg != nil && cfg.Replicas != nil {
+		replicas = *cfg.Replicas
+	}
+	if cfg != nil && cfg.HPA != nil {
+		if min := cfg.HPA.Min; min >= 1 {
+			replicas = min
+		}
+	}
 
 	appContainer := corev1.Container{
 		Name:  "app",
@@ -164,23 +354,23 @@ func buildDeployment(name, namespace, imageRef string, extraEnv map[string]strin
 		Env: append([]corev1.EnvVar{
 			{Name: "PORT", Value: "8080"},
 		}, sortedEnvVars(extraEnv)...),
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-				corev1.ResourceMemory: resource.MustParse("128Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("512Mi"),
-			},
-		},
+		Resources:       appResources(cfg),
 		ImagePullPolicy: corev1.PullAlways,
 		VolumeMounts:    secretFileVolumeMounts(secretFiles),
+	}
+	if cfg != nil {
+		appContainer.LivenessProbe = buildProbe(cfg.Liveness)
+		appContainer.ReadinessProbe = buildProbe(cfg.Readiness)
 	}
 
 	var volumes []corev1.Volume
 	if v := secretFilesVolume(name, secretFiles); v != nil {
 		volumes = append(volumes, *v)
+	}
+
+	var strategy appsv1.DeploymentStrategy
+	if cfg != nil {
+		strategy = rollingUpdateStrategy(cfg.RollingUpdate)
 	}
 
 	return &appsv1.Deployment{
@@ -191,6 +381,7 @@ func buildDeployment(name, namespace, imageRef string, extraEnv map[string]strin
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: strategy,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"app": name},
 			},
@@ -385,24 +576,41 @@ func buildResourceService(name, namespace string, port int32) *corev1.Service {
 	}
 }
 
-func buildIngress(name, namespace, host string) *networkingv1.Ingress {
+// buildIngress builds the app's Ingress. When publicDomain is true the app is
+// fronted by central nginx (which terminates real TLS and proxies to this
+// ingress over plain HTTP): ssl-redirect is disabled so the in-cluster ingress
+// doesn't 308-loop the HTTP→HTTPS hop, no cert-manager annotation/TLS block is
+// added (nginx owns the cert). When false (dev/sslip.io) the ingress keeps the
+// self-signed cert-manager TLS block and forces ssl-redirect.
+func buildIngress(name, namespace, host string, publicDomain bool) *networkingv1.Ingress {
 	pathType := networkingv1.PathTypePrefix
 	className := ingressClassName
+
+	annotations := map[string]string{
+		"cert-manager.io/cluster-issuer":           clusterIssuerName,
+		"nginx.ingress.kubernetes.io/ssl-redirect": "true",
+	}
+	var tls []networkingv1.IngressTLS
+	if publicDomain {
+		annotations = map[string]string{
+			"nginx.ingress.kubernetes.io/ssl-redirect": "false",
+		}
+	} else {
+		tls = []networkingv1.IngressTLS{
+			{Hosts: []string{host}, SecretName: name + "-tls"},
+		}
+	}
+
 	return &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    managedLabels(name),
-			Annotations: map[string]string{
-				"cert-manager.io/cluster-issuer":           clusterIssuerName,
-				"nginx.ingress.kubernetes.io/ssl-redirect": "true",
-			},
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      managedLabels(name),
+			Annotations: annotations,
 		},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &className,
-			TLS: []networkingv1.IngressTLS{
-				{Hosts: []string{host}, SecretName: name + "-tls"},
-			},
+			TLS:              tls,
 			Rules: []networkingv1.IngressRule{
 				{
 					Host: host,

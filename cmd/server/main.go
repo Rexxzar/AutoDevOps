@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -108,7 +109,11 @@ func main() {
 	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, cfg.IngressDomain, kubeDeployer, dockerDeployer, imagePusher, imageSaver, aciRedeployer, complianceScanner)
 	if dockerMgr != nil {
 		if cfg.PublicIP != "" {
-			tlsProv := deploy.NewTLSProvisioner(dockerMgr.Client(), pool, cfg.PublicIP, cfg.AdminEmail)
+			kindIngressPort := uint32(8880)
+			if p, err := strconv.ParseUint(cfg.KindIngressHTTPPort, 10, 32); err == nil {
+				kindIngressPort = uint32(p)
+			}
+			tlsProv := deploy.NewTLSProvisioner(dockerMgr.Client(), pool, cfg.PublicIP, cfg.AdminEmail, kindIngressPort)
 			orchestrator.SetTLSProvisioner(tlsProv)
 		}
 		// Use Publish:true pack mode when the Docker daemon uses containerd image store,

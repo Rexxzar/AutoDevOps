@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { targetLabel, frameworkLabel } from '@/components/meta-tags'
-import { TargetPill, FormField, DomainField, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { TargetPill, FormField, DomainField, K8sOptions, type K8sConfigValue, inputCls, selectCls } from '@/components/deploy-form-fields'
 import { Pipeline } from '@/components/pipeline'
 import { SetupGuide } from '@/components/setup-guide'
 import { RepoEditor } from '@/components/repo-editor'
@@ -67,6 +67,7 @@ interface AppDetail {
 interface StackDetail {
   id: string
   name: string
+  namespace_override?: string
   created_at: string
   updated_at: string
   apps: AppDetail[]
@@ -550,6 +551,7 @@ export function DeploymentDetailPage() {
 
       <AddAppDialog
         stackId={stack.id}
+        stackNamespace={stack.namespace_override || `autodevops-${stack.name.toLowerCase().replace(/_/g, '-')}`}
         vmResources={vmResources}
         ecsResources={ecsResources}
         aciResources={aciResources}
@@ -1165,6 +1167,9 @@ function AddLinkDialog({
   const [targetKind, targetId] = effectiveTarget.split(':')
   const selectedResource = targetKind === 'resource' ? resources.find((r) => r.id === targetId) : undefined
   const showPort = !!selectedResource && PORTED_RESOURCE_TYPES.has(selectedResource.resource_type)
+  // aliasPreview drives the live env-var preview below; falls back to a
+  // placeholder before the user types so the AUTODEVOPS_<ALIAS>_* shape is clear.
+  const aliasPreview = alias || '<ALIAS>'
 
   function reset() {
     setAlias(''); setTarget(''); setPort(''); setError('')
@@ -1202,7 +1207,7 @@ function AddLinkDialog({
   return (
     <Dialog open={open} onClose={handleClose} title="Connect to an app or resource">
       <form onSubmit={submit} className="p-4 space-y-4">
-        <FormField label="Alias" hint="used as AUTODEVOPS_<ALIAS>_URL etc.">
+        <FormField label="Alias" hint="names the env vars your code reads">
           <input
             value={alias}
             onChange={(e) => setAlias(e.target.value.toUpperCase())}
@@ -1212,6 +1217,30 @@ function AddLinkDialog({
             className={inputCls}
           />
         </FormField>
+
+        {/* Live preview — the alias you type becomes the middle of the
+            AUTODEVOPS_<ALIAS>_* env vars injected into this app. The app's code
+            must read these exact names to reach the connected target, so showing
+            them live removes the guesswork (and the domain/db-creds gotchas). */}
+        <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 space-y-2">
+          <p className="text-[0.7rem] font-medium text-muted-foreground">
+            This app will receive these environment variables — read them in your code:
+          </p>
+          <div className="space-y-0.5 font-mono text-xs text-foreground">
+            <p>AUTODEVOPS_{aliasPreview}_URL <span className="font-sans text-muted-foreground/60">— full address</span></p>
+            <p>AUTODEVOPS_{aliasPreview}_HOST <span className="font-sans text-muted-foreground/60">— hostname</span></p>
+            <p>AUTODEVOPS_{aliasPreview}_PORT <span className="font-sans text-muted-foreground/60">— port</span></p>
+          </div>
+          <p className="text-[0.65rem] leading-relaxed text-muted-foreground/80">
+            <span className="font-medium text-muted-foreground">Browser / frontend code</span> must use{' '}
+            <span className="font-mono text-foreground">AUTODEVOPS_{aliasPreview}_DOMAIN</span> (the public https URL) —
+            _HOST and _URL are internal and can&apos;t be reached from a browser.{' '}
+            <span className="font-medium text-muted-foreground">Databases</span> also expose{' '}
+            <span className="font-mono text-foreground">_USER</span>,{' '}
+            <span className="font-mono text-foreground">_PASSWORD</span> and{' '}
+            <span className="font-mono text-foreground">_DATABASE</span>.
+          </p>
+        </div>
         <FormField label="Connect to">
           <select
             value={effectiveTarget}
@@ -1268,9 +1297,10 @@ function AddLinkDialog({
 }
 
 function AddAppDialog({
-  stackId, vmResources, ecsResources, aciResources, open, onClose, onCreated,
+  stackId, stackNamespace, vmResources, ecsResources, aciResources, open, onClose, onCreated,
 }: {
   stackId: string
+  stackNamespace: string
   vmResources: ProvisionedResource[]
   ecsResources: ProvisionedResource[]
   aciResources: ProvisionedResource[]
@@ -1292,6 +1322,7 @@ function AddAppDialog({
   const [imageRef, setImageRef] = useState('')
   const [port, setPort] = useState('')
   const [volumePath, setVolumePath] = useState('')
+  const [k8sConfig, setK8sConfig] = useState<K8sConfigValue | undefined>(undefined)
   const [envRows, setEnvRows] = useState<{ key: string; value: string }[]>([])
   const [secretFileRows, setSecretFileRows] = useState<{ path: string; file: File | null }[]>([])
   const [loading, setLoading] = useState(false)
@@ -1306,7 +1337,7 @@ function AddAppDialog({
     setKind('git')
     setName(''); setRepo(''); setBranch('main'); setGitToken(''); setDeclaredFramework(''); setTarget('k8s'); setVmResourceId(''); setDomain('')
     setEcsResourceId(''); setAciResourceId('')
-    setImageRef(''); setPort(''); setVolumePath(''); setEnvRows([]); setSecretFileRows([])
+    setImageRef(''); setPort(''); setVolumePath(''); setK8sConfig(undefined); setEnvRows([]); setSecretFileRows([])
     setError(''); setSuccess(null)
   }
 
@@ -1361,6 +1392,7 @@ function AddAppDialog({
       if (gitToken) body.git_auth = { type: 'token', token: gitToken }
       if (domain) body.domain = domain
       if (declaredFramework) body.declared_framework = declaredFramework
+      if (target === 'k8s' && k8sConfig) body.k8s_config = k8sConfig
       if (Object.keys(secretFiles).length > 0) body.secret_files = secretFiles
       const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>(`/deployments/${stackId}/apps`, {
         method: 'POST', body: JSON.stringify(body),
@@ -1587,6 +1619,14 @@ function AddAppDialog({
           )}
           {kind === 'git' && (
             <DomainField value={domain} onChange={setDomain} />
+          )}
+          {kind === 'git' && target === 'k8s' && (
+            <>
+              <FormField label="Namespace" hint="set on the stack">
+                <input value={stackNamespace} disabled className={cn(inputCls, 'opacity-60')} />
+              </FormField>
+              <K8sOptions onChange={setK8sConfig} />
+            </>
           )}
           {error && (
             <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,10 +27,20 @@ var (
 // (best-effort — silently skipped if cert-manager CRDs are not installed),
 // and Ingress. Blocks until at least one pod reports Available or the context
 // deadline is reached.
-func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef string, extraEnv map[string]string, secretFiles map[string][]byte) error {
-	host := name + "." + c.ingressDomain
+func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef, domain string, extraEnv map[string]string, secretFiles map[string][]byte, k8sConfigJSON []byte) error {
+	cfg := parseK8sConfig(k8sConfigJSON)
 
-	slog.Info("k8s: deploying", "name", name, "namespace", namespace, "image", imageRef, "host", host)
+	// When a real public domain is set, central nginx terminates TLS and
+	// proxies to this ingress over plain HTTP — the ingress host is the public
+	// domain and no self-signed cert-manager cert is needed. Otherwise fall
+	// back to the dev "<app>.<ingressDomain>" host with a self-signed cert.
+	publicDomain := domain != ""
+	host := name + "." + c.ingressDomain
+	if publicDomain {
+		host = domain
+	}
+
+	slog.Info("k8s: deploying", "name", name, "namespace", namespace, "image", imageRef, "host", host, "public_domain", publicDomain)
 
 	if err := c.applyNamespace(ctx, buildResourceNamespace(name, namespace)); err != nil {
 		return fmt.Errorf("k8s: apply namespace %s: %w", namespace, err)
@@ -39,23 +50,31 @@ func (c *Controller) KubeDeploy(ctx context.Context, name, namespace, imageRef s
 			return fmt.Errorf("k8s: apply secret %s: %w", name, err)
 		}
 	}
-	if err := c.applyDeployment(ctx, buildDeployment(name, namespace, imageRef, extraEnv, secretFiles)); err != nil {
+	if err := c.applyDeployment(ctx, buildDeployment(name, namespace, imageRef, extraEnv, secretFiles, cfg)); err != nil {
 		return fmt.Errorf("k8s: apply deployment %s: %w", name, err)
 	}
 	if err := c.applyService(ctx, buildService(name, namespace)); err != nil {
 		return fmt.Errorf("k8s: apply service %s: %w", name, err)
 	}
 
-	// cert-manager resources are best-effort: the platform still works over plain
-	// HTTP if cert-manager is not installed in the cluster.
-	if err := c.applyCRD(ctx, issuerGVR, buildClusterIssuer()); err != nil {
-		slog.Warn("k8s: cluster issuer not applied (cert-manager may not be installed)", "error", err)
-	}
-	if err := c.applyCRD(ctx, certGVR, buildCertificate(name, namespace, host)); err != nil {
-		slog.Warn("k8s: certificate not applied (cert-manager may not be installed)", "error", err)
+	if cfg != nil && cfg.HPA != nil {
+		if err := c.applyHPA(ctx, buildHPA(name, namespace, *cfg.HPA)); err != nil {
+			return fmt.Errorf("k8s: apply hpa %s: %w", name, err)
+		}
 	}
 
-	if err := c.applyIngress(ctx, buildIngress(name, namespace, host)); err != nil {
+	// cert-manager self-signed resources are only used for the dev (non-public)
+	// host — skipped entirely when nginx owns the real cert.
+	if !publicDomain {
+		if err := c.applyCRD(ctx, issuerGVR, buildClusterIssuer()); err != nil {
+			slog.Warn("k8s: cluster issuer not applied (cert-manager may not be installed)", "error", err)
+		}
+		if err := c.applyCRD(ctx, certGVR, buildCertificate(name, namespace, host)); err != nil {
+			slog.Warn("k8s: certificate not applied (cert-manager may not be installed)", "error", err)
+		}
+	}
+
+	if err := c.applyIngress(ctx, buildIngress(name, namespace, host, publicDomain)); err != nil {
 		return fmt.Errorf("k8s: apply ingress %s: %w", name, err)
 	}
 
@@ -106,7 +125,7 @@ func (c *Controller) KubeDeployResource(ctx context.Context, name, namespace, im
 		if err := c.applyCRD(ctx, certGVR, buildCertificate(name, namespace, host)); err != nil {
 			slog.Warn("k8s: certificate not applied (cert-manager may not be installed)", "error", err)
 		}
-		if err := c.applyIngress(ctx, buildIngress(name, namespace, host)); err != nil {
+		if err := c.applyIngress(ctx, buildIngress(name, namespace, host, false)); err != nil {
 			return "", "", fmt.Errorf("k8s: apply ingress %s: %w", name, err)
 		}
 	}
@@ -173,6 +192,9 @@ func (c *Controller) KubeDeleteApp(ctx context.Context, namespace, name string) 
 	}
 	if err := c.clientset.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
 		return fmt.Errorf("k8s: delete service %s/%s: %w", namespace, name, err)
+	}
+	if err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("k8s: delete hpa %s/%s: %w", namespace, name, err)
 	}
 	if err := c.removeIngress(ctx, namespace, name); err != nil {
 		return fmt.Errorf("k8s: %w", err)
@@ -287,6 +309,23 @@ func (c *Controller) applyService(ctx context.Context, svc *corev1.Service) erro
 	svc.ResourceVersion = existing.ResourceVersion
 	svc.Spec.ClusterIP = existing.Spec.ClusterIP // must preserve the allocated ClusterIP on update
 	_, err = c.clientset.CoreV1().Services(svc.Namespace).Update(ctx, svc, metav1.UpdateOptions{})
+	return err
+}
+
+// applyHPA creates or updates a HorizontalPodAutoscaler, mirroring
+// applyService's AlreadyExists→Get(ResourceVersion)→Update pattern.
+func (c *Controller) applyHPA(ctx context.Context, hpa *autoscalingv2.HorizontalPodAutoscaler) error {
+	api := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(hpa.Namespace)
+	_, err := api.Create(ctx, hpa, metav1.CreateOptions{})
+	if !kerrors.IsAlreadyExists(err) {
+		return err
+	}
+	existing, err := api.Get(ctx, hpa.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get existing hpa: %w", err)
+	}
+	hpa.ResourceVersion = existing.ResourceVersion
+	_, err = api.Update(ctx, hpa, metav1.UpdateOptions{})
 	return err
 }
 

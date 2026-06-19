@@ -5,7 +5,7 @@ import { ArrowLeft, Loader2, CheckCircle2, AlertCircle, Server, Cloud, Container
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { TargetPill, FormField, DomainField, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { TargetPill, FormField, DomainField, K8sOptions, type K8sConfigValue, inputCls, selectCls } from '@/components/deploy-form-fields'
 import { ComposeImportForm } from '@/components/compose-import-form'
 import { type ProvisionedResource, provisionedTypeLabel } from '@/lib/resources'
 import { DECLARED_FRAMEWORK_OPTIONS } from '@/lib/frameworks'
@@ -128,6 +128,8 @@ export function NewDeploymentPage() {
   const [ecsResourceId, setEcsResourceId] = useState('')
   const [aciResourceId, setAciResourceId] = useState('')
   const [localDomain, setLocalDomain] = useState('')
+  const [namespaceOverride, setNamespaceOverride] = useState('')
+  const [k8sConfig, setK8sConfig] = useState<K8sConfigValue | undefined>(undefined)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -221,6 +223,10 @@ export function NewDeploymentPage() {
       if (token) body.git_auth = { type: 'token', token }
       if (declaredFramework) body.declared_framework = declaredFramework
       if (localDomain) body.domain = localDomain
+      if (targetType === 'k8s') {
+        if (namespaceOverride) body.namespace_override = namespaceOverride
+        if (k8sConfig) body.k8s_config = k8sConfig
+      }
       const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>('/deployments', {
         method: 'POST', body: JSON.stringify(body),
       })
@@ -491,6 +497,16 @@ export function NewDeploymentPage() {
                   {/* Domain field for local targets */}
                   {location === 'local' && <DomainField value={localDomain} onChange={setLocalDomain} />}
 
+                  {/* Kubernetes-only: namespace override + per-app tuning */}
+                  {location === 'local' && localTarget === 'k8s' && (
+                    <>
+                      <FormField label="Namespace" hint="optional — defaults to autodevops-<stack>">
+                        <input value={namespaceOverride} onChange={e => setNamespaceOverride(e.target.value)} placeholder="autodevops-my-app" className={inputCls} />
+                      </FormField>
+                      <K8sOptions onChange={setK8sConfig} />
+                    </>
+                  )}
+
                   {error && (
                     <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
                       <AlertCircle className="size-4 shrink-0" />{error}
@@ -505,7 +521,7 @@ export function NewDeploymentPage() {
             )}
 
             {/* ── Step 4: Compose import ── */}
-            {isComposeForm && <ComposeImportForm />}
+            {isComposeForm && <ComposeImportForm target="container" />}
           </>
         )}
 
@@ -545,6 +561,7 @@ export function NewDeploymentPage() {
                 setCloudProvider(null); setDockerMode(null); setCloudTarget(null)
                 setName(''); setRepo(''); setBranch('main'); setToken(''); setDeclaredFramework('')
                 setLocalDomain(''); setVmResourceId(''); setEcsResourceId(''); setAciResourceId('')
+                setNamespaceOverride(''); setK8sConfig(undefined)
                 setSuccess(null)
               }}>
                 New deployment

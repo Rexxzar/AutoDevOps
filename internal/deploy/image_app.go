@@ -22,18 +22,24 @@ func (o *Orchestrator) DeployImageApp(ctx context.Context, appID string) error {
 		imageRef      string
 		port          int32
 		targetKind    string
-		envSecretID   *string
-		volumePath    string
-		secretFilesID *string
+		envSecretID       *string
+		volumePath        string
+		secretFilesID     *string
+		namespaceOverride string
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT d.name, da.name, COALESCE(da.image_ref, ''), COALESCE(da.port, 0), da.target_kind, da.image_env_secret_id::text, COALESCE(da.volume_path, ''), da.secret_files_id::text
+		SELECT d.name, da.name, COALESCE(da.image_ref, ''), COALESCE(da.port, 0), da.target_kind, da.image_env_secret_id::text, COALESCE(da.volume_path, ''), da.secret_files_id::text, COALESCE(d.namespace_override, '')
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1
-	`, appID).Scan(&stackName, &appName, &imageRef, &port, &targetKind, &envSecretID, &volumePath, &secretFilesID)
+	`, appID).Scan(&stackName, &appName, &imageRef, &port, &targetKind, &envSecretID, &volumePath, &secretFilesID, &namespaceOverride)
 	if err != nil {
 		return fmt.Errorf("deploy: look up image app %s: %w", appID, err)
+	}
+
+	k8sNamespace := namespaceName(stackName)
+	if namespaceOverride != "" {
+		k8sNamespace = namespaceOverride
 	}
 
 	env := map[string]string{}
@@ -55,7 +61,7 @@ func (o *Orchestrator) DeployImageApp(ctx context.Context, appID string) error {
 	var deployErr error
 	switch {
 	case targetKind == "local_k8s" && o.kubeDeployer != nil:
-		deployErr = o.kubeDeployer.KubeDeployImageApp(ctx, appName, namespaceName(stackName), imageRef, port, env, volumePath, secretFiles)
+		deployErr = o.kubeDeployer.KubeDeployImageApp(ctx, appName, k8sNamespace, imageRef, port, env, volumePath, secretFiles)
 	case targetKind == "local_docker" && o.dockerDeployer != nil:
 		deployErr = o.dockerDeployer.DockerDeployImageApp(ctx, stackName, appName, imageRef, uint16(port), env, volumePath, secretFiles)
 	default:
@@ -69,7 +75,7 @@ func (o *Orchestrator) DeployImageApp(ctx context.Context, appID string) error {
 
 	var dep Deployment
 	if targetKind == "local_k8s" {
-		dep, err = o.persistRunning(ctx, appID, namespaceName(stackName))
+		dep, err = o.persistRunning(ctx, appID, k8sNamespace)
 	} else {
 		dep, err = o.persistStatus(ctx, appID, "running")
 	}

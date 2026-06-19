@@ -20,6 +20,12 @@ type Config struct {
 	BuilderImage string // CNB builder image, e.g. paketobuildpacks/builder-jammy-full:latest
 	RegistryPush string // host:port pack pushes to (host-accessible), e.g. localhost:5001
 	RegistryPull string // host:port k8s manifests reference (in-cluster), e.g. registry.local:5000
+	// KindIngressHTTPPort is the host port the kind cluster's ingress-nginx
+	// controller listens on for plain HTTP. central nginx proxies a K8s app's
+	// real domain to "http://<gateway>:<KindIngressHTTPPort>" (Host-routed by
+	// the in-cluster ingress). Defaults to 8880 — matches setup-kind.sh's
+	// fallback when host ports 80/443 are already taken by central nginx.
+	KindIngressHTTPPort string
 	// K8s manifests (T14)
 	// base domain for generated Ingress hostnames: "<app>.<IngressDomain>".
 	// The "apps." label is required, not cosmetic — sslip.io resolves an FQDN
@@ -54,6 +60,7 @@ func Load() *Config {
 		RegistryPush:        env("REGISTRY_PUSH", "localhost:5001"),
 		RegistryPull:        env("REGISTRY_PULL", "registry.local:5000"),
 		IngressDomain:       env("INGRESS_DOMAIN", "apps.127.0.0.1.sslip.io"),
+		KindIngressHTTPPort: env("KIND_INGRESS_HTTP_PORT", "8880"),
 		ComplianceThreshold: env("COMPLIANCE_THRESHOLD", "high"),
 		PublicIP:            env("PUBLIC_IP", ""),
 		RegistryLifecycle:   env("REGISTRY_LIFECYCLE_ADDR", ""),

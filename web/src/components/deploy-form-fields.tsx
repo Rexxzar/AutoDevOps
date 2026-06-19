@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react'
-import { Globe, Loader2, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { Globe, Loader2, CheckCircle2, AlertCircle, RefreshCw, Settings2, ChevronDown } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -122,6 +122,155 @@ export function DomainField({ value, onChange }: { value: string; onChange: (v: 
       )}
       {status === 'error' && info?.error && (
         <p className="text-xs text-critical">{info.error}</p>
+      )}
+    </div>
+  )
+}
+
+// ─── Kubernetes per-app options (local_k8s, git-kind) ────────────────
+// Serializes to deployment_apps.k8s_config (JSONB). Every field is optional —
+// onChange emits undefined when nothing differs from the platform defaults, so
+// no k8s_config is stored and the app behaves exactly as before this feature.
+export type K8sConfigValue = {
+  replicas?: number
+  cpu_request?: string
+  cpu_limit?: string
+  mem_request?: string
+  mem_limit?: string
+  hpa?: { min: number; max: number; target_cpu: number }
+  liveness?: { path: string; port: number }
+  readiness?: { path: string; port: number }
+  rolling_update?: { max_surge: string; max_unavailable: string }
+}
+
+type Preset = 'default' | 'small' | 'medium' | 'large' | 'custom'
+
+const RESOURCE_PRESETS: Record<Exclude<Preset, 'default' | 'custom'>, {
+  cpu_request: string; cpu_limit: string; mem_request: string; mem_limit: string
+}> = {
+  small:  { cpu_request: '100m', cpu_limit: '250m', mem_request: '128Mi', mem_limit: '256Mi' },
+  medium: { cpu_request: '250m', cpu_limit: '500m', mem_request: '256Mi', mem_limit: '512Mi' },
+  large:  { cpu_request: '500m', cpu_limit: '1',    mem_request: '512Mi', mem_limit: '1Gi' },
+}
+
+const numCls = cn(inputCls, 'h-9')
+
+export function K8sOptions({ onChange }: { onChange: (cfg: K8sConfigValue | undefined) => void }) {
+  const [open, setOpen] = useState(false)
+  const [replicas, setReplicas] = useState(1)
+  const [preset, setPreset] = useState<Preset>('default')
+  const [cpuReq, setCpuReq] = useState(''); const [cpuLim, setCpuLim] = useState('')
+  const [memReq, setMemReq] = useState(''); const [memLim, setMemLim] = useState('')
+  const [hpa, setHpa] = useState(false)
+  const [hpaMin, setHpaMin] = useState(2); const [hpaMax, setHpaMax] = useState(5); const [hpaCpu, setHpaCpu] = useState(70)
+  const [live, setLive] = useState(false); const [livePath, setLivePath] = useState('/'); const [livePort, setLivePort] = useState(8080)
+  const [ready, setReady] = useState(false); const [readyPath, setReadyPath] = useState('/'); const [readyPort, setReadyPort] = useState(8080)
+  const [ru, setRu] = useState(false); const [surge, setSurge] = useState('25%'); const [unavail, setUnavail] = useState('25%')
+
+  useEffect(() => {
+    const cfg: K8sConfigValue = {}
+    if (replicas !== 1 && !hpa) cfg.replicas = replicas
+    if (preset === 'custom') {
+      if (cpuReq) cfg.cpu_request = cpuReq
+      if (cpuLim) cfg.cpu_limit = cpuLim
+      if (memReq) cfg.mem_request = memReq
+      if (memLim) cfg.mem_limit = memLim
+    } else if (preset !== 'default') {
+      Object.assign(cfg, RESOURCE_PRESETS[preset])
+    }
+    if (hpa) cfg.hpa = { min: hpaMin, max: hpaMax, target_cpu: hpaCpu }
+    if (live) cfg.liveness = { path: livePath, port: livePort }
+    if (ready) cfg.readiness = { path: readyPath, port: readyPort }
+    if (ru) cfg.rolling_update = { max_surge: surge, max_unavailable: unavail }
+    onChange(Object.keys(cfg).length ? cfg : undefined)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replicas, preset, cpuReq, cpuLim, memReq, memLim, hpa, hpaMin, hpaMax, hpaCpu, live, livePath, livePort, ready, readyPath, readyPort, ru, surge, unavail])
+
+  return (
+    <div className="rounded-lg border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium text-foreground"
+      >
+        <span className="flex items-center gap-2"><Settings2 className="size-4 text-muted-foreground" /> Kubernetes options</span>
+        <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
+      </button>
+
+      {open && (
+        <div className="space-y-4 border-t border-border px-3 py-3">
+          <FormField label="Replicas" hint={hpa ? 'managed by HPA' : undefined}>
+            <input type="number" min={1} value={replicas} disabled={hpa}
+              onChange={e => setReplicas(Math.max(1, Number(e.target.value) || 1))}
+              className={cn(numCls, hpa && 'opacity-50')} />
+          </FormField>
+
+          <FormField label="Resources">
+            <div className="grid grid-cols-5 gap-1.5">
+              {(['default', 'small', 'medium', 'large', 'custom'] as Preset[]).map(p => (
+                <TargetPill key={p} label={p[0].toUpperCase() + p.slice(1)} active={preset === p} onClick={() => setPreset(p)} />
+              ))}
+            </div>
+            {preset === 'custom' && (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <input value={cpuReq} onChange={e => setCpuReq(e.target.value)} placeholder="CPU request (100m)" className={numCls} />
+                <input value={cpuLim} onChange={e => setCpuLim(e.target.value)} placeholder="CPU limit (500m)" className={numCls} />
+                <input value={memReq} onChange={e => setMemReq(e.target.value)} placeholder="Mem request (128Mi)" className={numCls} />
+                <input value={memLim} onChange={e => setMemLim(e.target.value)} placeholder="Mem limit (512Mi)" className={numCls} />
+              </div>
+            )}
+            {preset !== 'default' && preset !== 'custom' && (
+              <p className="mt-1.5 text-[0.65rem] text-muted-foreground">
+                requests {RESOURCE_PRESETS[preset].cpu_request}/{RESOURCE_PRESETS[preset].mem_request} → limits {RESOURCE_PRESETS[preset].cpu_limit}/{RESOURCE_PRESETS[preset].mem_limit}
+              </p>
+            )}
+          </FormField>
+
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input type="checkbox" checked={hpa} onChange={e => setHpa(e.target.checked)} />
+            Autoscale (HPA) by CPU
+          </label>
+          {hpa && (
+            <div className="grid grid-cols-3 gap-2">
+              <FormField label="Min replicas"><input type="number" min={1} value={hpaMin} onChange={e => setHpaMin(Math.max(1, Number(e.target.value) || 1))} className={numCls} /></FormField>
+              <FormField label="Max replicas"><input type="number" min={1} value={hpaMax} onChange={e => setHpaMax(Math.max(1, Number(e.target.value) || 1))} className={numCls} /></FormField>
+              <FormField label="Target CPU %"><input type="number" min={1} max={100} value={hpaCpu} onChange={e => setHpaCpu(Number(e.target.value) || 70)} className={numCls} /></FormField>
+            </div>
+          )}
+
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input type="checkbox" checked={live} onChange={e => setLive(e.target.checked)} />
+            Liveness probe (HTTP)
+          </label>
+          {live && (
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <FormField label="Path"><input value={livePath} onChange={e => setLivePath(e.target.value)} placeholder="/" className={numCls} /></FormField>
+              <FormField label="Port"><input type="number" value={livePort} onChange={e => setLivePort(Number(e.target.value) || 8080)} className={cn(numCls, 'w-24')} /></FormField>
+            </div>
+          )}
+
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input type="checkbox" checked={ready} onChange={e => setReady(e.target.checked)} />
+            Readiness probe (HTTP)
+          </label>
+          {ready && (
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <FormField label="Path"><input value={readyPath} onChange={e => setReadyPath(e.target.value)} placeholder="/" className={numCls} /></FormField>
+              <FormField label="Port"><input type="number" value={readyPort} onChange={e => setReadyPort(Number(e.target.value) || 8080)} className={cn(numCls, 'w-24')} /></FormField>
+            </div>
+          )}
+
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input type="checkbox" checked={ru} onChange={e => setRu(e.target.checked)} />
+            Rolling-update strategy
+          </label>
+          {ru && (
+            <div className="grid grid-cols-2 gap-2">
+              <FormField label="Max surge"><input value={surge} onChange={e => setSurge(e.target.value)} placeholder="25%" className={numCls} /></FormField>
+              <FormField label="Max unavailable"><input value={unavail} onChange={e => setUnavail(e.target.value)} placeholder="25%" className={numCls} /></FormField>
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

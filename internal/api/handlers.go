@@ -248,6 +248,7 @@ type appCreateRequest struct {
 	Env               map[string]string // kind == "image", optional
 	VolumePath        string            // kind == "image", optional — see Phase 4 volume_path
 	SecretFiles       map[string]string // container path -> base64 content, optional — see secret_files
+	K8sConfig         json.RawMessage   // kind == "git", optional — local_k8s per-app tuning (replicas/HPA/probes/...)
 }
 
 // storeSecretFiles encrypts files (container path -> base64 content) into the
@@ -326,17 +327,22 @@ func (s *Server) createApp(ctx context.Context, deploymentID string, req appCrea
 		return "", "", err
 	}
 
+	var k8sConfigArg interface{}
+	if len(req.K8sConfig) > 0 {
+		k8sConfigArg = []byte(req.K8sConfig)
+	}
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context, secret_files_id, secret_file_paths, declared_framework)
+		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context, secret_files_id, secret_file_paths, declared_framework, k8s_config)
 		SELECT $1, $2, $3, $4, $5, NULLIF($6, '')::uuid, NULLIF($7, ''),
 		       (SELECT id FROM secrets WHERE name = $8),
 		       (SELECT id FROM secrets WHERE name = $9),
 		       NULLIF($10, ''),
 		       (SELECT id FROM secrets WHERE name = $11),
 		       $12,
-		       NULLIF($13, '')
+		       NULLIF($13, ''),
+		       $14
 		RETURNING id::text
-	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext, secretFilesName, secretFilePaths, req.DeclaredFramework).Scan(&appID)
+	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext, secretFilesName, secretFilePaths, req.DeclaredFramework, k8sConfigArg).Scan(&appID)
 	if err != nil {
 		return "", "", fmt.Errorf("insert app: %w", err)
 	}
@@ -474,6 +480,8 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		BuildContext      string            `json:"build_context,omitempty"`
 		DeclaredFramework string            `json:"declared_framework,omitempty"`
 		SecretFiles       map[string]string `json:"secret_files,omitempty"`
+		NamespaceOverride string            `json:"namespace_override,omitempty"` // local_k8s: per-stack namespace override
+		K8sConfig         json.RawMessage   `json:"k8s_config,omitempty"`         // local_k8s: per-app tuning (replicas/HPA/probes/...)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -503,7 +511,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var deploymentID string
-	if err := s.db.QueryRow(ctx, `INSERT INTO deployments (name) VALUES ($1) RETURNING id::text`, req.Name).Scan(&deploymentID); err != nil {
+	if err := s.db.QueryRow(ctx, `INSERT INTO deployments (name, namespace_override) VALUES ($1, NULLIF($2, '')) RETURNING id::text`, req.Name, req.NamespaceOverride).Scan(&deploymentID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create deployment")
 		return
 	}
@@ -519,6 +527,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		BuildContext:      req.BuildContext,
 		DeclaredFramework: req.DeclaredFramework,
 		SecretFiles:       req.SecretFiles,
+		K8sConfig:         req.K8sConfig,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create deployment")
@@ -608,6 +617,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 		Env               map[string]string `json:"env,omitempty"`
 		VolumePath        string            `json:"volume_path,omitempty"`
 		SecretFiles       map[string]string `json:"secret_files,omitempty"`
+		K8sConfig         json.RawMessage   `json:"k8s_config,omitempty"` // kind == "git", local_k8s per-app tuning
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -672,6 +682,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 		Env:               req.Env,
 		VolumePath:        req.VolumePath,
 		SecretFiles:       req.SecretFiles,
+		K8sConfig:         req.K8sConfig,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -708,11 +719,11 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	var stackName string
+	var stackName, namespaceOverride string
 	var createdAt, updatedAt time.Time
 	if err := s.db.QueryRow(r.Context(),
-		`SELECT name, created_at, updated_at FROM deployments WHERE id = $1`, id,
-	).Scan(&stackName, &createdAt, &updatedAt); err != nil {
+		`SELECT name, COALESCE(namespace_override, ''), created_at, updated_at FROM deployments WHERE id = $1`, id,
+	).Scan(&stackName, &namespaceOverride, &createdAt, &updatedAt); err != nil {
 		writeError(w, http.StatusNotFound, "deployment not found")
 		return
 	}
@@ -724,7 +735,8 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(volume_path, ''), COALESCE(secret_file_paths, '{}'), tls_status, COALESCE(tls_error, ''),
 		       git_credentials_secret_id IS NOT NULL,
 		       image_env_secret_id IS NOT NULL,
-		       COALESCE(declared_framework, '')
+		       COALESCE(declared_framework, ''),
+		       k8s_config
 		FROM deployment_apps WHERE deployment_id = $1 ORDER BY created_at ASC
 	`, id)
 	if err != nil {
@@ -755,9 +767,10 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		SecretFilePaths   []string  `json:"secret_file_paths,omitempty"`
 		TLSStatus            string    `json:"tls_status,omitempty"`
 		TLSError             string    `json:"tls_error,omitempty"`
-		HasGitCredentials    bool      `json:"has_git_credentials"`
-		HasImageEnv          bool      `json:"has_image_env"`
-		Links                []appLink `json:"links"`
+		HasGitCredentials    bool            `json:"has_git_credentials"`
+		HasImageEnv          bool            `json:"has_image_env"`
+		K8sConfig            json.RawMessage `json:"k8s_config,omitempty"`
+		Links                []appLink       `json:"links"`
 		// Steps hydrates the deploy-progress pipeline for pages that load (or
 		// reconnect their SSE stream) mid-deploy — deploy.step events aren't
 		// replayed on reconnect, so the frontend seeds stepsByApp from here.
@@ -769,7 +782,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		var a appDetail
 		var targetKind string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Role, &a.RepoURL, &a.Branch,
-			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus, &a.TLSError, &a.HasGitCredentials, &a.HasImageEnv, &a.DeclaredFramework); err != nil {
+			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus, &a.TLSError, &a.HasGitCredentials, &a.HasImageEnv, &a.DeclaredFramework, &a.K8sConfig); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan app")
 			return
 		}
@@ -817,11 +830,12 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":         id,
-		"name":       stackName,
-		"created_at": createdAt,
-		"updated_at": updatedAt,
-		"apps":       apps,
+		"id":                 id,
+		"name":               stackName,
+		"namespace_override": namespaceOverride,
+		"created_at":         createdAt,
+		"updated_at":         updatedAt,
+		"apps":               apps,
 	})
 }
 

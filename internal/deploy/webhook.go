@@ -81,13 +81,15 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		secretFilesID     *string
 		domain            string
 		declaredFramework string
+		namespaceOverride string
+		k8sConfigJSON     []byte
 	)
 	err := o.pool.QueryRow(ctx, `
-		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text, COALESCE(da.domain, ''), COALESCE(da.declared_framework, '')
+		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text, COALESCE(da.domain, ''), COALESCE(da.declared_framework, ''), COALESCE(d.namespace_override, ''), da.k8s_config
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1
-	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID, &domain, &declaredFramework)
+	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID, &domain, &declaredFramework, &namespaceOverride, &k8sConfigJSON)
 	if err != nil {
 		return fmt.Errorf("deploy: look up app %s: %w", appID, err)
 	}
@@ -192,7 +194,10 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 	switch {
 	case targetKind == "local_k8s" && o.kubeDeployer != nil:
 		namespace := namespaceName(stackName)
-		if err := o.kubeDeployer.KubeDeploy(ctx, appName, namespace, imageRef, extraEnv, secretFiles); err != nil {
+		if namespaceOverride != "" {
+			namespace = namespaceOverride
+		}
+		if err := o.kubeDeployer.KubeDeploy(ctx, appName, namespace, imageRef, domain, extraEnv, secretFiles, k8sConfigJSON); err != nil {
 			o.publishStep(appID, StepDeploy, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
@@ -204,6 +209,19 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		}
 		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 		o.publishStep(appID, StepDeploy, StepDone)
+
+		// TLS step — central nginx terminates real TLS and proxies to the kind
+		// ingress (ProvisionK8s). Same non-fatal semantics as the local_docker
+		// branch: a TLS failure leaves the app running but marks tls_status.
+		if domain != "" && o.tlsProvisioner != nil {
+			slog.Info("tls: provisioning (k8s)", "app_id", appID, "domain", domain)
+			if tlsErr := o.tlsProvisioner.ProvisionK8s(ctx, appID, domain, o.publishStep); tlsErr != nil {
+				slog.Error("tls: provision failed (k8s)", "app_id", appID, "domain", domain, "error", tlsErr)
+				o.hub.Publish(sse.Event{Type: "deploy.log", Payload: LogEvent{AppID: appID, Line: "TLS: " + tlsErr.Error()}})
+			}
+		} else if domain != "" {
+			o.publishStep(appID, StepTLS, StepSkipped)
+		}
 
 	case targetKind == "local_docker" && o.dockerDeployer != nil:
 		if err := o.dockerDeployer.DockerDeploy(ctx, stackName, appName, imageRef, extraEnv, secretFiles); err != nil {

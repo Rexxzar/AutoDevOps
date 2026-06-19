@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -34,7 +35,7 @@ func TestNamespaceNameLengthCap(t *testing.T) {
 }
 
 func TestBuildDeployment(t *testing.T) {
-	dep := buildDeployment("svc", "autodevops-svc", "registry.local:5000/svc:abc123", nil, nil)
+	dep := buildDeployment("svc", "autodevops-svc", "registry.local:5000/svc:abc123", nil, nil, nil)
 
 	if dep.Name != "svc" {
 		t.Errorf("deployment name = %q, want %q", dep.Name, "svc")
@@ -72,7 +73,7 @@ func TestBuildDeploymentExtraEnv(t *testing.T) {
 	dep := buildDeployment("frontend", "autodevops-stack", "registry.local:5000/frontend:abc123", map[string]string{
 		"AUTODEVOPS_BACKEND_URL":  "http://backend",
 		"AUTODEVOPS_BACKEND_HOST": "backend",
-	}, nil)
+	}, nil, nil)
 
 	app := dep.Spec.Template.Spec.Containers[0]
 	if app.Env[0].Name != "PORT" || app.Env[0].Value != "8080" {
@@ -229,7 +230,7 @@ func TestBuildDeploymentWithSecretFiles(t *testing.T) {
 	secretFiles := map[string][]byte{
 		"/opt/secrets/firebase.json": []byte("{}"),
 	}
-	dep := buildDeployment("app-plant", "autodevops-stack", "registry.local:5000/app-plant:abc123", nil, secretFiles)
+	dep := buildDeployment("app-plant", "autodevops-stack", "registry.local:5000/app-plant:abc123", nil, secretFiles, nil)
 
 	pod := dep.Spec.Template.Spec
 	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != "secret-files" {
@@ -309,7 +310,7 @@ func TestBuildResourceService(t *testing.T) {
 }
 
 func TestBuildIngress(t *testing.T) {
-	ing := buildIngress("svc", "autodevops-svc", "svc.autodevops.local")
+	ing := buildIngress("svc", "autodevops-svc", "svc.autodevops.local", false)
 
 	if ing.Name != "svc" || ing.Namespace != "autodevops-svc" {
 		t.Errorf("ingress name/namespace = %q/%q", ing.Name, ing.Namespace)
@@ -322,6 +323,98 @@ func TestBuildIngress(t *testing.T) {
 	}
 	if ing.Annotations["cert-manager.io/cluster-issuer"] != clusterIssuerName {
 		t.Error("cert-manager cluster-issuer annotation missing")
+	}
+	if ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"] != "true" {
+		t.Error("dev ingress should force ssl-redirect")
+	}
+}
+
+func TestBuildIngressPublicDomain(t *testing.T) {
+	ing := buildIngress("svc", "autodevops-svc", "k8s.example.com", true)
+
+	if ing.Spec.Rules[0].Host != "k8s.example.com" {
+		t.Errorf("ingress host = %q, want public domain", ing.Spec.Rules[0].Host)
+	}
+	// nginx terminates TLS and proxies plain HTTP — the in-cluster ingress
+	// must not have a TLS block or force ssl-redirect (would 308-loop).
+	if len(ing.Spec.TLS) != 0 {
+		t.Errorf("public-domain ingress should have no TLS block, got %v", ing.Spec.TLS)
+	}
+	if ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"] != "false" {
+		t.Errorf("public-domain ingress must disable ssl-redirect, got %q", ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"])
+	}
+	if _, ok := ing.Annotations["cert-manager.io/cluster-issuer"]; ok {
+		t.Error("public-domain ingress should not carry a cert-manager annotation")
+	}
+}
+
+func TestBuildDeploymentK8sConfig(t *testing.T) {
+	replicas := int32(3)
+	dep := buildDeployment("api", "autodevops-stack", "registry.local:5000/api:abc123", nil, nil, &K8sConfig{
+		Replicas:      &replicas,
+		CPURequest:    "250m",
+		MemLimit:      "1Gi",
+		Liveness:      &ProbeConfig{Path: "/healthz", Port: 8080},
+		Readiness:     &ProbeConfig{Path: "/ready"},
+		RollingUpdate: &RollingUpdateConfig{MaxSurge: "2", MaxUnavailable: "0"},
+	})
+
+	if *dep.Spec.Replicas != 3 {
+		t.Errorf("replicas = %d, want 3", *dep.Spec.Replicas)
+	}
+	app := dep.Spec.Template.Spec.Containers[0]
+	if got := app.Resources.Requests.Cpu().String(); got != "250m" {
+		t.Errorf("cpu request = %q, want 250m", got)
+	}
+	if got := app.Resources.Limits.Memory().String(); got != "1Gi" {
+		t.Errorf("mem limit = %q, want 1Gi", got)
+	}
+	if app.LivenessProbe == nil || app.LivenessProbe.HTTPGet.Path != "/healthz" {
+		t.Error("liveness probe not set to /healthz")
+	}
+	if app.ReadinessProbe == nil || app.ReadinessProbe.HTTPGet.Path != "/ready" {
+		t.Error("readiness probe not set to /ready")
+	}
+	if dep.Spec.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
+		t.Errorf("strategy type = %q, want RollingUpdate", dep.Spec.Strategy.Type)
+	}
+	if dep.Spec.Strategy.RollingUpdate.MaxSurge.String() != "2" {
+		t.Errorf("maxSurge = %q, want 2", dep.Spec.Strategy.RollingUpdate.MaxSurge.String())
+	}
+}
+
+func TestBuildDeploymentHPASeedsMinReplicas(t *testing.T) {
+	dep := buildDeployment("api", "autodevops-stack", "registry.local:5000/api:abc123", nil, nil, &K8sConfig{
+		HPA: &HPAConfig{Min: 2, Max: 5, TargetCPU: 70},
+	})
+	if *dep.Spec.Replicas != 2 {
+		t.Errorf("HPA-managed deployment should seed replicas at HPA.Min (2), got %d", *dep.Spec.Replicas)
+	}
+}
+
+func TestBuildHPA(t *testing.T) {
+	hpa := buildHPA("api", "autodevops-stack", HPAConfig{Min: 2, Max: 6, TargetCPU: 75})
+	if hpa.Name != "api" || hpa.Namespace != "autodevops-stack" {
+		t.Errorf("hpa name/namespace = %q/%q", hpa.Name, hpa.Namespace)
+	}
+	if *hpa.Spec.MinReplicas != 2 || hpa.Spec.MaxReplicas != 6 {
+		t.Errorf("hpa min/max = %d/%d, want 2/6", *hpa.Spec.MinReplicas, hpa.Spec.MaxReplicas)
+	}
+	if hpa.Spec.ScaleTargetRef.Name != "api" || hpa.Spec.ScaleTargetRef.Kind != "Deployment" {
+		t.Errorf("hpa scaleTargetRef = %+v", hpa.Spec.ScaleTargetRef)
+	}
+	if len(hpa.Spec.Metrics) != 1 || *hpa.Spec.Metrics[0].Resource.Target.AverageUtilization != 75 {
+		t.Error("hpa CPU target utilisation not set to 75")
+	}
+}
+
+func TestBuildHPAClamps(t *testing.T) {
+	hpa := buildHPA("api", "ns", HPAConfig{Min: 0, Max: 0, TargetCPU: 0})
+	if *hpa.Spec.MinReplicas != 1 || hpa.Spec.MaxReplicas != 1 {
+		t.Errorf("clamped min/max = %d/%d, want 1/1", *hpa.Spec.MinReplicas, hpa.Spec.MaxReplicas)
+	}
+	if *hpa.Spec.Metrics[0].Resource.Target.AverageUtilization != 80 {
+		t.Error("default target CPU should be 80")
 	}
 }
 
