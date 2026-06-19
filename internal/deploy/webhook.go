@@ -49,11 +49,7 @@ func VerifyWebhookSignature(payload []byte, signatureHeader string, secret []byt
 // share it without violating the import boundary rules). Shared by every
 // app in the stack that targets local K8s.
 func namespaceName(stackName string) string {
-	ns := "autodevops-" + strings.ToLower(strings.ReplaceAll(stackName, "_", "-"))
-	if len(ns) > 63 {
-		ns = ns[:63]
-	}
-	return ns
+	return k8sResourceName("autodevops-" + stackName)
 }
 
 // ProcessPush is the orchestration entrypoint for a verified GitHub push
@@ -195,7 +191,7 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 	case targetKind == "local_k8s" && o.kubeDeployer != nil:
 		namespace := namespaceName(stackName)
 		if namespaceOverride != "" {
-			namespace = namespaceOverride
+			namespace = k8sResourceName(namespaceOverride)
 		}
 		if err := o.kubeDeployer.KubeDeploy(ctx, appName, namespace, imageRef, domain, extraEnv, secretFiles, k8sConfigJSON); err != nil {
 			o.publishStep(appID, StepDeploy, StepFailed)

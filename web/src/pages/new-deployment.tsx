@@ -80,8 +80,11 @@ function breadcrumb(
   const parts: string[] = []
   if (location === 'local') {
     parts.push('Local')
-    if (localTarget === 'k8s') parts.push('Kubernetes')
-    else if (localTarget === 'docker') {
+    if (localTarget === 'k8s') {
+      parts.push('Kubernetes')
+      if (dockerMode === 'scratch') parts.push('Git Repo')
+      else if (dockerMode === 'compose') parts.push('Compose Import')
+    } else if (localTarget === 'docker') {
       parts.push('Docker')
       if (dockerMode === 'scratch') parts.push('Git Repo')
       else if (dockerMode === 'compose') parts.push('Compose Import')
@@ -201,17 +204,13 @@ export function NewDeploymentPage() {
       return
     }
     if (wizardStep === 4) {
-      if (location === 'local' && localTarget === 'k8s') {
-        setWizardStep(2)
-      } else {
-        setWizardStep(3)
-      }
+      setWizardStep(3)
       return
     }
     setWizardStep((wizardStep - 1) as WizardStep)
   }
 
-  const isComposeForm = wizardStep === 4 && location === 'local' && localTarget === 'docker' && dockerMode === 'compose'
+  const isComposeForm = wizardStep === 4 && location === 'local' && (localTarget === 'docker' || localTarget === 'k8s') && dockerMode === 'compose'
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setLoading(true); setError('')
@@ -302,7 +301,7 @@ export function NewDeploymentPage() {
                     description: 'Deploy as a pod in the local kind cluster with ingress',
                     icon: Box,
                     tags: ['Pod', 'Service', 'Ingress'],
-                    onClick: () => { setLocalTarget('k8s'); setWizardStep(4) },
+                    onClick: () => { setLocalTarget('k8s'); setWizardStep(3) },
                   }}
                   right={{
                     title: 'Docker Container',
@@ -341,11 +340,11 @@ export function NewDeploymentPage() {
               </div>
             )}
 
-            {/* ── Step 3 (Docker): Git Repo vs Compose ── */}
-            {wizardStep === 3 && location === 'local' && localTarget === 'docker' && (
+            {/* ── Step 3 (K8s / Docker): Git Repo vs Compose ── */}
+            {wizardStep === 3 && location === 'local' && (localTarget === 'docker' || localTarget === 'k8s') && (
               <div className="w-full max-w-2xl space-y-6">
                 <div className="space-y-1 text-center">
-                  <h1 className="text-xl font-bold">Docker Deployment</h1>
+                  <h1 className="text-xl font-bold">{localTarget === 'k8s' ? 'Kubernetes' : 'Docker'} Deployment</h1>
                   <p className="text-sm text-muted-foreground">How would you like to set up your deployment?</p>
                 </div>
                 <CardChoice
@@ -521,7 +520,7 @@ export function NewDeploymentPage() {
             )}
 
             {/* ── Step 4: Compose import ── */}
-            {isComposeForm && <ComposeImportForm target="container" />}
+            {isComposeForm && <ComposeImportForm target={localTarget === 'k8s' ? 'k8s' : 'container'} />}
           </>
         )}
 

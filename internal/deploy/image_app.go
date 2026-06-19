@@ -39,7 +39,7 @@ func (o *Orchestrator) DeployImageApp(ctx context.Context, appID string) error {
 
 	k8sNamespace := namespaceName(stackName)
 	if namespaceOverride != "" {
-		k8sNamespace = namespaceOverride
+		k8sNamespace = k8sResourceName(namespaceOverride)
 	}
 
 	env := map[string]string{}
