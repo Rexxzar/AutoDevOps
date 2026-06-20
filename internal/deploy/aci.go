@@ -81,6 +81,10 @@ func (o *Orchestrator) deployToACI(ctx context.Context, appName, pushRef string,
 		return err
 	}
 
+	if err := o.pusher.PullImage(ctx, pushRef); err != nil {
+		slog.Warn("deploy: pull image before ACR retag", "ref", pushRef, "error", err)
+	}
+
 	acrRef := loginServer + "/" + appName + ":" + imageTag(pushRef)
 	if err := o.pusher.TagImage(ctx, pushRef, acrRef); err != nil {
 		return err

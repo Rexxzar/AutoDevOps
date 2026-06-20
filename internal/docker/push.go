@@ -72,3 +72,17 @@ func (m *Manager) TagImage(ctx context.Context, source, target string) error {
 	}
 	return nil
 }
+
+// PullImage pulls an image from a registry into the local daemon store,
+// implementing internal/deploy.ImagePusher — needed when the containerd
+// image store is active and pack build with Publish:true doesn't keep
+// the image locally.
+func (m *Manager) PullImage(ctx context.Context, ref string) error {
+	reader, err := m.client.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("docker: pull %s: %w", ref, err)
+	}
+	defer reader.Close()
+	_, _ = io.Copy(io.Discard, reader)
+	return nil
+}

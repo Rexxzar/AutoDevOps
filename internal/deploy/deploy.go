@@ -75,6 +75,7 @@ type ImagePusher interface {
 	PushImage(ctx context.Context, ref string, auth *registry.AuthConfig) error
 	BuildImage(ctx context.Context, contextDir, tag string, logLine func(string)) error
 	TagImage(ctx context.Context, source, target string) error
+	PullImage(ctx context.Context, ref string) error
 }
 
 // ImageSaver exports a locally-built image as a tar stream, implemented by

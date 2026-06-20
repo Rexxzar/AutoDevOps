@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,6 +83,10 @@ func (o *Orchestrator) deployToECS(ctx context.Context, pushRef string, extraEnv
 	auth, err := o.ecrAuth(ctx, res.CloudAccountID, res.Region, repoURL)
 	if err != nil {
 		return err
+	}
+
+	if err := o.pusher.PullImage(ctx, pushRef); err != nil {
+		slog.Warn("deploy: pull image before ECR retag", "ref", pushRef, "error", err)
 	}
 
 	ecrRef := repoURL + ":" + imageTag(pushRef)
