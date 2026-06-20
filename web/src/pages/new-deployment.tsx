@@ -507,26 +507,29 @@ export function NewDeploymentPage() {
 
                   {/* Domain field */}
                   {location === 'local' && <DomainField value={localDomain} onChange={setLocalDomain} />}
-                  {location === 'cloud' && (
-                    <>
-                      <DomainField value={localDomain} onChange={setLocalDomain} />
-                      {(cloudTarget === 'ec2' || cloudTarget === 'vm') && (() => {
-                        const res = appliedResources.find((r) => r.id === effectiveVmResourceId)
-                        const o: Record<string, string> = res?.outputs ? (() => { try { return JSON.parse(res.outputs) } catch { return {} } })() : {}
-                        const ip = o.vm_public_ip || o.ec2_public_ip
-                        return ip ? (
+                  {location === 'cloud' && (() => {
+                    let vmIP: string | undefined
+                    if (cloudTarget === 'ec2' || cloudTarget === 'vm') {
+                      const res = appliedResources.find((r) => r.id === effectiveVmResourceId)
+                      const o: Record<string, string> = res?.outputs ? (() => { try { return JSON.parse(res.outputs) } catch { return {} } })() : {}
+                      vmIP = o.vm_public_ip || o.ec2_public_ip
+                    }
+                    return (
+                      <>
+                        <DomainField value={localDomain} onChange={setLocalDomain} targetIP={vmIP} />
+                        {vmIP && (
                           <p className="text-xs text-muted-foreground -mt-1">
-                            Point your domain to the VM&apos;s IP: <code className="rounded bg-muted px-1 font-mono">{ip}</code>
+                            Point your domain to the VM&apos;s IP: <code className="rounded bg-muted px-1 font-mono">{vmIP}</code>
                           </p>
-                        ) : null
-                      })()}
-                      {!localDomain && (cloudTarget === 'aci' || cloudTarget === 'ecs') && (
-                        <p className="text-xs text-muted-foreground -mt-1">
-                          Optional — {cloudTarget === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS.
-                        </p>
-                      )}
-                    </>
-                  )}
+                        )}
+                        {!localDomain && (cloudTarget === 'aci' || cloudTarget === 'ecs') && (
+                          <p className="text-xs text-muted-foreground -mt-1">
+                            Optional — {cloudTarget === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS.
+                          </p>
+                        )}
+                      </>
+                    )
+                  })()}
 
                   {/* Kubernetes-only: namespace override + per-app tuning */}
                   {location === 'local' && localTarget === 'k8s' && (

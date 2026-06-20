@@ -41,7 +41,7 @@ export function FormField({ label, hint, children }: { label: string; hint?: str
 // ─── Domain field with inline DNS checker ────────────────────────
 type DNSStatus = 'idle' | 'checking' | 'ok' | 'fail' | 'error'
 
-export function DomainField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function DomainField({ value, onChange, targetIP }: { value: string; onChange: (v: string) => void; targetIP?: string }) {
   const [status, setStatus] = useState<DNSStatus>('idle')
   const [info, setInfo] = useState<{ resolved_ips?: string[]; server_ip?: string; error?: string } | null>(null)
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -50,9 +50,9 @@ export function DomainField({ value, onChange }: { value: string; onChange: (v: 
     if (!domain) { setStatus('idle'); setInfo(null); return }
     setStatus('checking'); setInfo(null)
     try {
-      const res = await apiFetch<{ ok: boolean; resolved_ips?: string[]; server_ip?: string; error?: string }>(
-        `/dns/check?domain=${encodeURIComponent(domain)}`
-      )
+      let url = `/dns/check?domain=${encodeURIComponent(domain)}`
+      if (targetIP) url += `&target_ip=${encodeURIComponent(targetIP)}`
+      const res = await apiFetch<{ ok: boolean; resolved_ips?: string[]; server_ip?: string; error?: string }>(url)
       setStatus(res.ok ? 'ok' : 'fail')
       setInfo({ resolved_ips: res.resolved_ips, server_ip: res.server_ip, error: res.error })
     } catch {

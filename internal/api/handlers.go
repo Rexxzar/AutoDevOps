@@ -72,10 +72,13 @@ func (s *Server) handleDNSCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	serverIP := s.serverIP(r)
+	targetIP := r.URL.Query().Get("target_ip")
+	if targetIP == "" {
+		targetIP = s.serverIP(r)
+	}
 	ok := false
 	for _, a := range addrs {
-		if a == serverIP {
+		if a == targetIP {
 			ok = true
 			break
 		}
@@ -84,7 +87,7 @@ func (s *Server) handleDNSCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"domain":       domain,
 		"resolved_ips": addrs,
-		"server_ip":    serverIP,
+		"server_ip":    targetIP,
 		"ok":           ok,
 	})
 }

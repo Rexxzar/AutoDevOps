@@ -1824,9 +1824,15 @@ function AddAppDialog({
               </ol>
             </div>
           )}
-          {kind === 'git' && (
-            <DomainField value={domain} onChange={setDomain} />
-          )}
+          {kind === 'git' && (() => {
+            let vmTargetIP: string | undefined
+            if (target === 'vm') {
+              const vmRes = vmResources.find((r) => r.id === effectiveVmResourceId)
+              const vmOutputs: Record<string, string> = vmRes?.outputs ? (() => { try { return JSON.parse(vmRes.outputs) } catch { return {} } })() : {}
+              vmTargetIP = vmOutputs.vm_public_ip || vmOutputs.ec2_public_ip
+            }
+            return <DomainField value={domain} onChange={setDomain} targetIP={vmTargetIP} />
+          })()}
           {kind === 'git' && (target === 'aci' || target === 'ecs') && !domain && (
             <p className="text-xs text-muted-foreground -mt-1">
               Optional — {target === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS via your own domain name.
