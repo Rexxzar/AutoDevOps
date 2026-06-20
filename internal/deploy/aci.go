@@ -81,16 +81,10 @@ func (o *Orchestrator) deployToACI(ctx context.Context, appName, pushRef string,
 		return err
 	}
 
-	if err := o.pusher.PullImage(ctx, pushRef); err != nil {
-		slog.Warn("deploy: pull image before ACR retag", "ref", pushRef, "error", err)
-	}
-
 	acrRef := loginServer + "/" + appName + ":" + imageTag(pushRef)
-	if err := o.pusher.TagImage(ctx, pushRef, acrRef); err != nil {
-		return err
-	}
-	if err := o.pusher.PushImage(ctx, acrRef, &auth); err != nil {
-		return err
+	slog.Info("deploy: copying image to ACR", "src", pushRef, "dst", acrRef)
+	if err := copyImage(pushRef, acrRef, &auth); err != nil {
+		return fmt.Errorf("deploy: copy to ACR: %w", err)
 	}
 
 	env := make(map[string]string, len(extraEnv)+1)

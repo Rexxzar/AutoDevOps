@@ -85,16 +85,10 @@ func (o *Orchestrator) deployToECS(ctx context.Context, pushRef string, extraEnv
 		return err
 	}
 
-	if err := o.pusher.PullImage(ctx, pushRef); err != nil {
-		slog.Warn("deploy: pull image before ECR retag", "ref", pushRef, "error", err)
-	}
-
 	ecrRef := repoURL + ":" + imageTag(pushRef)
-	if err := o.pusher.TagImage(ctx, pushRef, ecrRef); err != nil {
-		return err
-	}
-	if err := o.pusher.PushImage(ctx, ecrRef, &auth); err != nil {
-		return err
+	slog.Info("deploy: copying image to ECR", "src", pushRef, "dst", ecrRef)
+	if err := copyImage(pushRef, ecrRef, &auth); err != nil {
+		return fmt.Errorf("deploy: copy to ECR: %w", err)
 	}
 
 	cfg, err := o.loadAWSConfig(ctx, res.CloudAccountID, res.Region)
