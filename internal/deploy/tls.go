@@ -261,7 +261,7 @@ func (p *TLSProvisioner) ProvisionVMDirect(ctx context.Context, appID, domain st
 
 	// 5. Run certbot with --nginx plugin
 	emailFlag := "--register-unsafely-without-email"
-	if p.certEmail != "" {
+	if p.certEmail != "" && !strings.HasSuffix(p.certEmail, ".local") {
 		emailFlag = "--email " + p.certEmail
 	}
 	certbotCmd := fmt.Sprintf("sudo certbot --nginx -d %s --non-interactive --agree-tos %s --redirect", domain, emailFlag)
