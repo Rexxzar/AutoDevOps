@@ -95,7 +95,7 @@ type ImageSaver interface {
 // resource. The returned outputs let deployToACI refresh
 // provisioned_resources.outputs after the re-apply.
 type ACIRedeployer interface {
-	RedeployACIImage(ctx context.Context, resourceID, cloudAccountID, image string, env map[string]string) (map[string]json.RawMessage, error)
+	RedeployACIImage(ctx context.Context, resourceID, cloudAccountID, image string, env map[string]string, regServer, regUser, regPass string) (map[string]json.RawMessage, error)
 }
 
 // ComplianceGate runs all scanners against an app's build artefacts and

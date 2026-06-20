@@ -25,7 +25,7 @@ func TestSetACIContainerImage(t *testing.T) {
 	out, err := setACIContainerImage(cfg, "demoacr1a2b3c4d.azurecr.io/myapp:abc123def456", map[string]string{
 		"PORT":     "8080",
 		"DATABASE": "postgres",
-	})
+	}, &registryCredential{Server: "demoacr1a2b3c4d.azurecr.io", Username: "admin", Password: "secret"})
 	if err != nil {
 		t.Fatalf("setACIContainerImage: %v", err)
 	}
@@ -43,10 +43,16 @@ func TestSetACIContainerImage(t *testing.T) {
 	if !regexp.MustCompile(`PORT\s*=\s*"8080"`).MatchString(got) {
 		t.Errorf("output missing PORT env var:\n%s", got)
 	}
+	if !strings.Contains(got, "image_registry_credential") {
+		t.Errorf("output missing image_registry_credential block:\n%s", got)
+	}
+	if !strings.Contains(got, `server   = "demoacr1a2b3c4d.azurecr.io"`) {
+		t.Errorf("output missing registry server:\n%s", got)
+	}
 
 	// Re-parsing the output should succeed and still find the container group
 	// — confirms the surgery produces valid, re-editable HCL.
-	if _, err := setACIContainerImage(out, "demoacr1a2b3c4d.azurecr.io/myapp:def789", nil); err != nil {
+	if _, err := setACIContainerImage(out, "demoacr1a2b3c4d.azurecr.io/myapp:def789", nil, nil); err != nil {
 		t.Fatalf("re-applying surgery to surgery output: %v", err)
 	}
 }
@@ -54,7 +60,7 @@ func TestSetACIContainerImage(t *testing.T) {
 func TestSetACIContainerImageNoEnv(t *testing.T) {
 	cfg := aciFixture(t)
 
-	out, err := setACIContainerImage(cfg, "demoacr1a2b3c4d.azurecr.io/myapp:abc123def456", nil)
+	out, err := setACIContainerImage(cfg, "demoacr1a2b3c4d.azurecr.io/myapp:abc123def456", nil, nil)
 	if err != nil {
 		t.Fatalf("setACIContainerImage: %v", err)
 	}
@@ -76,7 +82,7 @@ resource "azurerm_resource_group" "main" {
 }
 `)
 
-	if _, err := setACIContainerImage(cfg, "example.azurecr.io/app:latest", nil); err == nil {
+	if _, err := setACIContainerImage(cfg, "example.azurecr.io/app:latest", nil, nil); err == nil {
 		t.Fatal("expected error for config with no azurerm_container_group.main, got nil")
 	}
 }

@@ -93,7 +93,7 @@ func (o *Orchestrator) deployToACI(ctx context.Context, appName, pushRef string,
 	}
 	env["PORT"] = strconv.Itoa(vmAppPort)
 
-	outputs, err := o.aciRedeployer.RedeployACIImage(ctx, res.ID, res.CloudAccountID, acrRef, env)
+	outputs, err := o.aciRedeployer.RedeployACIImage(ctx, res.ID, res.CloudAccountID, acrRef, env, loginServer, auth.Username, auth.Password)
 	if err != nil {
 		return fmt.Errorf("deploy: aci redeploy %s: %w", res.Name, err)
 	}
