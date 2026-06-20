@@ -631,6 +631,18 @@ server {
 // tlsFinalVhost generates the production nginx vhost with TLS termination and
 // a reverse-proxy to the deployed Docker container's host port.
 func tlsFinalVhost(domain, proxyTarget, certDirInCtn string) string {
+	isCloudUpstream := strings.Contains(proxyTarget, ".azurecontainer.io") ||
+		strings.Contains(proxyTarget, ".amazonaws.com") ||
+		strings.Contains(proxyTarget, ".elb.amazonaws.com")
+
+	var resolverBlock, proxyPassBlock string
+	if isCloudUpstream {
+		resolverBlock = "    resolver 8.8.8.8 1.1.1.1 valid=30s;\n    set $upstream " + proxyTarget + ";\n"
+		proxyPassBlock = "        proxy_pass $upstream;\n"
+	} else {
+		proxyPassBlock = "        proxy_pass " + proxyTarget + ";\n"
+	}
+
 	return fmt.Sprintf(`# AutoDevOps — %s
 server {
     listen 80;
@@ -647,9 +659,8 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    location / {
-        proxy_pass %s;
-        proxy_http_version 1.1;
+%s    location / {
+%s        proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
@@ -660,5 +671,5 @@ server {
         proxy_read_timeout 3600s;
     }
 }
-`, domain, domain, domain, certDirInCtn, domain, certDirInCtn, domain, proxyTarget)
+`, domain, domain, domain, certDirInCtn, domain, certDirInCtn, domain, resolverBlock, proxyPassBlock)
 }

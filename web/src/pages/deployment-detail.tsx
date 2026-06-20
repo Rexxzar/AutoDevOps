@@ -499,12 +499,10 @@ export function DeploymentDetailPage() {
           Back
         </Button>
         <StatusBadge status={aggregateStatus} pulse={aggregateStatus === 'building'} />
-        {apps.some((a) => a.target_type === 'k8s' || a.target_type === 'container') && (
-          <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setAddDbOpen(true)}>
-            <Database className="size-3.5" />
-            Add database
-          </Button>
-        )}
+        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setAddDbOpen(true)}>
+          <Database className="size-3.5" />
+          Add database
+        </Button>
         <Button size="sm" className="gap-1.5" onClick={() => setAddOpen(true)}>
           <Plus className="size-3.5" />
           Add app
