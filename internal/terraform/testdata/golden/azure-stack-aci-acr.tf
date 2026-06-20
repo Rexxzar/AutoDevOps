@@ -73,6 +73,10 @@ output "aci_fqdn" {
   value = azurerm_container_group.main.fqdn
 }
 
+output "aci_port" {
+  value = 80
+}
+
 resource "azurerm_container_registry" "main" {
   name                = "demoacr1a2b3c4d"
   resource_group_name = azurerm_resource_group.main.name

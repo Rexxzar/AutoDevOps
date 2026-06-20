@@ -999,6 +999,39 @@ func (s *Server) handleDeleteAppLink(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleUpdateAppDomain(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var appKind string
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT kind FROM deployment_apps WHERE id = $1 AND deployment_id = $2`, appID, deploymentID,
+	).Scan(&appKind); err != nil {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+
+	if _, err := s.db.Exec(r.Context(),
+		`UPDATE deployment_apps SET domain = NULLIF($2, ''), updated_at = now() WHERE id = $1`,
+		appID, req.Domain,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update domain")
+		return
+	}
+
+	s.triggerAppIfGit(appID, appKind)
+
+	writeJSON(w, http.StatusOK, map[string]string{"domain": req.Domain})
+}
+
 // handleUpdateSecretFiles adds and/or removes per-app secret files (container
 // path -> file content), re-encrypting the merged set back into the vault
 // under "secret-files:<deploymentID>:<appName>" (see loadSecretFiles,

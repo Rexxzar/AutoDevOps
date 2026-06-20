@@ -620,6 +620,52 @@ function CopyValue({ value }: { value: string }) {
 }
 
 
+function DomainSetter({ stackId, appId, onSet }: { stackId: string; appId: string; onSet: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function save() {
+    if (!value.trim()) return
+    setSaving(true)
+    try {
+      await apiFetch(`/deployments/${stackId}/apps/${appId}/domain`, {
+        method: 'PUT',
+        body: JSON.stringify({ domain: value.trim() }),
+      })
+      setEditing(false)
+      onSet()
+    } catch { /* ignore */ } finally { setSaving(false) }
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2 py-0.5">
+        <span className="text-xs text-muted-foreground w-20 shrink-0">Domain</span>
+        <button onClick={() => setEditing(true)} className="text-xs text-primary hover:underline">+ Add custom domain</button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2 py-0.5">
+      <span className="text-xs text-muted-foreground w-20 shrink-0">Domain</span>
+      <input
+        value={value} onChange={(e) => setValue(e.target.value)} placeholder="app.example.com"
+        className="h-7 flex-1 rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+        onKeyDown={(e) => { if (e.key === 'Enter') save() }}
+        autoFocus
+      />
+      <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={save} disabled={saving || !value.trim()}>
+        {saving ? <Loader2 className="size-3 animate-spin" /> : 'Set'}
+      </Button>
+      <Button size="sm" variant="ghost" className="h-7 px-1.5" onClick={() => setEditing(false)}>
+        <X className="size-3" />
+      </Button>
+    </div>
+  )
+}
+
 function AppCard({
   app, containerHealth, stackId, allApps, resources, ingressDomain, publicHost, findings, acting, steps, logs, onRedeploy, onDelete, onDownloadWorkflow, onLinksChanged, onOpenAddDb,
 }: {
@@ -897,6 +943,9 @@ function AppCard({
               </a>
             }
           />
+        )}
+        {app.kind === 'git' && !app.domain && (
+          <DomainSetter stackId={stackId} appId={app.id} onSet={onLinksChanged} />
         )}
         {app.domain && app.tls_status && app.tls_status !== 'none' && (
           <>
