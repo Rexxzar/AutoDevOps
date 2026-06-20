@@ -2,11 +2,14 @@ package deploy
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/docker/docker/api/types/registry"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 // copyImage copies an image directly between two registries without going
@@ -44,3 +47,28 @@ func copyImage(src, dst string, auth *registry.AuthConfig) error {
 
 	return nil
 }
+
+// saveImageFromRegistry pulls an image from the local insecure registry via
+// crane (bypassing the Docker daemon entirely) and returns a standard Docker
+// tar stream suitable for `docker load` on a remote VM. This avoids the
+// containerd image-store bug where `docker save` produces corrupt tars.
+func saveImageFromRegistry(src, tag string) (io.ReadCloser, error) {
+	img, err := crane.Pull(src, crane.Insecure)
+	if err != nil {
+		return nil, fmt.Errorf("deploy: crane pull %s: %w", src, err)
+	}
+
+	tagRef, err := name.NewTag(tag, name.Insecure)
+	if err != nil {
+		return nil, fmt.Errorf("deploy: parse tag %s: %w", tag, err)
+	}
+
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(tarball.Write(tagRef, img, pw))
+	}()
+	return pr, nil
+}
+
+// ensure v1 import is used
+var _ v1.Image

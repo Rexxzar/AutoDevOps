@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 
@@ -59,13 +58,10 @@ func (o *Orchestrator) deployToVM(ctx context.Context, stackName, appName, pushR
 	}
 	defer client.Close()
 
-	if o.pusher != nil {
-		if err := o.pusher.PullImage(ctx, pushRef); err != nil {
-			slog.Warn("deploy: pull image before VM save", "ref", pushRef, "error", err)
-		}
-	}
+	cname := sanitizeDockerName(stackName) + "-" + sanitizeDockerName(appName)
+	localTag := cname + ":latest"
 
-	tarStream, err := o.imageSaver.SaveImage(ctx, pushRef)
+	tarStream, err := saveImageFromRegistry(pushRef, localTag)
 	if err != nil {
 		return fmt.Errorf("deploy: save image %s: %w", pushRef, err)
 	}
@@ -77,14 +73,7 @@ func (o *Orchestrator) deployToVM(ctx context.Context, stackName, appName, pushR
 		return fmt.Errorf("deploy: docker load on %s failed (exit %d): %s", res.Name, result.ExitCode, result.Stderr)
 	}
 
-	cname := sanitizeDockerName(stackName) + "-" + sanitizeDockerName(appName)
 	hostPort := dockerAppHostPort(stackName, appName)
-
-	localTag := cname + ":latest"
-	retagCmd := fmt.Sprintf("sudo docker tag %s %s", shellQuote(pushRef), shellQuote(localTag))
-	if result, err := sshutil.ExecOnClient(client, retagCmd, nil); err != nil || result.ExitCode != 0 {
-		slog.Warn("deploy: retag on VM", "error", err, "stderr", result.Stderr)
-	}
 
 	env := make(map[string]string, len(extraEnv)+1)
 	for k, v := range extraEnv {
