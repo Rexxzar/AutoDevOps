@@ -144,8 +144,17 @@ function CloudAccountSection() {
     }
   }
 
-  const awsPlaceholder = JSON.stringify({ access_key_id: 'AKIA...', secret_access_key: '...', region: 'us-east-1' }, null, 2)
-  const azurePlaceholder = JSON.stringify({ subscription_id: '...' }, null, 2)
+  const awsPlaceholder = JSON.stringify({
+    access_key_id: 'AKIA...',
+    secret_access_key: 'wJalrXUtnFEMI/K7MDENG/...',
+    region: 'eu-west-1',
+  }, null, 2)
+  const azurePlaceholder = JSON.stringify({
+    subscription_id: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+    tenant_id: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+    client_id: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+    client_secret: '...',
+  }, null, 2)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -253,8 +262,7 @@ function CloudAccountSection() {
 
         {result && <StatusMsg ok={result.ok} msg={result.msg} />}
         <Button type="submit" size="sm" disabled={loading} className="gap-1.5">
-          {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
-          Register
+          {loading ? <><Loader2 className="size-3.5 animate-spin" /> Validating…</> : <><Plus className="size-3.5" /> Register</>}
         </Button>
       </form>
     </Card>

@@ -1337,6 +1337,11 @@ func (s *Server) handleCreateCloudAccount(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if err := cloud.ValidateCredentials(r.Context(), req.Provider, req.Credentials); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	secretName := "cloud-account:" + req.Name
 	if err := s.vault.Put(r.Context(), secretName, req.Credentials); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to store credentials")
