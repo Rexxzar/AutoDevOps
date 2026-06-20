@@ -282,6 +282,25 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 		o.publishStep(appID, StepDeploy, StepDone)
 
+		if domain != "" && o.tlsProvisioner != nil {
+			slog.Info("tls: provisioning (vm direct)", "app_id", appID, "domain", domain)
+			vmClient, vmErr := o.dialCloudVM(ctx, res)
+			if vmErr != nil {
+				slog.Error("tls: dial VM for TLS", "app_id", appID, "error", vmErr)
+				o.hub.Publish(sse.Event{Type: "deploy.log", Payload: LogEvent{AppID: appID, Line: "TLS: failed to SSH into VM: " + vmErr.Error()}})
+				o.publishStep(appID, StepTLS, StepFailed)
+			} else {
+				defer vmClient.Close()
+				vmHostPort := dockerAppHostPort(stackName, appName)
+				if tlsErr := o.tlsProvisioner.ProvisionVMDirect(ctx, appID, domain, vmClient, vmHostPort, o.publishStep); tlsErr != nil {
+					slog.Error("tls: provision failed (vm)", "app_id", appID, "domain", domain, "error", tlsErr)
+					o.hub.Publish(sse.Event{Type: "deploy.log", Payload: LogEvent{AppID: appID, Line: "TLS: " + tlsErr.Error()}})
+				}
+			}
+		} else if domain != "" {
+			o.publishStep(appID, StepTLS, StepSkipped)
+		}
+
 	case targetKind == "cloud_ecs":
 		if targetResourceID == nil {
 			o.publishStep(appID, StepDeploy, StepFailed)

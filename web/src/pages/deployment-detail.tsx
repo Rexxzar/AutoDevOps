@@ -557,6 +557,47 @@ export function DeploymentDetailPage() {
             onOpenAddDb={() => setAddDbOpen(true)}
           />
         ))}
+        {(() => {
+          const linkedResourceIds = new Set<string>()
+          apps.forEach((a) => a.links.forEach((l) => { if (l.depends_on_resource_id) linkedResourceIds.add(l.depends_on_resource_id) }))
+          const linkedResources = allResources.filter((r) => linkedResourceIds.has(r.id))
+          if (linkedResources.length === 0) return null
+          return linkedResources.map((res) => {
+            const linkedApps = apps.filter((a) => a.links.some((l) => l.depends_on_resource_id === res.id))
+            const typeLabel: Record<string, string> = { db: 'Azure PostgreSQL', rds: 'AWS RDS', vm: 'Cloud VM', ecs: 'ECS Service', aci: 'ACI Container' }
+            return (
+              <Card key={res.id}>
+                <CardHeader className="flex-row items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Database className="size-4 text-muted-foreground shrink-0" />
+                    <CardTitle className="truncate">{res.name}</CardTitle>
+                  </div>
+                  <span className="text-xs rounded-full border px-2 py-0.5 text-muted-foreground shrink-0">
+                    {typeLabel[res.resource_type] ?? res.resource_type}
+                  </span>
+                </CardHeader>
+                <CardContent className="space-y-1 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-20 shrink-0">Provider</span>
+                    <span className="uppercase font-medium">{res.provider}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-20 shrink-0">Region</span>
+                    <span className="font-mono">{res.region}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-20 shrink-0">Status</span>
+                    <StatusBadge status={res.status === 'applied' ? 'running' : 'pending'} />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-20 shrink-0">Used by</span>
+                    <span>{linkedApps.map((a) => a.name).join(', ')}</span>
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          })
+        })()}
       </div>
 
       <AddAppDialog
@@ -618,7 +659,7 @@ function CopyValue({ value }: { value: string }) {
 }
 
 
-function DomainSetter({ stackId, appId, onSet }: { stackId: string; appId: string; onSet: () => void }) {
+function DomainSetter({ stackId, appId, onSet, hint }: { stackId: string; appId: string; onSet: () => void; hint?: string }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [saving, setSaving] = useState(false)
@@ -660,6 +701,7 @@ function DomainSetter({ stackId, appId, onSet }: { stackId: string; appId: strin
       <Button size="sm" variant="ghost" className="h-7 px-1.5" onClick={() => setEditing(false)}>
         <X className="size-3" />
       </Button>
+      {hint && <span className="text-[0.65rem] text-muted-foreground shrink-0">{hint}</span>}
     </div>
   )
 }
@@ -943,7 +985,12 @@ function AppCard({
           />
         )}
         {app.kind === 'git' && !app.domain && (
-          <DomainSetter stackId={stackId} appId={app.id} onSet={onLinksChanged} />
+          <DomainSetter stackId={stackId} appId={app.id} onSet={onLinksChanged}
+            hint={app.target_type === 'vm' && targetResource ? (() => {
+              const o: Record<string, string> = (() => { try { return JSON.parse(targetResource.outputs) } catch { return {} } })()
+              return o.vm_public_ip || o.ec2_public_ip ? `Point DNS to ${o.vm_public_ip || o.ec2_public_ip}` : undefined
+            })() : undefined}
+          />
         )}
         {app.domain && app.tls_status && app.tls_status !== 'none' && (
           <>
@@ -1785,6 +1832,16 @@ function AddAppDialog({
               Optional — {target === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS via your own domain name.
             </p>
           )}
+          {kind === 'git' && target === 'vm' && (() => {
+            const vmRes = vmResources.find((r) => r.id === effectiveVmResourceId)
+            const vmOutputs: Record<string, string> = vmRes?.outputs ? (() => { try { return JSON.parse(vmRes.outputs) } catch { return {} } })() : {}
+            const vmIP = vmOutputs.vm_public_ip || vmOutputs.ec2_public_ip
+            return vmIP ? (
+              <p className="text-xs text-muted-foreground -mt-1">
+                Point your domain to the VM&apos;s IP: <code className="rounded bg-muted px-1 font-mono">{vmIP}</code>
+              </p>
+            ) : null
+          })()}
           {kind === 'git' && target === 'k8s' && (
             <>
               <FormField label="Namespace" hint="set on the stack">

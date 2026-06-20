@@ -62,12 +62,25 @@ resource "aws_security_group" "ec2" {
   }
 
   ingress {
-    # internal/deploy's cloud_vm SSH deployer publishes app containers on a
-    # deterministic port in this range (FNV-32a hash of the container name,
-    # see internal/docker.hostPort).
     description = "AutoDevOps app containers"
     from_port   = 8100
     to_port     = 8999
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -95,8 +108,8 @@ resource "aws_instance" "main" {
   # provisioning step.
   user_data = <<-EOF
     #!/bin/bash
-    dnf install -y docker
-    systemctl enable --now docker
+    dnf install -y docker nginx certbot python3-certbot-nginx
+    systemctl enable --now docker nginx
     usermod -aG docker ec2-user
   EOF
 

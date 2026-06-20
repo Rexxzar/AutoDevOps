@@ -20,6 +20,9 @@ import (
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/ssh"
+
+	"github.com/Rexxzar/autodevops/internal/sshutil"
 )
 
 // TLSProvisioner provisions TLS certificates and nginx vhost configs for
@@ -183,6 +186,108 @@ func (p *TLSProvisioner) provision(ctx context.Context, appID, domain string, up
 // The nginx vhost proxies the custom domain to this URL instead of a local port.
 func (p *TLSProvisioner) ProvisionCloud(ctx context.Context, appID, domain, upstreamURL string, publishStep func(appID, step, status string)) error {
 	return p.provisionWithTarget(ctx, appID, domain, upstreamURL, publishStep)
+}
+
+// ProvisionVMDirect provisions TLS directly on a cloud VM by writing an nginx
+// vhost and running certbot over SSH. The domain must point to the VM's public
+// IP (not the AutoDevOps server). Works for both EC2 (Amazon Linux) and Azure
+// VM (Ubuntu) — nginx and certbot are pre-installed via user_data/custom_data.
+func (p *TLSProvisioner) ProvisionVMDirect(ctx context.Context, appID, domain string, sshClient *ssh.Client, hostPort uint32, publishStep func(appID, step, status string)) error {
+	pub := func(status string) { publishStep(appID, StepTLS, status) }
+	pub(StepActive)
+	if err := p.persistTLSStatus(ctx, appID, "provisioning", ""); err != nil {
+		return err
+	}
+
+	run := func(cmd string) (sshutil.ExecResult, error) {
+		return sshutil.ExecOnClient(sshClient, cmd, nil)
+	}
+
+	// 1. Ensure nginx is running
+	if result, err := run("sudo nginx -v"); err != nil || result.ExitCode != 0 {
+		slog.Warn("tls: nginx not found on VM, attempting install")
+		if r, e := run("sudo apt-get install -y nginx 2>/dev/null || sudo dnf install -y nginx 2>/dev/null"); e != nil || r.ExitCode != 0 {
+			pub(StepFailed)
+			_ = p.persistTLSStatus(ctx, appID, "failed", "nginx is not installed on the VM and auto-install failed")
+			return fmt.Errorf("tls: install nginx on VM: exit %d: %s", r.ExitCode, r.Stderr)
+		}
+		if _, e := run("sudo systemctl enable --now nginx"); e != nil {
+			slog.Warn("tls: failed to start nginx on VM", "error", e)
+		}
+	}
+
+	// 2. Ensure certbot is available
+	if result, err := run("sudo certbot --version"); err != nil || result.ExitCode != 0 {
+		slog.Warn("tls: certbot not found on VM, attempting install")
+		if r, e := run("sudo apt-get install -y certbot python3-certbot-nginx 2>/dev/null || sudo dnf install -y certbot python3-certbot-nginx 2>/dev/null"); e != nil || r.ExitCode != 0 {
+			pub(StepFailed)
+			_ = p.persistTLSStatus(ctx, appID, "failed", "certbot is not installed on the VM and auto-install failed")
+			return fmt.Errorf("tls: install certbot on VM: exit %d: %s", r.ExitCode, r.Stderr)
+		}
+	}
+
+	// 3. Write nginx vhost
+	vhost := fmt.Sprintf(`server {
+    listen 80;
+    server_name %s;
+
+    location / {
+        proxy_pass http://localhost:%d;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}`, domain, hostPort)
+
+	writeCmd := fmt.Sprintf("sudo bash -c 'cat > /etc/nginx/conf.d/%s.conf << ENDOFCONF\n%s\nENDOFCONF'", domain, vhost)
+	if result, err := run(writeCmd); err != nil || result.ExitCode != 0 {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "failed to write nginx vhost on VM")
+		return fmt.Errorf("tls: write vhost on VM: exit %d: %s", result.ExitCode, result.Stderr)
+	}
+
+	// 4. Reload nginx
+	if result, err := run("sudo nginx -s reload"); err != nil || result.ExitCode != 0 {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
+		return fmt.Errorf("tls: reload nginx on VM: exit %d: %s", result.ExitCode, result.Stderr)
+	}
+
+	// 5. Run certbot with --nginx plugin
+	emailFlag := "--register-unsafely-without-email"
+	if p.certEmail != "" {
+		emailFlag = "--email " + p.certEmail
+	}
+	certbotCmd := fmt.Sprintf("sudo certbot --nginx -d %s --non-interactive --agree-tos %s --redirect", domain, emailFlag)
+	slog.Info("tls: running certbot on VM", "domain", domain)
+	if result, err := run(certbotCmd); err != nil || result.ExitCode != 0 {
+		stderr := ""
+		if result.Stderr != "" {
+			stderr = result.Stderr
+		}
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "cert_failed", "certbot failed on VM: "+stderr)
+		return fmt.Errorf("tls: certbot on VM: exit %d: %s", result.ExitCode, stderr)
+	}
+
+	_ = p.persistTLSStatus(ctx, appID, "active", "")
+	pub(StepDone)
+	slog.Info("tls: VM TLS active", "domain", domain)
+	return nil
+}
+
+// DeprovisionVMDirect removes the nginx vhost and certbot cert from a cloud VM
+// via SSH — called when an app with a domain on a cloud_vm target is deleted.
+func (p *TLSProvisioner) DeprovisionVMDirect(sshClient *ssh.Client, domain string) error {
+	run := func(cmd string) { sshutil.ExecOnClient(sshClient, cmd, nil) }
+	run(fmt.Sprintf("sudo rm -f /etc/nginx/conf.d/%s.conf", domain))
+	run("sudo nginx -s reload")
+	run(fmt.Sprintf("sudo certbot delete --cert-name %s --non-interactive", domain))
+	return nil
 }
 
 // provisionWithTarget is identical to provision() except it takes a full
