@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -77,6 +78,18 @@ func setACIContainerImage(cfg []byte, image string, env map[string]string, regCr
 	}
 
 	container.Body().SetAttributeValue("image", cty.StringVal(image))
+
+	if portStr, ok := env["PORT"]; ok {
+		for _, block := range container.Body().Blocks() {
+			if block.Type() == "ports" {
+				port, _ := strconv.Atoi(portStr)
+				if port > 0 {
+					block.Body().SetAttributeValue("port", cty.NumberIntVal(int64(port)))
+				}
+				break
+			}
+		}
+	}
 
 	envValues := make(map[string]cty.Value, len(env))
 	for k, v := range env {
