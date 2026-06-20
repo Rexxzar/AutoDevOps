@@ -206,7 +206,7 @@ func (p *TLSProvisioner) ProvisionVMDirect(ctx context.Context, appID, domain st
 	// 1. Ensure nginx is running
 	if result, err := run("sudo nginx -v"); err != nil || result.ExitCode != 0 {
 		slog.Warn("tls: nginx not found on VM, attempting install")
-		if r, e := run("sudo apt-get install -y nginx 2>/dev/null || sudo dnf install -y nginx 2>/dev/null"); e != nil || r.ExitCode != 0 {
+		if r, e := run("sudo apt-get update -qq && sudo apt-get install -y nginx 2>/dev/null || sudo dnf install -y nginx 2>/dev/null"); e != nil || r.ExitCode != 0 {
 			pub(StepFailed)
 			_ = p.persistTLSStatus(ctx, appID, "failed", "nginx is not installed on the VM and auto-install failed")
 			return fmt.Errorf("tls: install nginx on VM: exit %d: %s", r.ExitCode, r.Stderr)
@@ -215,11 +215,12 @@ func (p *TLSProvisioner) ProvisionVMDirect(ctx context.Context, appID, domain st
 			slog.Warn("tls: failed to start nginx on VM", "error", e)
 		}
 	}
+	run("sudo rm -f /etc/nginx/sites-enabled/default")
 
 	// 2. Ensure certbot is available
 	if result, err := run("sudo certbot --version"); err != nil || result.ExitCode != 0 {
 		slog.Warn("tls: certbot not found on VM, attempting install")
-		if r, e := run("sudo apt-get install -y certbot python3-certbot-nginx 2>/dev/null || sudo dnf install -y certbot python3-certbot-nginx 2>/dev/null"); e != nil || r.ExitCode != 0 {
+		if r, e := run("sudo apt-get install -y certbot python3-certbot-nginx 2>/dev/null || sudo dnf install -y certbot python3-certbot-nginx 2>/dev/null || sudo pip3 install certbot-nginx 2>/dev/null"); e != nil || r.ExitCode != 0 {
 			pub(StepFailed)
 			_ = p.persistTLSStatus(ctx, appID, "failed", "certbot is not installed on the VM and auto-install failed")
 			return fmt.Errorf("tls: install certbot on VM: exit %d: %s", r.ExitCode, r.Stderr)
@@ -243,11 +244,12 @@ func (p *TLSProvisioner) ProvisionVMDirect(ctx context.Context, appID, domain st
     }
 }`, domain, hostPort)
 
-	writeCmd := fmt.Sprintf("sudo bash -c 'cat > /etc/nginx/conf.d/%s.conf << ENDOFCONF\n%s\nENDOFCONF'", domain, vhost)
-	if result, err := run(writeCmd); err != nil || result.ExitCode != 0 {
+	confPath := "/etc/nginx/conf.d/" + domain + ".conf"
+	writeResult, writeErr := sshutil.ExecOnClient(sshClient, "sudo tee "+confPath+" > /dev/null", strings.NewReader(vhost))
+	if writeErr != nil || writeResult.ExitCode != 0 {
 		pub(StepFailed)
 		_ = p.persistTLSStatus(ctx, appID, "failed", "failed to write nginx vhost on VM")
-		return fmt.Errorf("tls: write vhost on VM: exit %d: %s", result.ExitCode, result.Stderr)
+		return fmt.Errorf("tls: write vhost on VM: exit %d: %s", writeResult.ExitCode, writeResult.Stderr)
 	}
 
 	// 4. Reload nginx
