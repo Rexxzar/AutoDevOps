@@ -369,13 +369,11 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		o.publishStep(appID, StepDeploy, StepDone)
 
 		if domain != "" && o.tlsProvisioner != nil {
-			aciFQDN := outputString(res.Outputs, "aci_fqdn")
-			if aciFQDN != "" {
-				aciPort := outputInt(res.Outputs, "aci_port")
-				if aciPort == 0 {
-					aciPort = 8080
-				}
-				upstreamURL := fmt.Sprintf("http://%s:%d", aciFQDN, aciPort)
+			var redeployedFQDN string
+			if err := o.pool.QueryRow(ctx,
+				`SELECT COALESCE(outputs->>'aci_fqdn', '') FROM provisioned_resources WHERE id = $1`, *targetResourceID,
+			).Scan(&redeployedFQDN); err == nil && redeployedFQDN != "" {
+				upstreamURL := fmt.Sprintf("http://%s:8080", redeployedFQDN)
 				slog.Info("tls: provisioning (aci)", "app_id", appID, "domain", domain)
 				if tlsErr := o.tlsProvisioner.ProvisionCloud(ctx, appID, domain, upstreamURL, o.publishStep); tlsErr != nil {
 					slog.Error("tls: provision failed (aci)", "app_id", appID, "domain", domain, "error", tlsErr)
