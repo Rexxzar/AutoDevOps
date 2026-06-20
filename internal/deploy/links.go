@@ -113,6 +113,25 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 			scheme, host, port = "http", "host.docker.internal", int(dockerAppHostPort(stackName, depName))
 		case consumerTargetKind == "cloud_vm" && depTargetKind == "local_k8s":
 			scheme, host, port = "https", k8sResourceName(depName)+"."+o.ingressDomain, 443
+		case depTargetKind == "cloud_vm":
+			depHostPort := int(dockerAppHostPort(stackName, depName))
+			if depDomain != "" {
+				scheme, host, port = "https", depDomain, 443
+			} else {
+				var depOutputs map[string]any
+				if err := json.Unmarshal([]byte(depOutputsJSON), &depOutputs); err == nil {
+					vmIP := outputString(depOutputs, "vm_public_ip")
+					if vmIP == "" {
+						vmIP = outputString(depOutputs, "ec2_public_ip")
+					}
+					if vmIP != "" {
+						scheme, host, port = "http", vmIP, depHostPort
+					}
+				}
+			}
+			if host == "" {
+				continue
+			}
 		case depTargetKind == "cloud_aci":
 			var depOutputs map[string]any
 			if err := json.Unmarshal([]byte(depOutputsJSON), &depOutputs); err == nil {
