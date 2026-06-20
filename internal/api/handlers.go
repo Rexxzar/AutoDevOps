@@ -216,6 +216,12 @@ func (s *Server) validateContainerTarget(ctx context.Context, resourceID, wantTy
 	if status != "applied" {
 		return fmt.Errorf("target_resource_id must reference an applied resource (status=%q)", status)
 	}
+	var existingApp string
+	if err := s.db.QueryRow(ctx,
+		`SELECT name FROM deployment_apps WHERE target_resource_id = $1 LIMIT 1`, resourceID,
+	).Scan(&existingApp); err == nil {
+		return fmt.Errorf("resource is already used by app %q — each ACI/ECS resource can only serve one app", existingApp)
+	}
 	return nil
 }
 
