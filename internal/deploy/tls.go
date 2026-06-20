@@ -178,6 +178,89 @@ func (p *TLSProvisioner) provision(ctx context.Context, appID, domain string, up
 	return nil
 }
 
+// ProvisionCloud runs the TLS flow for a cloud-deployed app (ACI/ECS) whose
+// upstream is a full URL (e.g. "http://myapp.norwayeast.azurecontainer.io:8080").
+// The nginx vhost proxies the custom domain to this URL instead of a local port.
+func (p *TLSProvisioner) ProvisionCloud(ctx context.Context, appID, domain, upstreamURL string, publishStep func(appID, step, status string)) error {
+	return p.provisionWithTarget(ctx, appID, domain, upstreamURL, publishStep)
+}
+
+// provisionWithTarget is identical to provision() except it takes a full
+// proxy_pass target URL instead of computing it from a local port — used by
+// ProvisionCloud for ACI/ECS where the upstream is a public cloud FQDN.
+func (p *TLSProvisioner) provisionWithTarget(ctx context.Context, appID, domain, proxyTarget string, publishStep func(appID, step, status string)) error {
+	pub := func(status string) { publishStep(appID, StepTLS, status) }
+
+	pub(StepActive)
+	if err := p.persistTLSStatus(ctx, appID, "provisioning", ""); err != nil {
+		return err
+	}
+
+	if err := CheckDNS(domain, p.publicIP); err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "dns_failed",
+			fmt.Sprintf("DNS not pointing here yet. Add an A record for %s → %s", domain, p.publicIP))
+		return fmt.Errorf("tls: %w", err)
+	}
+
+	proxy, err := p.detectNginxProxy(ctx)
+	if err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "No nginx found on port 80. Start an nginx container with a conf.d volume mount.")
+		return fmt.Errorf("tls: detect nginx: %w", err)
+	}
+	slog.Info("tls: nginx detected (cloud)", "containerized", proxy.Containerized, "conf_dir", proxy.ConfDirHost, "upstream", proxyTarget)
+
+	acmePort, err := findFreePort()
+	if err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
+		return fmt.Errorf("tls: %w", err)
+	}
+
+	confName := domain + ".conf"
+	confPath := filepath.Join(proxy.ConfDirHost, confName)
+
+	tempConf := tlsTempVhost(domain, proxy.GatewayIP, acmePort)
+	if err := os.WriteFile(confPath, []byte(tempConf), 0o644); err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
+		return fmt.Errorf("tls: write temp nginx vhost: %w", err)
+	}
+	if err := p.reloadNginx(ctx, proxy); err != nil {
+		_ = os.Remove(confPath)
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
+		return fmt.Errorf("tls: nginx reload (temp): %w", err)
+	}
+
+	certErr, certFixCmd := p.runCertbot(ctx, domain, acmePort, proxy)
+	_ = os.Remove(confPath)
+	_ = p.reloadNginx(ctx, proxy)
+
+	if certErr != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "cert_failed", certFixCmd)
+		return fmt.Errorf("tls: certbot: %w", certErr)
+	}
+
+	finalConf := tlsFinalVhost(domain, proxyTarget, proxy.CertDirInCtn)
+	if err := os.WriteFile(confPath, []byte(finalConf), 0o644); err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
+		return fmt.Errorf("tls: write final nginx vhost: %w", err)
+	}
+	if err := p.reloadNginx(ctx, proxy); err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
+		return fmt.Errorf("tls: nginx reload (final): %w", err)
+	}
+
+	_ = p.persistTLSStatus(ctx, appID, "active", "")
+	pub(StepDone)
+	return nil
+}
+
 // detectNginxProxy finds what's bound on host port 80 and returns its config.
 // Checks containerised nginx first (Docker SDK), then falls back to a host
 // nginx installation (/etc/nginx/conf.d or /etc/nginx/sites-enabled).

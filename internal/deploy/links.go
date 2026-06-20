@@ -132,7 +132,7 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 		case depTargetKind == "cloud_ecs":
 			var depOutputs map[string]any
 			if err := json.Unmarshal([]byte(depOutputsJSON), &depOutputs); err == nil {
-				if dns := outputString(depOutputs, "alb_dns_name"); dns != "" {
+				if dns := outputString(depOutputs, "ecs_alb_dns_name"); dns != "" {
 					scheme, host, port = "http", dns, 80
 				}
 			}

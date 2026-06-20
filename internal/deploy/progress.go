@@ -17,7 +17,7 @@ const (
 	StepPush       = "push"
 	StepCompliance = "compliance"
 	StepDeploy     = "deploy"
-	StepTLS        = "tls" // local_docker only — cert + nginx vhost provisioning
+	StepTLS        = "tls" // cert + nginx vhost provisioning (all targets with domain)
 )
 
 // Step statuses — mirrors web/src/lib/mock-data.ts's PipelineStage.status.

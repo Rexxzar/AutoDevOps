@@ -686,7 +686,7 @@ function AppCard({
   const aciPortNum = targetOutputs.aci_port || '8080'
   const aciPort = aciPortNum !== '80' ? `:${aciPortNum}` : ''
   const aciUrl = targetOutputs.aci_fqdn ? `http://${targetOutputs.aci_fqdn}${aciPort}` : undefined
-  const ecsUrl = targetOutputs.alb_dns_name ? `http://${targetOutputs.alb_dns_name}` : undefined
+  const ecsUrl = targetOutputs.ecs_alb_dns_name ? `http://${targetOutputs.ecs_alb_dns_name}` : undefined
 
   const url = app.domain
     ? `https://${app.domain}`
@@ -1730,13 +1730,13 @@ function AddAppDialog({
               </ol>
             </div>
           )}
-          {kind === 'git' && target !== 'aci' && target !== 'ecs' && (
+          {kind === 'git' && (
             <DomainField value={domain} onChange={setDomain} />
           )}
-          {kind === 'git' && (target === 'aci' || target === 'ecs') && (
-            <div className="rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-              {target === 'aci' ? 'ACI container groups' : 'ECS services'} get a public URL automatically — no custom domain needed. The URL is available in the resource&apos;s outputs.
-            </div>
+          {kind === 'git' && (target === 'aci' || target === 'ecs') && !domain && (
+            <p className="text-xs text-muted-foreground -mt-1">
+              Optional — {target === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS via your own domain name.
+            </p>
           )}
           {kind === 'git' && target === 'k8s' && (
             <>

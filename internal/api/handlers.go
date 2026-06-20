@@ -2849,6 +2849,12 @@ func (s *Server) teardownApp(ctx context.Context, stackName, appName, targetKind
 			return nil
 		}
 		return s.dockerMgr.RemoveAppContainer(ctx, stackName, appName)
+	case "cloud_aci", "cloud_ecs":
+		if domain != "" && s.deploy != nil {
+			if err := s.deploy.DeprovisionTLS(ctx, domain); err != nil {
+				slog.Warn("teardown: nginx vhost cleanup failed", "domain", domain, "error", err)
+			}
+		}
 	}
 	return nil
 }

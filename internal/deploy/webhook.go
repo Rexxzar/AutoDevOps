@@ -317,6 +317,22 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 		o.publishStep(appID, StepDeploy, StepDone)
 
+		if domain != "" && o.tlsProvisioner != nil {
+			albDNS := outputString(res.Outputs, "ecs_alb_dns_name")
+			if albDNS != "" {
+				upstreamURL := "http://" + albDNS
+				slog.Info("tls: provisioning (ecs)", "app_id", appID, "domain", domain)
+				if tlsErr := o.tlsProvisioner.ProvisionCloud(ctx, appID, domain, upstreamURL, o.publishStep); tlsErr != nil {
+					slog.Error("tls: provision failed (ecs)", "app_id", appID, "domain", domain, "error", tlsErr)
+					o.hub.Publish(sse.Event{Type: "deploy.log", Payload: LogEvent{AppID: appID, Line: "TLS: " + tlsErr.Error()}})
+				}
+			} else {
+				o.publishStep(appID, StepTLS, StepSkipped)
+			}
+		} else if domain != "" {
+			o.publishStep(appID, StepTLS, StepSkipped)
+		}
+
 	case targetKind == "cloud_aci":
 		if targetResourceID == nil {
 			o.publishStep(appID, StepDeploy, StepFailed)
@@ -351,6 +367,26 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		}
 		o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
 		o.publishStep(appID, StepDeploy, StepDone)
+
+		if domain != "" && o.tlsProvisioner != nil {
+			aciFQDN := outputString(res.Outputs, "aci_fqdn")
+			if aciFQDN != "" {
+				aciPort := outputInt(res.Outputs, "aci_port")
+				if aciPort == 0 {
+					aciPort = 8080
+				}
+				upstreamURL := fmt.Sprintf("http://%s:%d", aciFQDN, aciPort)
+				slog.Info("tls: provisioning (aci)", "app_id", appID, "domain", domain)
+				if tlsErr := o.tlsProvisioner.ProvisionCloud(ctx, appID, domain, upstreamURL, o.publishStep); tlsErr != nil {
+					slog.Error("tls: provision failed (aci)", "app_id", appID, "domain", domain, "error", tlsErr)
+					o.hub.Publish(sse.Event{Type: "deploy.log", Payload: LogEvent{AppID: appID, Line: "TLS: " + tlsErr.Error()}})
+				}
+			} else {
+				o.publishStep(appID, StepTLS, StepSkipped)
+			}
+		} else if domain != "" {
+			o.publishStep(appID, StepTLS, StepSkipped)
+		}
 
 	default:
 		o.publishStep(appID, StepDeploy, StepSkipped)

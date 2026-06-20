@@ -505,12 +505,17 @@ export function NewDeploymentPage() {
                     </div>
                   )}
 
-                  {/* Domain field for local targets */}
+                  {/* Domain field */}
                   {location === 'local' && <DomainField value={localDomain} onChange={setLocalDomain} />}
                   {location === 'cloud' && (cloudTarget === 'aci' || cloudTarget === 'ecs') && (
-                    <div className="rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-                      {cloudTarget === 'aci' ? 'ACI container groups' : 'ECS services'} get a public URL automatically from {cloudTarget === 'aci' ? 'Azure' : 'AWS'} — no custom domain needed. You&apos;ll find it in the resource&apos;s outputs after provisioning.
-                    </div>
+                    <>
+                      <DomainField value={localDomain} onChange={setLocalDomain} />
+                      {!localDomain && (
+                        <p className="text-xs text-muted-foreground -mt-1">
+                          Optional — {cloudTarget === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS.
+                        </p>
+                      )}
+                    </>
                   )}
 
                   {/* Kubernetes-only: namespace override + per-app tuning */}
