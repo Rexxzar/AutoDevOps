@@ -493,6 +493,18 @@ export function NewDeploymentPage() {
                     </FormField>
                   )}
 
+                  {location === 'cloud' && (cloudTarget === 'ecs' || cloudTarget === 'aci') && (
+                    <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3.5 py-2.5 text-xs text-muted-foreground space-y-1.5">
+                      <p className="font-medium text-foreground">How {cloudTarget === 'ecs' ? 'ECS' : 'ACI'} deployment works</p>
+                      <ol className="list-decimal list-inside space-y-0.5">
+                        <li>Provision a <strong>{cloudTarget === 'ecs' ? 'ECR registry' : 'ACR registry'}</strong> from the <button type="button" onClick={() => navigate('/new-resource')} className="underline">Resources page</button></li>
+                        <li>Provision an <strong>{cloudTarget === 'ecs' ? 'ECS service' : 'ACI container group'}</strong> (any placeholder image is fine)</li>
+                        <li>Link the registry to the {cloudTarget === 'ecs' ? 'ECS service' : 'ACI container group'} on its detail page</li>
+                        <li>Deploy here — AutoDevOps builds your app, pushes to the registry, and redeploys</li>
+                      </ol>
+                    </div>
+                  )}
+
                   {/* Domain field for local targets */}
                   {location === 'local' && <DomainField value={localDomain} onChange={setLocalDomain} />}
 

@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { Loader2, Database, Copy, Check, Eye, EyeOff } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { Loader2, Database, Copy, Check, Eye, EyeOff, Cloud } from 'lucide-react'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { TargetPill } from '@/components/deploy-form-fields'
 import { apiFetch } from '@/lib/api'
+import type { ProvisionedResource } from '@/lib/resources'
 
 type DbType = 'postgres' | 'mysql' | 'redis' | 'mongo'
-type TargetType = 'container' | 'k8s'
+type TargetType = 'container' | 'k8s' | 'cloud'
 
 interface AppStub {
   id: string
@@ -144,6 +147,7 @@ function Field({ label, value, onChange, placeholder }: { label: string; value: 
 }
 
 export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: AddDatabaseDialogProps) {
+  const navigate = useNavigate()
   const autoTarget: TargetType = allApps.some((a) => a.target_type === 'k8s') ? 'k8s' : 'container'
 
   const [dbType, setDbType] = useState<DbType>('postgres')
@@ -153,9 +157,19 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
   const [dbUser, setDbUser] = useState(DB_CONFIGS.postgres.defaultUser)
   const [dbPass, setDbPass] = useState(() => randomPassword())
   const [linkedAppIds, setLinkedAppIds] = useState<Set<string>>(new Set())
+  const [cloudResourceId, setCloudResourceId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [done, setDone] = useState<DoneState | null>(null)
+
+  const { data: allResources = [] } = useQuery({
+    queryKey: ['resources'],
+    queryFn: () => apiFetch<ProvisionedResource[]>('/resources'),
+    enabled: open,
+  })
+  const cloudDbResources = allResources.filter((r) =>
+    (r.resource_type === 'db' || r.resource_type === 'rds') && r.status === 'applied'
+  )
 
   const cfg = DB_CONFIGS[dbType]
   const linkableApps = allApps.filter((a) => a.kind === 'git' || (a.kind === 'image' && !['postgres', 'mysql', 'redis', 'mongo'].some((d) => a.name === d || a.name.startsWith(d + '-'))))
@@ -184,15 +198,49 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
     selectDbType('postgres')
     setTarget(autoTarget)
     setLinkedAppIds(new Set())
+    setCloudResourceId('')
     onClose()
   }
 
   async function submit() {
-    if (!name.trim()) { setError('Name is required'); return }
-    if (cfg.hasAuth && (!dbUser.trim() || !dbPass.trim())) { setError('Username and password are required'); return }
     setLoading(true)
     setError('')
     try {
+      if (target === 'cloud') {
+        if (!cloudResourceId) { setError('Select a cloud database resource'); setLoading(false); return }
+        const res = cloudDbResources.find((r) => r.id === cloudResourceId)
+        const resLabel = res ? `${res.name} (${res.provider === 'aws' ? 'RDS' : 'Azure DB'})` : 'Cloud DB'
+
+        await Promise.allSettled(
+          [...linkedAppIds].map((appId) =>
+            apiFetch(`/deployments/${stackId}/apps/${appId}/links`, {
+              method: 'POST',
+              body: JSON.stringify({ alias: 'DB', depends_on_resource_id: cloudResourceId }),
+            })
+          )
+        )
+
+        const linkedFrameworks = allApps
+          .filter((a) => linkedAppIds.has(a.id) && a.framework)
+          .map((a) => a.framework!)
+        setDone({
+          connStr: '',
+          credentials: [
+            { label: 'Resource', value: resLabel },
+            { label: 'Host env var', value: 'AUTODEVOPS_DB_HOST' },
+            { label: 'Port env var', value: 'AUTODEVOPS_DB_PORT' },
+            { label: 'User env var', value: 'AUTODEVOPS_DB_USER' },
+            { label: 'Password env var', value: 'AUTODEVOPS_DB_PASSWORD' },
+          ],
+          linkedFrameworks,
+        })
+        onAdded()
+        return
+      }
+
+      if (!name.trim()) { setError('Name is required'); setLoading(false); return }
+      if (cfg.hasAuth && (!dbUser.trim() || !dbPass.trim())) { setError('Username and password are required'); setLoading(false); return }
+
       const created = await apiFetch<{ id: string }>(`/deployments/${stackId}/apps`, {
         method: 'POST',
         body: JSON.stringify({
@@ -260,41 +308,81 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
             {/* Target */}
             <div>
               <p className="mb-2 text-xs font-medium text-muted-foreground">Run as</p>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <TargetPill label="Docker container" sub="local_docker" active={target === 'container'} onClick={() => setTarget('container')} />
                 <TargetPill label="Kubernetes pod" sub="local_k8s" active={target === 'k8s'} onClick={() => setTarget('k8s')} />
+                <TargetPill label="Cloud database" sub="RDS / Azure DB" active={target === 'cloud'} onClick={() => setTarget('cloud')} />
               </div>
             </div>
 
-            {/* App name */}
-            <Field label="App name" value={name} onChange={setName} />
-
-            {/* Credentials — only for auth-enabled DBs */}
-            {cfg.hasAuth && (
+            {target === 'cloud' ? (
               <div className="space-y-3">
-                <p className="text-xs font-medium text-muted-foreground">Credentials</p>
-                <Field label="Database name" value={dbName} onChange={setDbName} placeholder="app" />
-                <Field label="Username" value={dbUser} onChange={setDbUser} placeholder="autodevops" />
-                <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">Password</label>
-                  <div className="flex gap-2">
-                    <input
-                      className="h-8 flex-1 rounded border bg-background px-3 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                      value={dbPass}
-                      onChange={(e) => setDbPass(e.target.value)}
-                    />
-                    <Button size="sm" variant="outline" type="button" onClick={() => setDbPass(randomPassword())}>
-                      Generate
-                    </Button>
+                {cloudDbResources.length === 0 ? (
+                  <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-sm text-muted-foreground">
+                    No applied cloud database resources found.{' '}
+                    <button type="button" onClick={() => { handleClose(); navigate('/new-resource') }} className="underline text-foreground">
+                      Provision one
+                    </button>{' '}first (AWS RDS or Azure PostgreSQL), then come back here.
                   </div>
-                </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-muted-foreground mb-1">Cloud database</label>
+                      <select
+                        value={cloudResourceId}
+                        onChange={(e) => setCloudResourceId(e.target.value)}
+                        className="h-8 w-full rounded border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                        required
+                      >
+                        <option value="">Select a database…</option>
+                        {cloudDbResources.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name} ({r.provider === 'aws' ? 'RDS' : 'Azure Postgres'})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
+                      <Cloud className="inline size-3 mr-1 -mt-0.5" />
+                      Linking will inject <code className="rounded bg-muted px-1">AUTODEVOPS_DB_*</code> env vars
+                      (HOST, PORT, USER, PASSWORD, DATABASE, URL) into all selected apps on their next deploy.
+                    </div>
+                  </>
+                )}
               </div>
+            ) : (
+              <>
+                {/* App name */}
+                <Field label="App name" value={name} onChange={setName} />
+
+                {/* Credentials — only for auth-enabled DBs */}
+                {cfg.hasAuth && (
+                  <div className="space-y-3">
+                    <p className="text-xs font-medium text-muted-foreground">Credentials</p>
+                    <Field label="Database name" value={dbName} onChange={setDbName} placeholder="app" />
+                    <Field label="Username" value={dbUser} onChange={setDbUser} placeholder="autodevops" />
+                    <div>
+                      <label className="block text-xs font-medium text-muted-foreground mb-1">Password</label>
+                      <div className="flex gap-2">
+                        <input
+                          className="h-8 flex-1 rounded border bg-background px-3 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                          value={dbPass}
+                          onChange={(e) => setDbPass(e.target.value)}
+                        />
+                        <Button size="sm" variant="outline" type="button" onClick={() => setDbPass(randomPassword())}>
+                          Generate
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
-            {/* Link apps */}
+            {/* Link apps — shared by both local and cloud */}
             {linkableApps.length > 0 && (
               <div>
-                <p className="mb-2 text-xs font-medium text-muted-foreground">Auto-link (injects HOST + PORT env vars)</p>
+                <p className="mb-2 text-xs font-medium text-muted-foreground">Auto-link (injects DB env vars into these apps)</p>
                 <div className="space-y-1.5">
                   {linkableApps.map((a) => (
                     <label key={a.id} className="flex items-center gap-2 cursor-pointer text-sm">
@@ -311,9 +399,9 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
 
             <div className="flex justify-end gap-2 pt-1">
               <Button size="sm" variant="outline" onClick={handleClose} disabled={loading}>Cancel</Button>
-              <Button size="sm" className="gap-1.5" onClick={submit} disabled={loading}>
+              <Button size="sm" className="gap-1.5" onClick={submit} disabled={loading || (target === 'cloud' && cloudDbResources.length === 0)}>
                 {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Database className="size-3.5" />}
-                Add database
+                {target === 'cloud' ? 'Link database' : 'Add database'}
               </Button>
             </div>
           </>

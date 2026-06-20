@@ -73,9 +73,10 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 	rows, err := o.pool.Query(ctx, `
 		SELECT l.alias, da.name, da.target_kind, da.kind, COALESCE(da.port, 0),
 		       COALESCE(da.image_ref, ''), COALESCE(da.image_env_secret_id::text, ''),
-		       COALESCE(da.domain, '')
+		       COALESCE(da.domain, ''), COALESCE(pr.outputs::text, '{}')
 		FROM deployment_app_links l
 		JOIN deployment_apps da ON da.id = l.depends_on_app_id
+		LEFT JOIN provisioned_resources pr ON pr.id = da.target_resource_id
 		WHERE l.app_id = $1 AND l.depends_on_app_id IS NOT NULL
 	`, appID)
 	if err != nil {
@@ -85,9 +86,9 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 
 	env := make(map[string]string)
 	for rows.Next() {
-		var alias, depName, depTargetKind, depKind, imageRef, imageEnvSecretID, depDomain string
+		var alias, depName, depTargetKind, depKind, imageRef, imageEnvSecretID, depDomain, depOutputsJSON string
 		var depPort int
-		if err := rows.Scan(&alias, &depName, &depTargetKind, &depKind, &depPort, &imageRef, &imageEnvSecretID, &depDomain); err != nil {
+		if err := rows.Scan(&alias, &depName, &depTargetKind, &depKind, &depPort, &imageRef, &imageEnvSecretID, &depDomain, &depOutputsJSON); err != nil {
 			return nil, fmt.Errorf("deploy: scan link for %s: %w", appID, err)
 		}
 
@@ -95,11 +96,6 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 		var port int
 		switch {
 		case consumerTargetKind == "local_k8s" && depTargetKind == "local_k8s":
-			// In-cluster Service DNS — must match the sanitized name KubeDeploy
-			// used as the Service's metadata.name (e.g. "ShopHup" -> "shophup").
-			// Git-kind apps expose port 80 (buildService maps 80→paketoPort);
-			// image-kind apps expose their actual container port (buildResourceService
-			// uses port=port, e.g. 3306 for MySQL, 5432 for Postgres).
 			svcPort := 80
 			if depKind == "image" && depPort > 0 {
 				svcPort = depPort
@@ -116,10 +112,29 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 		case consumerTargetKind == "local_k8s" && depTargetKind == "local_docker":
 			scheme, host, port = "http", "host.docker.internal", int(dockerAppHostPort(stackName, depName))
 		case consumerTargetKind == "cloud_vm" && depTargetKind == "local_k8s":
-			// Same treatment as a local_docker consumer: reach the k8s app via
-			// its public Ingress hostname. local_docker/cloud_vm dependencies
-			// are not reachable from a cloud VM in v1 (documented gap).
 			scheme, host, port = "https", k8sResourceName(depName)+"."+o.ingressDomain, 443
+		case depTargetKind == "cloud_aci":
+			var depOutputs map[string]any
+			if err := json.Unmarshal([]byte(depOutputsJSON), &depOutputs); err == nil {
+				if fqdn := outputString(depOutputs, "aci_fqdn"); fqdn != "" {
+					scheme, host, port = "http", fqdn, 80
+				} else if ip := outputString(depOutputs, "aci_ip_address"); ip != "" {
+					scheme, host, port = "http", ip, 80
+				}
+			}
+			if host == "" {
+				continue
+			}
+		case depTargetKind == "cloud_ecs":
+			var depOutputs map[string]any
+			if err := json.Unmarshal([]byte(depOutputsJSON), &depOutputs); err == nil {
+				if dns := outputString(depOutputs, "alb_dns_name"); dns != "" {
+					scheme, host, port = "http", dns, 80
+				}
+			}
+			if host == "" {
+				continue
+			}
 		default:
 			continue
 		}
@@ -425,13 +440,15 @@ func (o *Orchestrator) resolveAzureDBLink(ctx context.Context, env map[string]st
 	}
 	env[prefix+"DATABASE"] = database
 
-	var password string
-	if cloudAccountID != "" {
+	password := outputString(outputs, "db_admin_password")
+	if password == "" && cloudAccountID != "" {
 		var err error
 		password, err = o.azureAADToken(ctx, cloudAccountID)
 		if err != nil {
 			return err
 		}
+	}
+	if password != "" {
 		env[prefix+"PASSWORD"] = password
 	}
 

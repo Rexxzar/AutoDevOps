@@ -1707,6 +1707,17 @@ function AddAppDialog({
               </select>
             </FormField>
           )}
+          {(target === 'ecs' || target === 'aci') && (
+            <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3.5 py-2.5 text-xs text-muted-foreground space-y-1.5">
+              <p className="font-medium text-foreground">How {target === 'ecs' ? 'ECS' : 'ACI'} deployment works</p>
+              <ol className="list-decimal list-inside space-y-0.5">
+                <li>Provision a <strong>{target === 'ecs' ? 'ECR registry' : 'ACR registry'}</strong> from the Resources page</li>
+                <li>Provision an <strong>{target === 'ecs' ? 'ECS service' : 'ACI container group'}</strong> (any placeholder image is fine)</li>
+                <li>Link the registry to the {target === 'ecs' ? 'ECS service' : 'ACI container group'} on its detail page</li>
+                <li>Deploy here — AutoDevOps builds your app, pushes to the registry, and redeploys</li>
+              </ol>
+            </div>
+          )}
           {kind === 'git' && (
             <DomainField value={domain} onChange={setDomain} />
           )}

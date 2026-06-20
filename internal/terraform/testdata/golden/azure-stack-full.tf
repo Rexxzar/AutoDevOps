@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 }
 
@@ -176,6 +180,11 @@ output "vm_admin_username" {
 
 data "azurerm_client_config" "current" {}
 
+resource "random_password" "db" {
+  length  = 32
+  special = true
+}
+
 resource "azurerm_postgresql_flexible_server" "main" {
   name                = "demo-db"
   resource_group_name = azurerm_resource_group.main.name
@@ -184,11 +193,14 @@ resource "azurerm_postgresql_flexible_server" "main" {
   sku_name            = "B_Standard_B1ms"
   storage_mb          = 32768
 
+  administrator_login    = "autodevopsadmin"
+  administrator_password = random_password.db.result
+
   public_network_access_enabled = true
 
   authentication {
     active_directory_auth_enabled = true
-    password_auth_enabled         = false
+    password_auth_enabled         = true
     tenant_id                     = data.azurerm_client_config.current.tenant_id
   }
 
@@ -218,7 +230,12 @@ output "db_fqdn" {
 }
 
 output "db_admin_username" {
-  value = azurerm_postgresql_flexible_server_active_directory_administrator.main.principal_name
+  value = azurerm_postgresql_flexible_server.main.administrator_login
+}
+
+output "db_admin_password" {
+  value     = random_password.db.result
+  sensitive = true
 }
 
 resource "azurerm_container_group" "main" {

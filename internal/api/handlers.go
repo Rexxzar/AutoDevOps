@@ -1337,7 +1337,8 @@ func (s *Server) handleCreateCloudAccount(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := cloud.ValidateCredentials(r.Context(), req.Provider, req.Credentials); err != nil {
+	validation, err := cloud.ValidateCredentials(r.Context(), req.Provider, req.Credentials)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1349,7 +1350,7 @@ func (s *Server) handleCreateCloudAccount(w http.ResponseWriter, r *http.Request
 	}
 
 	var accountID string
-	err := s.db.QueryRow(r.Context(), `
+	err = s.db.QueryRow(r.Context(), `
 		INSERT INTO cloud_accounts (provider, name, credentials_secret_id)
 		SELECT $1, $2, id FROM secrets WHERE name = $3
 		RETURNING id::text
@@ -1359,7 +1360,12 @@ func (s *Server) handleCreateCloudAccount(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]string{"id": accountID, "provider": req.Provider, "name": req.Name})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":         accountID,
+		"provider":   req.Provider,
+		"name":       req.Name,
+		"validation": validation,
+	})
 }
 
 // handleDeleteCloudAccount unregisters a cloud account. cloud_resources rows

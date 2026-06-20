@@ -163,11 +163,18 @@ function CloudAccountSection() {
     try {
       let parsed: unknown
       try { parsed = JSON.parse(creds) } catch { throw new Error('Credentials must be valid JSON') }
-      await apiFetch('/cloud/accounts', {
+      const res = await apiFetch<{ validation?: { provider?: string; region?: string; account?: string; user_arn?: string; subscription_name?: string; subscription_id?: string; auth_mode?: string } }>('/cloud/accounts', {
         method: 'POST',
         body: JSON.stringify({ provider, name, credentials: parsed }),
       })
-      setResult({ ok: true, msg: `Account "${name}" registered. Poller will start within 60s.` })
+      const v = res.validation
+      let msg = `Account "${name}" registered — credentials verified.`
+      if (v?.provider === 'aws') {
+        msg = `✓ AWS credentials valid — account ${v.account ?? '—'}, region ${v.region ?? '—'}. Poller will start within 60s.`
+      } else if (v?.provider === 'azure') {
+        msg = `✓ Azure credentials valid — subscription "${v.subscription_name || v.subscription_id || '—'}" (${v.auth_mode === 'service-principal' ? 'service principal' : 'az CLI'}). Poller will start within 60s.`
+      }
+      setResult({ ok: true, msg })
       setName('')
       setCreds('')
       qc.invalidateQueries({ queryKey: ['cloud-accounts'] })
