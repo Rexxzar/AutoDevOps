@@ -43,7 +43,8 @@ interface AppDetail {
   branch: string
   framework?: string
   declared_framework?: string
-  target_type: string // "k8s" | "container" | "vm"
+  target_type: string // "k8s" | "container" | "vm" | "ecs" | "aci"
+  target_resource_id?: string
   namespace?: string
   image_ref?: string
   port?: number
@@ -680,13 +681,22 @@ function AppCard({
   // local dev) rather than showing a meaningless ::1/127.0.0.1 link.
   const containerHost = publicHost && publicHost !== '::1' && publicHost !== '127.0.0.1' ? publicHost : 'localhost'
 
+  const targetResource = app.target_resource_id ? resources.find((r) => r.id === app.target_resource_id) : undefined
+  const targetOutputs: Record<string, string> = targetResource?.outputs ? (() => { try { return JSON.parse(targetResource.outputs) } catch { return {} } })() : {}
+  const aciUrl = targetOutputs.aci_fqdn ? `http://${targetOutputs.aci_fqdn}` : undefined
+  const ecsUrl = targetOutputs.alb_dns_name ? `http://${targetOutputs.alb_dns_name}` : undefined
+
   const url = app.domain
     ? `https://${app.domain}`
     : app.target_type === 'k8s' && app.namespace && ingressDomain
       ? `https://${app.name}.${ingressDomain}`
       : app.target_type === 'container' && app.host_port
         ? `http://${containerHost}:${app.host_port}`
-        : null
+        : app.target_type === 'aci' && aciUrl
+          ? aciUrl
+          : app.target_type === 'ecs' && ecsUrl
+            ? ecsUrl
+            : null
 
   async function handleDeleteLink(linkId: string) {
     setDeletingLinkId(linkId)
