@@ -683,7 +683,9 @@ function AppCard({
 
   const targetResource = app.target_resource_id ? resources.find((r) => r.id === app.target_resource_id) : undefined
   const targetOutputs: Record<string, string> = targetResource?.outputs ? (() => { try { return JSON.parse(targetResource.outputs) } catch { return {} } })() : {}
-  const aciUrl = targetOutputs.aci_fqdn ? `http://${targetOutputs.aci_fqdn}` : undefined
+  const aciPortNum = targetOutputs.aci_port || '8080'
+  const aciPort = aciPortNum !== '80' ? `:${aciPortNum}` : ''
+  const aciUrl = targetOutputs.aci_fqdn ? `http://${targetOutputs.aci_fqdn}${aciPort}` : undefined
   const ecsUrl = targetOutputs.alb_dns_name ? `http://${targetOutputs.alb_dns_name}` : undefined
 
   const url = app.domain

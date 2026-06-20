@@ -90,7 +90,7 @@ func (o *Orchestrator) deployToACI(ctx context.Context, appName, pushRef string,
 	for k, v := range extraEnv {
 		env[k] = v
 	}
-	env["PORT"] = "80"
+	env["PORT"] = "8080"
 
 	outputs, err := o.aciRedeployer.RedeployACIImage(ctx, res.ID, res.CloudAccountID, acrRef, env, loginServer, auth.Username, auth.Password)
 	if err != nil {

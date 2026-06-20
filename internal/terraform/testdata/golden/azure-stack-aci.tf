@@ -72,3 +72,7 @@ output "aci_ip_address" {
 output "aci_fqdn" {
   value = azurerm_container_group.main.fqdn
 }
+
+output "aci_port" {
+  value = 80
+}

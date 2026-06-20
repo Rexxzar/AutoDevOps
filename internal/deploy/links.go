@@ -116,10 +116,14 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 		case depTargetKind == "cloud_aci":
 			var depOutputs map[string]any
 			if err := json.Unmarshal([]byte(depOutputsJSON), &depOutputs); err == nil {
+				aciPort := outputInt(depOutputs, "aci_port")
+				if aciPort == 0 {
+					aciPort = 8080
+				}
 				if fqdn := outputString(depOutputs, "aci_fqdn"); fqdn != "" {
-					scheme, host, port = "http", fqdn, 80
+					scheme, host, port = "http", fqdn, aciPort
 				} else if ip := outputString(depOutputs, "aci_ip_address"); ip != "" {
-					scheme, host, port = "http", ip, 80
+					scheme, host, port = "http", ip, aciPort
 				}
 			}
 			if host == "" {
