@@ -227,8 +227,56 @@ func (p *TLSProvisioner) ProvisionVMDirect(ctx context.Context, appID, domain st
 		}
 	}
 
-	// 3. Write nginx vhost
-	vhost := fmt.Sprintf(`server {
+	confPath := "/etc/nginx/conf.d/" + domain + ".conf"
+	certExists := false
+	if result, err := run(fmt.Sprintf("sudo test -f /etc/letsencrypt/live/%s/fullchain.pem", domain)); err == nil && result.ExitCode == 0 {
+		certExists = true
+	}
+
+	if certExists {
+		// Cert already exists — write full SSL vhost directly, skip certbot
+		vhost := fmt.Sprintf(`server {
+    listen 80;
+    server_name %s;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name %s;
+
+    ssl_certificate     /etc/letsencrypt/live/%s/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/%s/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    location / {
+        proxy_pass http://localhost:%d;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}`, domain, domain, domain, domain, hostPort)
+
+		writeResult, writeErr := sshutil.ExecOnClient(sshClient, "sudo tee "+confPath+" > /dev/null", strings.NewReader(vhost))
+		if writeErr != nil || writeResult.ExitCode != 0 {
+			pub(StepFailed)
+			_ = p.persistTLSStatus(ctx, appID, "failed", "failed to write nginx vhost on VM")
+			return fmt.Errorf("tls: write vhost on VM: exit %d: %s", writeResult.ExitCode, writeResult.Stderr)
+		}
+		if result, err := run("sudo nginx -s reload"); err != nil || result.ExitCode != 0 {
+			pub(StepFailed)
+			_ = p.persistTLSStatus(ctx, appID, "failed", "")
+			return fmt.Errorf("tls: reload nginx on VM: exit %d: %s", result.ExitCode, result.Stderr)
+		}
+		slog.Info("tls: reused existing cert on VM", "domain", domain)
+	} else {
+		// No cert yet — write HTTP-only vhost, then run certbot to obtain cert
+		vhost := fmt.Sprintf(`server {
     listen 80;
     server_name %s;
 
@@ -244,36 +292,33 @@ func (p *TLSProvisioner) ProvisionVMDirect(ctx context.Context, appID, domain st
     }
 }`, domain, hostPort)
 
-	confPath := "/etc/nginx/conf.d/" + domain + ".conf"
-	writeResult, writeErr := sshutil.ExecOnClient(sshClient, "sudo tee "+confPath+" > /dev/null", strings.NewReader(vhost))
-	if writeErr != nil || writeResult.ExitCode != 0 {
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed", "failed to write nginx vhost on VM")
-		return fmt.Errorf("tls: write vhost on VM: exit %d: %s", writeResult.ExitCode, writeResult.Stderr)
-	}
-
-	// 4. Reload nginx
-	if result, err := run("sudo nginx -s reload"); err != nil || result.ExitCode != 0 {
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed", "")
-		return fmt.Errorf("tls: reload nginx on VM: exit %d: %s", result.ExitCode, result.Stderr)
-	}
-
-	// 5. Run certbot with --nginx plugin
-	emailFlag := "--register-unsafely-without-email"
-	if p.certEmail != "" && !strings.HasSuffix(p.certEmail, ".local") {
-		emailFlag = "--email " + p.certEmail
-	}
-	certbotCmd := fmt.Sprintf("sudo certbot --nginx -d %s --non-interactive --agree-tos %s --redirect", domain, emailFlag)
-	slog.Info("tls: running certbot on VM", "domain", domain)
-	if result, err := run(certbotCmd); err != nil || result.ExitCode != 0 {
-		stderr := ""
-		if result.Stderr != "" {
-			stderr = result.Stderr
+		writeResult, writeErr := sshutil.ExecOnClient(sshClient, "sudo tee "+confPath+" > /dev/null", strings.NewReader(vhost))
+		if writeErr != nil || writeResult.ExitCode != 0 {
+			pub(StepFailed)
+			_ = p.persistTLSStatus(ctx, appID, "failed", "failed to write nginx vhost on VM")
+			return fmt.Errorf("tls: write vhost on VM: exit %d: %s", writeResult.ExitCode, writeResult.Stderr)
 		}
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "cert_failed", "certbot failed on VM: "+stderr)
-		return fmt.Errorf("tls: certbot on VM: exit %d: %s", result.ExitCode, stderr)
+		if result, err := run("sudo nginx -s reload"); err != nil || result.ExitCode != 0 {
+			pub(StepFailed)
+			_ = p.persistTLSStatus(ctx, appID, "failed", "")
+			return fmt.Errorf("tls: reload nginx on VM: exit %d: %s", result.ExitCode, result.Stderr)
+		}
+
+		emailFlag := "--register-unsafely-without-email"
+		if p.certEmail != "" && !strings.HasSuffix(p.certEmail, ".local") {
+			emailFlag = "--email " + p.certEmail
+		}
+		certbotCmd := fmt.Sprintf("sudo certbot --nginx -d %s --non-interactive --agree-tos %s --redirect", domain, emailFlag)
+		slog.Info("tls: running certbot on VM", "domain", domain)
+		if result, err := run(certbotCmd); err != nil || result.ExitCode != 0 {
+			stderr := ""
+			if result.Stderr != "" {
+				stderr = result.Stderr
+			}
+			pub(StepFailed)
+			_ = p.persistTLSStatus(ctx, appID, "cert_failed", "certbot failed on VM: "+stderr)
+			return fmt.Errorf("tls: certbot on VM: exit %d: %s", result.ExitCode, stderr)
+		}
 	}
 
 	_ = p.persistTLSStatus(ctx, appID, "active", "")
