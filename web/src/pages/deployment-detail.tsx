@@ -1220,6 +1220,7 @@ function AppCard({
       <AddLinkDialog
         stackId={stackId}
         appId={app.id}
+        consumerTarget={app.target_type}
         siblingApps={siblings}
         resources={resources}
         open={linkOpen}
@@ -1348,10 +1349,11 @@ function AddSecretFileDialog({
 const PORTED_RESOURCE_TYPES = new Set(['vm', 'ecs', 'aci'])
 
 function AddLinkDialog({
-  stackId, appId, siblingApps, resources, open, onClose, onCreated,
+  stackId, appId, consumerTarget, siblingApps, resources, open, onClose, onCreated,
 }: {
   stackId: string
   appId: string
+  consumerTarget: string
   siblingApps: AppDetail[]
   resources: ProvisionedResource[]
   open: boolean
@@ -1368,7 +1370,16 @@ function AddLinkDialog({
   const effectiveTarget = target || defaultTarget
   const [targetKind, targetId] = effectiveTarget.split(':')
   const selectedResource = targetKind === 'resource' ? resources.find((r) => r.id === targetId) : undefined
+  const selectedApp = targetKind === 'app' ? siblingApps.find((a) => a.id === targetId) : undefined
   const showPort = !!selectedResource && PORTED_RESOURCE_TYPES.has(selectedResource.resource_type)
+
+  // A cloud-hosted consumer can only reach a LOCAL dependency (k8s/docker pod
+  // or container) through that dependency's public domain — without one the
+  // backend silently drops the link. Warn at link-creation so it's fixed up
+  // front (matches internal/deploy/links.go's cross-target resolution rule).
+  const consumerIsCloud = consumerTarget === 'vm' || consumerTarget === 'ecs' || consumerTarget === 'aci'
+  const depIsLocal = !!selectedApp && (selectedApp.target_type === 'k8s' || selectedApp.target_type === 'container')
+  const unreachableLocalDep = consumerIsCloud && depIsLocal && !selectedApp?.domain
   // aliasPreview drives the live env-var preview below; falls back to a
   // placeholder before the user types so the AUTODEVOPS_<ALIAS>_* shape is clear.
   const aliasPreview = alias || '<ALIAS>'
@@ -1468,6 +1479,15 @@ function AddLinkDialog({
             )}
           </select>
         </FormField>
+        {unreachableLocalDep && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400">
+            <AlertCircle className="size-4 shrink-0 mt-0.5" />
+            <span>
+              This app runs in the cloud, but <span className="font-medium">{selectedApp?.name}</span> is local with no public domain — the cloud can&apos;t reach it.
+              Add a domain to <span className="font-medium">{selectedApp?.name}</span> first so this connection works.
+            </span>
+          </div>
+        )}
         {showPort && (
           <FormField label="Port" hint="defaults to 80 if left blank">
             <input

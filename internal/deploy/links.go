@@ -65,6 +65,14 @@ func buildURL(scheme, host string, port int) string {
 // dependencies — buildResourceService always maps Service port 80 to the
 // container's actual port, whatever it is.
 //
+// A cloud-hosted consumer (cloud_vm/cloud_ecs/cloud_aci) depending on a
+// local-hosted app (local_k8s/local_docker) is resolved via the dependency's
+// public domain (https, 443): a local app is only reachable off its own host
+// through the TLS domain terminated at the central nginx / kind ingress. If
+// such a dependency has no domain set it is unreachable from the cloud, so the
+// link is skipped (and logged) rather than silently injecting a host-local
+// address that would never connect.
+//
 // Links to provisioned cloud resources (depends_on_resource_id, Phase 5a) are
 // resolved separately by resolveResourceLinks and merged into the result —
 // their endpoints (public IP, RDS endpoint, ALB/FQDN) are reachable the same
@@ -159,7 +167,20 @@ func (o *Orchestrator) resolveLinks(ctx context.Context, appID, stackName, consu
 				continue
 			}
 		default:
-			continue
+			// Cross-target combo not covered above — in practice a cloud-hosted
+			// consumer (cloud_vm/cloud_ecs/cloud_aci) depending on a local-hosted
+			// app (local_k8s/local_docker). A local app is only reachable off its
+			// own host via its public domain (TLS terminated at the central nginx
+			// / kind ingress), so use that when set. Without a domain the
+			// dependency is unreachable from the consumer's network, so skip the
+			// link with a warning instead of injecting a host-local address that
+			// would silently never connect.
+			if depDomain == "" {
+				slog.Warn("deploy: link skipped — dependency not reachable from a cloud consumer without a public domain",
+					"app_id", appID, "consumer_target", consumerTargetKind, "dependency", depName, "dependency_target", depTargetKind)
+				continue
+			}
+			scheme, host, port = "https", depDomain, 443
 		}
 
 		prefix := "AUTODEVOPS_" + strings.ToUpper(alias) + "_"
