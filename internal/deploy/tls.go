@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -64,10 +65,17 @@ func NewTLSProvisioner(docker *dockerclient.Client, pool *pgxpool.Pool, publicIP
 
 // CheckDNS verifies that domain's A record resolves to publicIP.
 // Returns a user-friendly error if it doesn't.
+//
+// It resolves via a public resolver (8.8.8.8) AND the system resolver, passing
+// if either reports publicIP. The server's own resolver cache can hold a stale
+// record for minutes after a DNS change (the TTL), which would otherwise cause
+// a false "not pointing here" failure on a redeploy right after re-pointing a
+// domain. A public resolver reflects the authoritative record sooner and is
+// exactly what Let's Encrypt will see when it validates.
 func CheckDNS(domain, publicIP string) error {
-	addrs, err := net.LookupHost(domain)
-	if err != nil {
-		return fmt.Errorf("%s: DNS lookup failed: %w", domain, err)
+	addrs := resolveAllHosts(domain)
+	if len(addrs) == 0 {
+		return fmt.Errorf("%s: DNS lookup failed (no records)", domain)
 	}
 	for _, a := range addrs {
 		if a == publicIP {
@@ -75,6 +83,83 @@ func CheckDNS(domain, publicIP string) error {
 		}
 	}
 	return fmt.Errorf("%s resolves to %v, not to this server (%s) — add an A record pointing to %s", domain, addrs, publicIP, publicIP)
+}
+
+// resolveAllHosts resolves domain via a public resolver (8.8.8.8) with a
+// fallback to the system resolver, returning the deduplicated union of both —
+// so a stale entry in either resolver can't mask the correct record in the
+// other.
+func resolveAllHosts(domain string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(addrs []string) {
+		for _, a := range addrs {
+			if !seen[a] {
+				seen[a] = true
+				out = append(out, a)
+			}
+		}
+	}
+
+	publicResolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, network, "8.8.8.8:53")
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	if addrs, err := publicResolver.LookupHost(ctx, domain); err == nil {
+		add(addrs)
+	}
+	if addrs, err := net.LookupHost(domain); err == nil {
+		add(addrs)
+	}
+	return out
+}
+
+// certProvisioned reports whether TLS was already successfully provisioned for
+// domain — i.e. a redeploy, not a first-time setup. It checks the final nginx
+// vhost (which AutoDevOps owns and can always read, and which only gets an
+// "ssl_certificate" line written after certbot succeeds), falling back to the
+// cert file itself when readable (root only). When true, the caller can skip
+// the DNS gate + certbot entirely and just refresh the vhost — avoiding both a
+// false "DNS not pointing here" on a stale resolver cache and a needless cert
+// re-issuance against Let's Encrypt's weekly rate limit.
+func certProvisioned(proxy *NginxProxy, domain string) bool {
+	if data, err := os.ReadFile(filepath.Join(proxy.ConfDirHost, domain+".conf")); err == nil {
+		if strings.Contains(string(data), "ssl_certificate") {
+			return true
+		}
+	}
+	if proxy.CertDirHost != "" {
+		if _, err := os.Stat(filepath.Join(proxy.CertDirHost, "live", domain, "fullchain.pem")); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// finalizeVhost writes the final TLS vhost for domain (proxying to proxyTarget),
+// reloads nginx, and marks the app's TLS active. Shared by the first-issuance
+// path and the redeploy fast-path so both end identically.
+func (p *TLSProvisioner) finalizeVhost(ctx context.Context, appID, domain, proxyTarget string, proxy *NginxProxy, pub func(string)) error {
+	confPath := filepath.Join(proxy.ConfDirHost, domain+".conf")
+	finalConf := tlsFinalVhost(domain, proxyTarget, proxy.CertDirInCtn)
+	if err := os.WriteFile(confPath, []byte(finalConf), 0o644); err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
+		return fmt.Errorf("tls: write final nginx vhost: %w", err)
+	}
+	if err := p.reloadNginx(ctx, proxy); err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "failed", "")
+		return fmt.Errorf("tls: nginx reload (final): %w", err)
+	}
+	_ = p.persistTLSStatus(ctx, appID, "active", "")
+	pub(StepDone)
+	return nil
 }
 
 // Provision runs the full TLS provisioning flow for a local_docker app — the
@@ -106,15 +191,7 @@ func (p *TLSProvisioner) provision(ctx context.Context, appID, domain string, up
 		return err
 	}
 
-	// 1. DNS
-	if err := CheckDNS(domain, p.publicIP); err != nil {
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "dns_failed",
-			fmt.Sprintf("DNS not pointing here yet. Add an A record for %s → %s", domain, p.publicIP))
-		return fmt.Errorf("tls: %w", err)
-	}
-
-	// 2. Detect nginx
+	// 1. Detect nginx
 	proxy, err := p.detectNginxProxy(ctx)
 	if err != nil {
 		pub(StepFailed)
@@ -123,7 +200,23 @@ func (p *TLSProvisioner) provision(ctx context.Context, appID, domain string, up
 	}
 	slog.Info("tls: nginx detected", "containerized", proxy.Containerized, "conf_dir", proxy.ConfDirHost, "gateway", proxy.GatewayIP)
 
-	// 3. Find a free port for certbot standalone
+	// 2. Redeploy fast-path — a cert already exists, so skip the DNS gate and
+	//    certbot (no false dns_failed on a stale resolver cache, no needless
+	//    re-issuance) and just refresh the vhost.
+	if certProvisioned(proxy, domain) {
+		slog.Info("tls: cert already provisioned, refreshing vhost", "domain", domain)
+		return p.finalizeVhost(ctx, appID, domain, proxyPassTarget(proxy, upstreamPort), proxy, pub)
+	}
+
+	// 3. DNS (first-time issuance only)
+	if err := CheckDNS(domain, p.publicIP); err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "dns_failed",
+			fmt.Sprintf("DNS not pointing here yet. Add an A record for %s → %s", domain, p.publicIP))
+		return fmt.Errorf("tls: %w", err)
+	}
+
+	// 4. Find a free port for certbot standalone
 	acmePort, err := findFreePort()
 	if err != nil {
 		pub(StepFailed)
@@ -163,22 +256,7 @@ func (p *TLSProvisioner) provision(ctx context.Context, appID, domain string, up
 	}
 
 	// 5. Write the final TLS vhost and reload.
-	proxyTarget := proxyPassTarget(proxy, upstreamPort)
-	finalConf := tlsFinalVhost(domain, proxyTarget, proxy.CertDirInCtn)
-	if err := os.WriteFile(confPath, []byte(finalConf), 0o644); err != nil {
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed", "")
-		return fmt.Errorf("tls: write final nginx vhost: %w", err)
-	}
-	if err := p.reloadNginx(ctx, proxy); err != nil {
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed", "")
-		return fmt.Errorf("tls: nginx reload (final): %w", err)
-	}
-
-	_ = p.persistTLSStatus(ctx, appID, "active", "")
-	pub(StepDone)
-	return nil
+	return p.finalizeVhost(ctx, appID, domain, proxyPassTarget(proxy, upstreamPort), proxy, pub)
 }
 
 // ProvisionCloud runs the TLS flow for a cloud-deployed app (ACI/ECS) whose
@@ -348,13 +426,6 @@ func (p *TLSProvisioner) provisionWithTarget(ctx context.Context, appID, domain,
 		return err
 	}
 
-	if err := CheckDNS(domain, p.publicIP); err != nil {
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "dns_failed",
-			fmt.Sprintf("DNS not pointing here yet. Add an A record for %s → %s", domain, p.publicIP))
-		return fmt.Errorf("tls: %w", err)
-	}
-
 	proxy, err := p.detectNginxProxy(ctx)
 	if err != nil {
 		pub(StepFailed)
@@ -362,6 +433,21 @@ func (p *TLSProvisioner) provisionWithTarget(ctx context.Context, appID, domain,
 		return fmt.Errorf("tls: detect nginx: %w", err)
 	}
 	slog.Info("tls: nginx detected (cloud)", "containerized", proxy.Containerized, "conf_dir", proxy.ConfDirHost, "upstream", proxyTarget)
+
+	// Redeploy fast-path — a cert already exists, so skip the DNS gate and
+	// certbot (no false dns_failed on a stale resolver cache, no needless
+	// re-issuance) and just refresh the vhost in case the upstream changed.
+	if certProvisioned(proxy, domain) {
+		slog.Info("tls: cert already provisioned, refreshing vhost (cloud)", "domain", domain)
+		return p.finalizeVhost(ctx, appID, domain, proxyTarget, proxy, pub)
+	}
+
+	if err := CheckDNS(domain, p.publicIP); err != nil {
+		pub(StepFailed)
+		_ = p.persistTLSStatus(ctx, appID, "dns_failed",
+			fmt.Sprintf("DNS not pointing here yet. Add an A record for %s → %s", domain, p.publicIP))
+		return fmt.Errorf("tls: %w", err)
+	}
 
 	acmePort, err := findFreePort()
 	if err != nil {
@@ -396,21 +482,7 @@ func (p *TLSProvisioner) provisionWithTarget(ctx context.Context, appID, domain,
 		return fmt.Errorf("tls: certbot: %w", certErr)
 	}
 
-	finalConf := tlsFinalVhost(domain, proxyTarget, proxy.CertDirInCtn)
-	if err := os.WriteFile(confPath, []byte(finalConf), 0o644); err != nil {
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed", "")
-		return fmt.Errorf("tls: write final nginx vhost: %w", err)
-	}
-	if err := p.reloadNginx(ctx, proxy); err != nil {
-		pub(StepFailed)
-		_ = p.persistTLSStatus(ctx, appID, "failed", "")
-		return fmt.Errorf("tls: nginx reload (final): %w", err)
-	}
-
-	_ = p.persistTLSStatus(ctx, appID, "active", "")
-	pub(StepDone)
-	return nil
+	return p.finalizeVhost(ctx, appID, domain, proxyTarget, proxy, pub)
 }
 
 // detectNginxProxy finds what's bound on host port 80 and returns its config.
