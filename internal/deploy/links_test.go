@@ -193,7 +193,10 @@ func TestResolveRDSLinkNoSecret(t *testing.T) {
 		if _, ok := env["DB_PASSWORD"]; ok {
 			t.Error("DB_PASSWORD should not be set without a secret ARN")
 		}
-		wantURL := "postgres://postgres@mydb.abc123.us-east-1.rds.amazonaws.com:5432/postgres"
+		if env["DB_SSLMODE"] != "require" {
+			t.Errorf("DB_SSLMODE = %q, want require (RDS forces TLS)", env["DB_SSLMODE"])
+		}
+		wantURL := "postgres://postgres@mydb.abc123.us-east-1.rds.amazonaws.com:5432/postgres?sslmode=require"
 		if env["DB_URL"] != wantURL {
 			t.Errorf("DB_URL = %q, want %q", env["DB_URL"], wantURL)
 		}
@@ -216,7 +219,7 @@ func TestResolveRDSLinkNoSecret(t *testing.T) {
 		if _, ok := env["DB_DATABASE"]; ok {
 			t.Error("DB_DATABASE should not be set for mysql")
 		}
-		wantURL := "mysql://admin@mydb.abc123.us-east-1.rds.amazonaws.com:13306"
+		wantURL := "mysql://admin@mydb.abc123.us-east-1.rds.amazonaws.com:13306?tls=true"
 		if env["DB_URL"] != wantURL {
 			t.Errorf("DB_URL = %q, want %q", env["DB_URL"], wantURL)
 		}
@@ -385,7 +388,8 @@ func TestResolveResourceLinks(t *testing.T) {
 				"AUTODEVOPS_RDS_PORT":     "5432",
 				"AUTODEVOPS_RDS_USER":     "postgres",
 				"AUTODEVOPS_RDS_DATABASE": "postgres",
-				"AUTODEVOPS_RDS_URL":      "postgres://postgres@mydb.abc.us-east-1.rds.amazonaws.com:5432/postgres",
+				"AUTODEVOPS_RDS_SSLMODE":  "require",
+				"AUTODEVOPS_RDS_URL":      "postgres://postgres@mydb.abc.us-east-1.rds.amazonaws.com:5432/postgres?sslmode=require",
 			},
 			wantAbsent: []string{"AUTODEVOPS_RDS_PASSWORD"},
 		},

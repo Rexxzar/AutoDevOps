@@ -307,6 +307,26 @@ resource "aws_ecs_service" "main" {
   launch_type            = "FARGATE"
   enable_execute_command = true
 
+  # Give a new task 120s to boot (pull image, run DB migrations, warm up)
+  # before the ALB health check starts counting against it — otherwise ECS
+  # kills the task mid-startup ("failed ELB health checks", SIGKILL/exit 137)
+  # and restarts it in a loop before it ever gets a chance to come up.
+  health_check_grace_period_seconds = 120
+
+  # Keep the whole fleet healthy during a rolling deploy (min 100% stays up,
+  # new tasks come up alongside) so a redeploy never drops to zero healthy
+  # targets — with desired_count >= 2 this is genuinely zero-downtime.
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
+  # If a new task version fails its health checks, abort and roll back to the
+  # last working version instead of crash-looping forever. The old version
+  # keeps serving throughout, so a bad deploy causes no outage.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   network_configuration {
     subnets          = [aws_subnet.ecs_0.id, aws_subnet.ecs_1.id, ]
     security_groups  = [aws_security_group.ecs_task.id]
@@ -337,6 +357,11 @@ output "ecs_cluster_name" {
 resource "aws_ecr_repository" "main" {
   name                 = lower("demo")
   image_tag_mutability = "MUTABLE"
+
+  # Allow destroy even when the repo still holds pushed images — without this,
+  # terraform destroy fails with RepositoryNotEmptyException and the resource
+  # can never be torn down through AutoDevOps once an app has pushed to it.
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true

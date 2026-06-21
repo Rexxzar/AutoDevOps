@@ -2768,11 +2768,14 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 				Subnets:  awsZonalSubnets(region),
 			}
 		case "ecs":
-			cpu, err := intOpt(opts, "cpu", 256)
+			// Default 0.5 vCPU / 1GB — the previous 256/512 starves a real web
+			// app (nginx + php-fpm/node + the app + DB work), which gets
+			// OOM-killed and silently restarted by ECS. Still a single small task.
+			cpu, err := intOpt(opts, "cpu", 512)
 			if err != nil {
 				return nil, err
 			}
-			memory, err := intOpt(opts, "memory", 512)
+			memory, err := intOpt(opts, "memory", 1024)
 			if err != nil {
 				return nil, err
 			}

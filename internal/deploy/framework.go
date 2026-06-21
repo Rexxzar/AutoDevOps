@@ -107,6 +107,7 @@ func applyFrameworkEnv(fw string, env map[string]string) map[string]string {
 		user := env[prefix+"USER"]
 		pass := env[prefix+"PASSWORD"]
 		db := env[prefix+"DATABASE"]
+		sslmode := env[prefix+"SSLMODE"]
 		scheme := env[prefix+"SCHEME"]
 		if scheme == "" {
 			switch port {
@@ -143,6 +144,11 @@ func applyFrameworkEnv(fw string, env map[string]string) map[string]string {
 			if pass != "" {
 				out["DB_PASSWORD"] = pass
 			}
+			// Laravel/PHP postgres config reads DB_SSLMODE (default "prefer") —
+			// set "require" for RDS so the PDO connection negotiates TLS.
+			if sslmode != "" {
+				out["DB_SSLMODE"] = sslmode
+			}
 		case DeclaredFrameworkNestJS, DeclaredFrameworkDjango, DeclaredFrameworkRails, DeclaredFrameworkNode:
 			if out["DATABASE_URL"] != "" {
 				continue
@@ -154,7 +160,11 @@ func applyFrameworkEnv(fw string, env map[string]string) map[string]string {
 			if db != "" {
 				dbPart = "/" + db
 			}
-			out["DATABASE_URL"] = fmt.Sprintf("%s://%s:%s@%s:%s%s", scheme, user, pass, host, port, dbPart)
+			dbURL := fmt.Sprintf("%s://%s:%s@%s:%s%s", scheme, user, pass, host, port, dbPart)
+			if sslmode != "" {
+				dbURL += "?sslmode=" + sslmode
+			}
+			out["DATABASE_URL"] = dbURL
 		}
 	}
 	return out

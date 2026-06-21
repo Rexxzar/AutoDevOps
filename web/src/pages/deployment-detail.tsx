@@ -660,9 +660,9 @@ function CopyValue({ value }: { value: string }) {
 }
 
 
-function DomainSetter({ stackId, appId, onSet, hint }: { stackId: string; appId: string; onSet: () => void; hint?: string }) {
+function DomainSetter({ stackId, appId, currentDomain, onSet, hint }: { stackId: string; appId: string; currentDomain?: string; onSet: () => void; hint?: string }) {
   const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(currentDomain ?? '')
   const [saving, setSaving] = useState(false)
 
   async function save() {
@@ -682,7 +682,10 @@ function DomainSetter({ stackId, appId, onSet, hint }: { stackId: string; appId:
     return (
       <div className="flex items-center gap-2 py-0.5">
         <span className="text-xs text-muted-foreground w-20 shrink-0">Domain</span>
-        <button onClick={() => setEditing(true)} className="text-xs text-primary hover:underline">+ Add custom domain</button>
+        {currentDomain
+          ? <button onClick={() => { setValue(currentDomain); setEditing(true) }} className="text-xs font-mono text-foreground hover:text-primary hover:underline">{currentDomain} ✎</button>
+          : <button onClick={() => setEditing(true)} className="text-xs text-primary hover:underline">+ Add custom domain</button>
+        }
       </div>
     )
   }
@@ -985,8 +988,8 @@ function AppCard({
             }
           />
         )}
-        {app.kind === 'git' && !app.domain && (
-          <DomainSetter stackId={stackId} appId={app.id} onSet={onLinksChanged}
+        {app.kind === 'git' && (
+          <DomainSetter stackId={stackId} appId={app.id} currentDomain={app.domain || undefined} onSet={onLinksChanged}
             hint={app.target_type === 'vm' && targetResource ? (() => {
               const o: Record<string, string> = (() => { try { return JSON.parse(targetResource.outputs) } catch { return {} } })()
               return o.vm_public_ip || o.ec2_public_ip ? `Point DNS to ${o.vm_public_ip || o.ec2_public_ip}` : undefined

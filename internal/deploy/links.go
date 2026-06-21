@@ -380,6 +380,13 @@ func (o *Orchestrator) resolveRDSLink(ctx context.Context, env map[string]string
 		env[prefix+"DATABASE"] = database
 	}
 
+	// RDS enforces TLS by default (the rds.force_ssl parameter is 1 on modern
+	// engine versions), and rejects plaintext connections with "no pg_hba.conf
+	// entry ... no encryption". Tell the consuming app to negotiate SSL so it
+	// connects instead of crash-looping. SSLMODE is a generic hint;
+	// applyFrameworkEnv also threads it into DB_SSLMODE / the DATABASE_URL query.
+	env[prefix+"SSLMODE"] = "require"
+
 	var password string
 	if secretARN := outputString(outputs, "rds_master_user_secret_arn"); secretARN != "" && cloudAccountID != "" {
 		var err error
@@ -401,6 +408,15 @@ func (o *Orchestrator) resolveRDSLink(ctx context.Context, env map[string]string
 	if database != "" {
 		u.Path = "/" + database
 	}
+	// Postgres reads sslmode; Go's MySQL driver reads tls. Both make the client
+	// require an encrypted connection, which RDS always offers.
+	q := url.Values{}
+	if scheme == "postgres" {
+		q.Set("sslmode", "require")
+	} else {
+		q.Set("tls", "true")
+	}
+	u.RawQuery = q.Encode()
 	env[prefix+"URL"] = u.String()
 	return nil
 }

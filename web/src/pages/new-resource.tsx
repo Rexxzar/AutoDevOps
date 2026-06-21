@@ -48,12 +48,12 @@ function ECSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
       </FormField>
       <div className="grid grid-cols-2 gap-3">
         <FormField label="CPU (vCPU units)">
-          <select value={v.cpu ?? '256'} onChange={e => set('cpu', e.target.value)} className={selectCls}>
+          <select value={v.cpu ?? '512'} onChange={e => set('cpu', e.target.value)} className={selectCls}>
             {['256','512','1024','2048','4096'].map(v => <option key={v} value={v}>{v}</option>)}
           </select>
         </FormField>
         <FormField label="Memory (MB)">
-          <select value={v.memory ?? '512'} onChange={e => set('memory', e.target.value)} className={selectCls}>
+          <select value={v.memory ?? '1024'} onChange={e => set('memory', e.target.value)} className={selectCls}>
             {['512','1024','2048','4096','8192'].map(v => <option key={v} value={v}>{v}</option>)}
           </select>
         </FormField>
