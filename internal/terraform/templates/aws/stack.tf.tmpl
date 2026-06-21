@@ -369,12 +369,19 @@ resource "aws_lb_target_group" "main" {
   vpc_id      = local.vpc_id
   target_type = "ip"
 
-  # Accept any non-5xx response as healthy — backend apps often only serve
-  # "/api/*" and return 404 on "/", which would otherwise fail the default
-  # 200-only matcher and leave the ALB returning 503.
+  # Accept any non-5xx response (including 404) as healthy — this is a liveness
+  # check ("is the container serving HTTP"), not a correctness check. Backend
+  # apps often only serve "/api/*" and return 404 on "/", which fails both the
+  # default 200-only matcher AND a 200-399 matcher, leaving the ALB at 503. The
+  # tightened interval + threshold bring a new task into service in ~30s
+  # (2 x 15s) instead of the ~150s default (5 x 30s).
   health_check {
-    path    = "/"
-    matcher = "200-399"
+    path                = "/"
+    matcher             = "200-499"
+    interval            = 15
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
   }
 
   tags = {

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
@@ -145,8 +146,32 @@ func (o *Orchestrator) deployToECS(ctx context.Context, pushRef string, extraEnv
 	}); err != nil {
 		return fmt.Errorf("deploy: ecs update service %s: %w", res.Name, err)
 	}
+
+	// Block until the rolling deployment reaches steady state. Because the
+	// service is ALB-attached, ECS only completes the deployment once the new
+	// task has passed the target group's health check — so "stable" means the
+	// app is actually serving 200s, not merely that UpdateService was accepted.
+	// This keeps the dashboard's "running" status honest (the previous behaviour
+	// returned the moment UpdateService was called, ~2min before the ALB served
+	// traffic). A crash-looping task never stabilises, so the waiter times out
+	// and the deploy is correctly marked failed.
+	slog.Info("deploy: waiting for ECS service to stabilize", "service", res.Name, "cluster", clusterName)
+	if err := ecs.NewServicesStableWaiter(client).Wait(ctx, &ecs.DescribeServicesInput{
+		Cluster:  aws.String(clusterName),
+		Services: []string{res.Name},
+	}, ecsStableTimeout); err != nil {
+		return fmt.Errorf("deploy: ecs service %s did not reach a healthy steady state within %s (task may be crash-looping or failing its health check): %w", res.Name, ecsStableTimeout, err)
+	}
+	slog.Info("deploy: ECS service stable", "service", res.Name)
 	return nil
 }
+
+// ecsStableTimeout caps how long deployToECS waits for the ECS rolling
+// deployment to reach steady state (new task healthy in the ALB, old task
+// drained). Generous enough for a Paketo cold start plus a few ALB health-check
+// cycles; a task that never goes healthy hits this and surfaces as a failed
+// deploy rather than a perpetual wait.
+const ecsStableTimeout = 8 * time.Minute
 
 // imageTag returns the tag portion of an image reference of the form
 // "host:port/name:tag" — used to derive the ECR/ACR tag from buildImage's
