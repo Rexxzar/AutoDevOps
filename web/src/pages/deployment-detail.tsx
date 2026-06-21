@@ -606,6 +606,7 @@ export function DeploymentDetailPage() {
         vmResources={vmResources}
         ecsResources={ecsResources}
         aciResources={aciResources}
+        serverIP={health?.public_host}
         open={addOpen}
         onClose={() => setAddOpen(false)}
         onCreated={() => refetch()}
@@ -989,7 +990,9 @@ function AppCard({
             hint={app.target_type === 'vm' && targetResource ? (() => {
               const o: Record<string, string> = (() => { try { return JSON.parse(targetResource.outputs) } catch { return {} } })()
               return o.vm_public_ip || o.ec2_public_ip ? `Point DNS to ${o.vm_public_ip || o.ec2_public_ip}` : undefined
-            })() : undefined}
+            })() : (app.target_type === 'ecs' || app.target_type === 'aci') && publicHost
+              ? `Point DNS to this server: ${publicHost} (TLS terminates here and proxies to ${app.target_type === 'ecs' ? 'the ECS load balancer' : 'the ACI container'})`
+              : undefined}
           />
         )}
         {app.domain && app.tls_status && app.tls_status !== 'none' && (
@@ -1493,13 +1496,14 @@ function AddLinkDialog({
 }
 
 function AddAppDialog({
-  stackId, stackNamespace, vmResources, ecsResources, aciResources, open, onClose, onCreated,
+  stackId, stackNamespace, vmResources, ecsResources, aciResources, serverIP, open, onClose, onCreated,
 }: {
   stackId: string
   stackNamespace: string
   vmResources: ProvisionedResource[]
   ecsResources: ProvisionedResource[]
   aciResources: ProvisionedResource[]
+  serverIP?: string
   open: boolean
   onClose: () => void
   onCreated: () => void
@@ -1836,6 +1840,12 @@ function AddAppDialog({
           {kind === 'git' && (target === 'aci' || target === 'ecs') && !domain && (
             <p className="text-xs text-muted-foreground -mt-1">
               Optional — {target === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS via your own domain name.
+            </p>
+          )}
+          {kind === 'git' && (target === 'ecs' || target === 'aci') && serverIP && (
+            <p className="text-xs text-muted-foreground -mt-1">
+              For HTTPS, point your domain to this server: <code className="rounded bg-muted px-1 font-mono">{serverIP}</code>{' '}
+              — TLS terminates here and proxies to {target === 'ecs' ? 'the ECS load balancer' : 'the ACI container'} (not the {target === 'ecs' ? 'ALB' : 'ACI'} IP directly).
             </p>
           )}
           {kind === 'git' && target === 'vm' && (() => {

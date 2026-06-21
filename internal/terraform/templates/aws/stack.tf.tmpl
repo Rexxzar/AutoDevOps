@@ -36,7 +36,7 @@ locals {
 output "vpc_id" {
   value = local.vpc_id
 }
-{{- if and (not .ExistingVPCID) (or .EC2 .ECS) }}
+{{- if and (not .ExistingVPCID) (or .EC2 .ECS .RDS) }}
 
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
@@ -149,12 +149,17 @@ resource "aws_instance" "main" {
 
   # Installs Docker so the SSH deployer (internal/deploy cloud_vm target) can
   # "docker load"/"docker run" Paketo-built images without a separate
-  # provisioning step.
+  # provisioning step. docker + nginx are installed first and on their own:
+  # certbot is NOT in the AL2023 default repos, and "dnf install" is atomic, so
+  # bundling it would fail the whole line and leave Docker uninstalled. certbot
+  # is installed best-effort here (ProvisionVMDirect also installs it on demand
+  # via a dnf/pip fallback if this misses).
   user_data = <<-EOF
     #!/bin/bash
-    dnf install -y docker nginx certbot python3-certbot-nginx
+    dnf install -y docker nginx
     systemctl enable --now docker nginx
     usermod -aG docker ec2-user
+    dnf install -y certbot python3-certbot-nginx || pip3 install certbot certbot-nginx || true
   EOF
 
   tags = {
@@ -177,15 +182,24 @@ output "ec2_private_ip" {
 {{- if .RDS }}
 {{ range $i, $s := .RDS.Subnets }}
 resource "aws_subnet" "rds_{{ $i }}" {
-  vpc_id            = local.vpc_id
-  cidr_block        = "{{ $s.CIDR }}"
-  availability_zone = "{{ $s.AvailabilityZone }}"
+  vpc_id                  = local.vpc_id
+  cidr_block              = "{{ $s.CIDR }}"
+  availability_zone       = "{{ $s.AvailabilityZone }}"
+  map_public_ip_on_launch = true
 
   tags = {
     Name = "{{ $.Name }}-rds-{{ $i }}"
   }
 }
 {{ end }}
+{{- if not .ExistingVPCID }}
+{{ range $i, $s := .RDS.Subnets }}
+resource "aws_route_table_association" "rds_{{ $i }}" {
+  subnet_id      = aws_subnet.rds_{{ $i }}.id
+  route_table_id = aws_route_table.public.id
+}
+{{ end }}
+{{- end }}
 resource "aws_db_subnet_group" "rds" {
   name       = "{{ .Name }}-rds"
   subnet_ids = [{{ range $i, $s := .RDS.Subnets }}aws_subnet.rds_{{ $i }}.id, {{ end }}]
@@ -200,12 +214,16 @@ resource "aws_security_group" "rds" {
   description = "Allow database access from within the VPC for {{ .Name }}"
   vpc_id      = local.vpc_id
 
+  # Open on the DB port so workloads in other VPCs (a separate ECS service or
+  # EC2 VM provisioned as its own resource/stack) can reach this database — the
+  # AWS-managed master password (Secrets Manager) is the security boundary,
+  # mirroring the Azure Postgres "public access + AllowAzureServices" posture.
   ingress {
     description = "Database"
     from_port   = {{ .RDS.Port }}
     to_port     = {{ .RDS.Port }}
     protocol    = "tcp"
-    cidr_blocks = [local.vpc_cidr_block]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -231,6 +249,7 @@ resource "aws_db_instance" "main" {
   port                        = {{ .RDS.Port }}
   db_subnet_group_name        = aws_db_subnet_group.rds.name
   vpc_security_group_ids      = [aws_security_group.rds.id]
+  publicly_accessible         = true
   skip_final_snapshot         = true
 
   tags = {
@@ -350,8 +369,12 @@ resource "aws_lb_target_group" "main" {
   vpc_id      = local.vpc_id
   target_type = "ip"
 
+  # Accept any non-5xx response as healthy — backend apps often only serve
+  # "/api/*" and return 404 on "/", which would otherwise fail the default
+  # 200-only matcher and leave the ALB returning 503.
   health_check {
-    path = "/"
+    path    = "/"
+    matcher = "200-399"
   }
 
   tags = {

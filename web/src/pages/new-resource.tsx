@@ -46,7 +46,7 @@ function ECSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
       <FormField label="Container image">
         <input value={v.image ?? ''} onChange={e => set('image', e.target.value)} placeholder="nginx:latest" className={inputCls} />
       </FormField>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <FormField label="CPU (vCPU units)">
           <select value={v.cpu ?? '256'} onChange={e => set('cpu', e.target.value)} className={selectCls}>
             {['256','512','1024','2048','4096'].map(v => <option key={v} value={v}>{v}</option>)}
@@ -57,15 +57,16 @@ function ECSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
             {['512','1024','2048','4096','8192'].map(v => <option key={v} value={v}>{v}</option>)}
           </select>
         </FormField>
-        <FormField label="Port">
-          <input value={v.port ?? '80'} onChange={e => set('port', e.target.value)} placeholder="80" className={inputCls} />
-        </FormField>
       </div>
       <FormField label="Desired count" hint="number of running tasks">
         <select value={v.desired_count ?? '1'} onChange={e => set('desired_count', e.target.value)} className={selectCls}>
           {['1','2','3','4','5'].map(v => <option key={v} value={v}>{v}</option>)}
         </select>
       </FormField>
+      <p className="text-xs text-muted-foreground">
+        The container port is fixed at <span className="font-mono">8080</span> (the Paketo <span className="font-mono">$PORT</span> contract
+        — git apps run as a non-root user that can't bind ports below 1024). The load balancer accepts public traffic on port 80 and forwards to 8080.
+      </p>
     </>
   )
 }
@@ -75,19 +76,15 @@ function EC2Fields({ v, set }: { v: Record<string,string>; set: (k: string, val:
   return (
     <>
       <SectionDivider label="EC2 options" />
-      <div className="grid grid-cols-2 gap-3">
-        <FormField label="Instance type">
-          <select value={v.instance_type ?? 't3.micro'} onChange={e => set('instance_type', e.target.value)} className={selectCls}>
-            {['t3.micro','t3.small','t3.medium','t3.large','t2.micro','m5.large'].map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </FormField>
-        <FormField label="AMI ID" hint="leave blank for Amazon Linux 2023">
-          <input value={v.ami ?? ''} onChange={e => set('ami', e.target.value)} placeholder="auto" className={inputCls} />
-        </FormField>
-      </div>
-      <FormField label="Key pair name" hint="optional, for SSH access">
-        <input value={v.key_name ?? ''} onChange={e => set('key_name', e.target.value)} placeholder="my-key-pair" className={inputCls} />
+      <FormField label="Instance type">
+        <select value={v.instance_type ?? 't3.micro'} onChange={e => set('instance_type', e.target.value)} className={selectCls}>
+          {['t3.micro','t3.small','t3.medium','t3.large','t2.micro','m5.large'].map(v => <option key={v} value={v}>{v}</option>)}
+        </select>
       </FormField>
+      <p className="text-xs text-muted-foreground">
+        Runs the latest Amazon Linux 2023 (required for EC2 Instance Connect — the agent that lets AutoDevOps
+        SSH and open a browser console without storing a key pair). Docker, nginx and certbot are pre-installed on boot.
+      </p>
     </>
   )
 }
@@ -100,7 +97,7 @@ function RDSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
       <div className="grid grid-cols-2 gap-3">
         <FormField label="Engine">
           <select value={v.engine ?? 'postgres'} onChange={e => set('engine', e.target.value)} className={selectCls}>
-            {['postgres','mysql','mariadb'].map(v => <option key={v} value={v}>{v}</option>)}
+            {['postgres','mysql'].map(v => <option key={v} value={v}>{v}</option>)}
           </select>
         </FormField>
         <FormField label="Instance class">
@@ -109,14 +106,13 @@ function RDSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
           </select>
         </FormField>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <FormField label="Database name">
-          <input value={v.db_name ?? ''} onChange={e => set('db_name', e.target.value)} placeholder="mydb" className={inputCls} />
-        </FormField>
-        <FormField label="Master username" hint='"admin" is reserved on RDS'>
-          <input value={v.username ?? ''} onChange={e => set('username', e.target.value)} placeholder="appadmin" className={inputCls} />
-        </FormField>
-      </div>
+      <FormField label="Master username" hint='"admin" is reserved on RDS'>
+        <input value={v.username ?? ''} onChange={e => set('username', e.target.value)} placeholder="appadmin" className={inputCls} />
+      </FormField>
+      <p className="text-xs text-muted-foreground">
+        The master password is generated and managed by AWS (Secrets Manager) — AutoDevOps never sees it, and injects
+        it into a linked app automatically. Apps connect to the default <span className="font-mono">postgres</span> database.
+      </p>
     </>
   )
 }

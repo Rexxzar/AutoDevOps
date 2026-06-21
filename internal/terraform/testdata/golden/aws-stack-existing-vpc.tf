@@ -105,12 +105,17 @@ resource "aws_instance" "main" {
 
   # Installs Docker so the SSH deployer (internal/deploy cloud_vm target) can
   # "docker load"/"docker run" Paketo-built images without a separate
-  # provisioning step.
+  # provisioning step. docker + nginx are installed first and on their own:
+  # certbot is NOT in the AL2023 default repos, and "dnf install" is atomic, so
+  # bundling it would fail the whole line and leave Docker uninstalled. certbot
+  # is installed best-effort here (ProvisionVMDirect also installs it on demand
+  # via a dnf/pip fallback if this misses).
   user_data = <<-EOF
     #!/bin/bash
-    dnf install -y docker nginx certbot python3-certbot-nginx
+    dnf install -y docker nginx
     systemctl enable --now docker nginx
     usermod -aG docker ec2-user
+    dnf install -y certbot python3-certbot-nginx || pip3 install certbot certbot-nginx || true
   EOF
 
   tags = {

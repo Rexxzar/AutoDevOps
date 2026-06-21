@@ -2776,17 +2776,18 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 			if err != nil {
 				return nil, err
 			}
-			port, err := intOpt(opts, "port", 80)
-			if err != nil {
-				return nil, err
-			}
 			desiredCount, err := intOpt(opts, "desired_count", 1)
 			if err != nil {
 				return nil, err
 			}
+			// ECS hosts Paketo-built git apps that bind $PORT=8080 as the non-root
+			// cnb user (privileged ports <1024 are unbindable), so the whole stack —
+			// task def, ALB target group, task SG — is pinned to 8080 rather than the
+			// wizard's port field. ACI solves the same problem at redeploy time; ECS
+			// can't, because the ALB/SG are baked at apply time.
 			params.ECS = &terraform.ECSParams{
 				ContainerImage: strOpt(opts, "image", "nginx:latest"),
-				ContainerPort:  port,
+				ContainerPort:  8080,
 				CPU:            cpu,
 				Memory:         memory,
 				DesiredCount:   desiredCount,

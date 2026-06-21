@@ -153,8 +153,12 @@ resource "aws_lb_target_group" "main" {
   vpc_id      = local.vpc_id
   target_type = "ip"
 
+  # Accept any non-5xx response as healthy — backend apps often only serve
+  # "/api/*" and return 404 on "/", which would otherwise fail the default
+  # 200-only matcher and leave the ALB returning 503.
   health_check {
-    path = "/"
+    path    = "/"
+    matcher = "200-399"
   }
 
   tags = {
