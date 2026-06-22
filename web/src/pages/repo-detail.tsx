@@ -4,13 +4,13 @@ import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, GitBranch, Loader2, Save, GitCommit, FileText, ChevronRight,
   Plus, X, ShieldCheck, ShieldAlert, Trash2, Lock, Globe,
-  Code2, Rocket, Copy, Check, AlertCircle, Play, RefreshCw,
+  Code2, Rocket, Copy, Check, AlertCircle, Play, RefreshCw, SquarePen,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import {
-  type RepoDetail, type RepoFinding, type RepoScanResult,
+  type RepoDetail, type RepoFinding, type RepoScanResult, type RefreshResult,
   severityOrder, severityStyle, relativeTime,
 } from '@/lib/repos'
 
@@ -23,6 +23,8 @@ export function RepoDetailPage() {
   const [deleting, setDeleting] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [reloadKey, setReloadKey] = useState(0) // bumped after a pull to force the Code tab to reload files
+  const [pendingFile, setPendingFile] = useState<string | null>(null) // file to open in Code tab from a "Open file" finding action
+  const [pullMsg, setPullMsg] = useState<string | null>(null) // transient "pulled / up to date" feedback
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['repo', id],
@@ -34,14 +36,21 @@ export function RepoDetailPage() {
   // AutoDevOps still shows the old files".
   async function pullLatest() {
     setRefreshing(true)
+    setPullMsg(null)
     try {
-      await apiFetch(`/repos/${id}/refresh`, { method: 'POST' })
-      setReloadKey((k) => k + 1)
-      refetch()
+      const res = await apiFetch<RefreshResult>(`/repos/${id}/refresh`, { method: 'POST' })
+      if (res.updated) {
+        setPullMsg(res.commit ? `Pulled — now at ${res.commit.sha}: ${res.commit.message}` : 'Pulled latest changes')
+        setReloadKey((k) => k + 1)
+        refetch()
+      } else {
+        setPullMsg('Already up to date — no new changes')
+      }
     } catch (e) {
-      alert(`Pull failed: ${e}`)
+      setPullMsg(`Pull failed: ${e}`)
     } finally {
       setRefreshing(false)
+      setTimeout(() => setPullMsg(null), 6000)
     }
   }
 
@@ -96,6 +105,14 @@ export function RepoDetailPage() {
             <CloneURL url={repo.repo_url} />
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {pullMsg && (
+              <span
+                className="hidden max-w-[300px] truncate rounded-md border border-border bg-muted/50 px-2.5 py-1 text-xs text-muted-foreground sm:inline"
+                title={pullMsg}
+              >
+                {pullMsg}
+              </span>
+            )}
             <Button variant="outline" size="sm" className="gap-1.5" onClick={pullLatest} disabled={refreshing} title="Fetch the latest commit from the remote and update the files shown here">
               <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
               Pull latest
@@ -117,8 +134,8 @@ export function RepoDetailPage() {
 
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        {tab === 'code' && <CodeTab repoId={id} hasCredentials={repo.has_credentials} reloadKey={reloadKey} />}
-        {tab === 'compliance' && <ComplianceTab repoId={id} detail={data} onScanned={() => refetch()} />}
+        {tab === 'code' && <CodeTab repoId={id} hasCredentials={repo.has_credentials} reloadKey={reloadKey} initialFile={pendingFile} onFileConsumed={() => setPendingFile(null)} />}
+        {tab === 'compliance' && <ComplianceTab repoId={id} detail={data} onScanned={() => refetch()} onOpenFile={(p) => { setPendingFile(p); setTab('code') }} />}
         {tab === 'deployments' && <DeploymentsTab detail={data} />}
       </div>
     </div>
@@ -158,7 +175,7 @@ function CloneURL({ url }: { url: string }) {
 
 // ── Code tab: GitHub-style file browser + editor ────────────────────────────
 
-function CodeTab({ repoId, hasCredentials, reloadKey }: { repoId: string; hasCredentials: boolean; reloadKey: number }) {
+function CodeTab({ repoId, hasCredentials, reloadKey, initialFile, onFileConsumed }: { repoId: string; hasCredentials: boolean; reloadKey: number; initialFile?: string | null; onFileConsumed?: () => void }) {
   const [files, setFiles] = useState<string[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [content, setContent] = useState('')
@@ -193,6 +210,15 @@ function CodeTab({ repoId, hasCredentials, reloadKey }: { repoId: string; hasCre
     setOriginalContent('')
     loadFiles()
   }, [loadFiles, reloadKey])
+
+  // Open a file requested from a compliance finding's "Open file" action — runs
+  // on mount when the Compliance tab handed us a path to jump to.
+  useEffect(() => {
+    if (!initialFile) return
+    selectFile(initialFile)
+    onFileConsumed?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFile])
 
   async function selectFile(path: string) {
     if (isDirty && selectedFile && !confirm(`Discard unsaved changes to ${selectedFile}?`)) return
@@ -360,7 +386,7 @@ function ScanningPanel() {
   )
 }
 
-function ComplianceTab({ repoId, detail, onScanned }: { repoId: string; detail: RepoDetail; onScanned: () => void }) {
+function ComplianceTab({ repoId, detail, onScanned, onOpenFile }: { repoId: string; detail: RepoDetail; onScanned: () => void; onOpenFile: (path: string) => void }) {
   const [findings, setFindings] = useState<RepoFinding[]>(detail.findings)
   const [scanning, setScanning] = useState(false)
   const [blocked, setBlocked] = useState(false)
@@ -456,7 +482,18 @@ function ComplianceTab({ repoId, detail, onScanned }: { repoId: string; detail: 
                     <span className="font-mono text-xs text-muted-foreground">{f.file_path}{f.line_number ? `:${f.line_number}` : ''}</span>
                   )}
                 </div>
-                <span className="shrink-0 font-mono text-[0.65rem] text-muted-foreground">{f.rule_id}</span>
+                <div className="flex shrink-0 items-center gap-2">
+                  {f.file_path && (
+                    <button
+                      onClick={() => onOpenFile(f.file_path)}
+                      title={`Open ${f.file_path} in the editor`}
+                      className="flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <SquarePen className="size-3" /> Open file
+                    </button>
+                  )}
+                  <span className="font-mono text-[0.65rem] text-muted-foreground">{f.rule_id}</span>
+                </div>
               </div>
             ))}
           </div>

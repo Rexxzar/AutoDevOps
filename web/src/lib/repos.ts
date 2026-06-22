@@ -44,6 +44,13 @@ export interface RepoScanResult {
   gate_message?: string
 }
 
+export interface RefreshResult {
+  updated: boolean
+  old_sha?: string
+  new_sha?: string
+  commit?: { sha: string; message: string; author: string; date: string }
+}
+
 export const severityOrder: RepoSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 
 export const severityStyle: Record<RepoSeverity, string> = {

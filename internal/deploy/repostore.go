@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -87,24 +88,61 @@ func (o *Orchestrator) EnsureRepoStoreClone(ctx context.Context, repoID string) 
 	return path, nil
 }
 
+// RefreshResult describes the outcome of a RefreshRepoStoreClone ("pull latest").
+type RefreshResult struct {
+	Updated bool        `json:"updated"`           // HEAD moved (or freshly cloned)
+	OldSHA  string      `json:"old_sha,omitempty"` // HEAD before the pull (short)
+	NewSHA  string      `json:"new_sha,omitempty"` // HEAD after the pull (short)
+	Commit  *CommitInfo `json:"commit,omitempty"`  // latest commit now checked out
+}
+
+// CommitInfo is a compact view of a git commit for the dashboard.
+type CommitInfo struct {
+	SHA     string `json:"sha"`     // short hash
+	Message string `json:"message"` // first line
+	Author  string `json:"author"`
+	Date    string `json:"date"` // RFC3339
+}
+
 // RefreshRepoStoreClone fetches origin/<branch> and hard-resets the workspace
-// to it, discarding any local edits — the "pull latest" action.
-func (o *Orchestrator) RefreshRepoStoreClone(ctx context.Context, repoID string) (string, error) {
+// to it, discarding any local edits — the "pull latest" action. It reports
+// whether HEAD actually moved and the latest commit now checked out (the clone
+// is shallow, so only the tip commit is available, not a full "commits since"
+// list).
+func (o *Orchestrator) RefreshRepoStoreClone(ctx context.Context, repoID string) (*RefreshResult, error) {
 	repoURL, branch, creds, err := o.repoStoreMeta(ctx, repoID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	auth, err := buildAuth(creds)
 	if err != nil {
-		return "", fmt.Errorf("repo store: build git auth: %w", err)
+		return nil, fmt.Errorf("repo store: build git auth: %w", err)
 	}
 	path := o.repoStoreDir(repoID)
 	repo, err := git.PlainOpen(path)
 	if errors.Is(err, git.ErrRepositoryNotExists) {
-		return o.EnsureRepoStoreClone(ctx, repoID)
+		// First access: clone it. That IS the update.
+		if _, e := o.EnsureRepoStoreClone(ctx, repoID); e != nil {
+			return nil, e
+		}
+		repo, err = git.PlainOpen(path)
+		if err != nil {
+			return nil, fmt.Errorf("repo store: open workspace %s: %w", path, err)
+		}
+		ci := headCommitInfo(repo)
+		res := &RefreshResult{Updated: true, Commit: ci}
+		if ci != nil {
+			res.NewSHA = ci.SHA
+		}
+		return res, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("repo store: open workspace %s: %w", path, err)
+		return nil, fmt.Errorf("repo store: open workspace %s: %w", path, err)
+	}
+
+	oldSHA := ""
+	if h, hErr := repo.Head(); hErr == nil {
+		oldSHA = shortSHA(h.Hash().String())
 	}
 
 	remoteRefSpec := config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch))
@@ -115,20 +153,57 @@ func (o *Orchestrator) RefreshRepoStoreClone(ctx context.Context, repoID string)
 		Depth:      1,
 		Force:      true,
 	}); fErr != nil && !errors.Is(fErr, git.NoErrAlreadyUpToDate) {
-		return "", fmt.Errorf("repo store: fetch %s (branch %s): %w", repoURL, branch, fErr)
+		return nil, fmt.Errorf("repo store: fetch %s (branch %s): %w", repoURL, branch, fErr)
 	}
 	remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
 	if err != nil {
-		return "", fmt.Errorf("repo store: resolve origin/%s: %w", branch, err)
+		return nil, fmt.Errorf("repo store: resolve origin/%s: %w", branch, err)
 	}
 	wt, err := repo.Worktree()
 	if err != nil {
-		return "", fmt.Errorf("repo store: open worktree: %w", err)
+		return nil, fmt.Errorf("repo store: open worktree: %w", err)
 	}
 	if err := wt.Reset(&git.ResetOptions{Commit: remoteRef.Hash(), Mode: git.HardReset}); err != nil {
-		return "", fmt.Errorf("repo store: reset to origin/%s: %w", branch, err)
+		return nil, fmt.Errorf("repo store: reset to origin/%s: %w", branch, err)
 	}
-	return path, nil
+
+	newSHA := shortSHA(remoteRef.Hash().String())
+	return &RefreshResult{
+		Updated: oldSHA != newSHA,
+		OldSHA:  oldSHA,
+		NewSHA:  newSHA,
+		Commit:  headCommitInfo(repo),
+	}, nil
+}
+
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	return s
+}
+
+// headCommitInfo returns a compact view of the repo's current HEAD commit, or
+// nil if it cannot be resolved.
+func headCommitInfo(repo *git.Repository) *CommitInfo {
+	ref, err := repo.Head()
+	if err != nil {
+		return nil
+	}
+	c, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil
+	}
+	msg := strings.TrimSpace(c.Message)
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = msg[:i]
+	}
+	return &CommitInfo{
+		SHA:     shortSHA(c.Hash.String()),
+		Message: msg,
+		Author:  c.Author.Name,
+		Date:    c.Author.When.Format(time.RFC3339),
+	}
 }
 
 // ListStoreFiles ensures the stored repo is cloned, then returns its editable

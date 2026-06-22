@@ -323,11 +323,12 @@ func (s *Server) handleCommitStoreRepo(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRefreshStoreRepo(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if _, err := s.deploy.RefreshRepoStoreClone(r.Context(), id); err != nil {
+	res, err := s.deploy.RefreshRepoStoreClone(r.Context(), id)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
+	writeJSON(w, http.StatusOK, res)
 }
 
 // handleScanRepo runs the source-level compliance scanners against the repo's

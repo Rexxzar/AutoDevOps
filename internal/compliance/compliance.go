@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	"github.com/Rexxzar/autodevops/internal/sse"
@@ -119,6 +120,9 @@ func (s *Scanner) RunAll(ctx context.Context, appID, repoPath, imageRef string) 
 		all = append(all, findings...)
 	}
 
+	for i := range all {
+		all[i].FilePath = repoRelative(repoPath, all[i].FilePath)
+	}
 	for _, f := range all {
 		if err := s.persist(ctx, appID, f); err != nil {
 			slog.Warn("compliance: persist finding", "scanner", f.Scanner, "rule", f.RuleID, "error", err)
@@ -127,6 +131,20 @@ func (s *Scanner) RunAll(ctx context.Context, appID, repoPath, imageRef string) 
 
 	slog.Info("compliance: scan complete", "app_id", appID, "total_findings", len(all))
 	return Gate(all, s.threshold)
+}
+
+// repoRelative converts an absolute scanner-reported file path to one relative
+// to the repo root (slash-separated), so findings reference paths the editor
+// can open (e.g. "config/credentials.env", not the full clone path). Paths that
+// are already relative, or outside base, are returned unchanged.
+func repoRelative(base, p string) string {
+	if p == "" || !filepath.IsAbs(p) {
+		return p
+	}
+	if rel, err := filepath.Rel(base, p); err == nil && !strings.HasPrefix(rel, "..") {
+		return filepath.ToSlash(rel)
+	}
+	return p
 }
 
 // ScanSource runs the source-level scanners (GitLeaks, Hadolint, tfsec) against
@@ -157,6 +175,9 @@ func (s *Scanner) ScanSource(ctx context.Context, repoID, repoPath string) error
 		all = append(all, findings...)
 	}
 
+	for i := range all {
+		all[i].FilePath = repoRelative(repoPath, all[i].FilePath)
+	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM compliance_findings WHERE repo_id = $1`, repoID); err != nil {
 		slog.Warn("compliance: clear previous repo findings", "repo_id", repoID, "error", err)
 	}
