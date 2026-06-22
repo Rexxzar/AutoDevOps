@@ -339,12 +339,23 @@ function ComplianceTab({ repoId, detail, onScanned }: { repoId: string; detail: 
 
   async function scan() {
     setScanning(true); setError('')
+    const start = Date.now()
     try {
       const res = await apiFetch<RepoScanResult>(`/repos/${repoId}/scan`, { method: 'POST' })
       setFindings(res.findings ?? [])
       setBlocked(res.blocked)
       onScanned()
-    } catch (e) { setError(String(e)) } finally { setScanning(false) }
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      // These scanners are near-instant on a small repo (gitleaks scans in ~10ms),
+      // so hold the scanning animation for a minimum beat — otherwise the spinner
+      // flashes by faster than the eye can register and it looks like nothing ran.
+      const elapsed = Date.now() - start
+      const minMs = 800
+      if (elapsed < minMs) await new Promise((r) => setTimeout(r, minMs - elapsed))
+      setScanning(false)
+    }
   }
 
   const counts = Object.fromEntries(severityOrder.map((s) => [s, findings.filter((f) => f.severity === s).length]))
