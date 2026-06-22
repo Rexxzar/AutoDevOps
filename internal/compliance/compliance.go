@@ -123,6 +123,11 @@ func (s *Scanner) RunAll(ctx context.Context, appID, repoPath, imageRef string) 
 	for i := range all {
 		all[i].FilePath = repoRelative(repoPath, all[i].FilePath)
 	}
+	// Replace this app's findings each run so the dashboard reflects the LATEST
+	// build, not an accumulation across every past redeploy (mirrors ScanSource).
+	if _, err := s.pool.Exec(ctx, `DELETE FROM compliance_findings WHERE app_id = $1`, appID); err != nil {
+		slog.Warn("compliance: clear previous app findings", "app_id", appID, "error", err)
+	}
 	for _, f := range all {
 		if err := s.persist(ctx, appID, f); err != nil {
 			slog.Warn("compliance: persist finding", "scanner", f.Scanner, "rule", f.RuleID, "error", err)
