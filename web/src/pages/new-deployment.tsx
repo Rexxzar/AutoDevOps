@@ -9,6 +9,7 @@ import { TargetPill, FormField, DomainField, K8sOptions, type K8sConfigValue, in
 import { ComposeImportForm } from '@/components/compose-import-form'
 import { type ProvisionedResource, provisionedTypeLabel } from '@/lib/resources'
 import { DECLARED_FRAMEWORK_OPTIONS } from '@/lib/frameworks'
+import { type GitRepo } from '@/lib/repos'
 
 type WizardStep = 1 | 2 | 3 | 4
 type FormStep = 'form' | 'success'
@@ -126,6 +127,7 @@ export function NewDeploymentPage() {
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
   const [token, setToken] = useState('')
+  const [repoId, setRepoId] = useState('') // when set, deploy from a stored repo
   const [declaredFramework, setDeclaredFramework] = useState('')
   const [vmResourceId, setVmResourceId] = useState('')
   const [ecsResourceId, setEcsResourceId] = useState('')
@@ -137,6 +139,22 @@ export function NewDeploymentPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ webhookURL: string; webhookSecret: string; name: string; targetType: string } | null>(null)
+
+  // Stored repos (Git Repo Store) — pick one or add a new one inline.
+  const { data: storedRepos = [] } = useQuery({
+    queryKey: ['repos'],
+    queryFn: () => apiFetch<GitRepo[]>('/repos'),
+  })
+
+  function selectStoredRepo(id: string) {
+    setRepoId(id)
+    if (id) {
+      const r = storedRepos.find((x) => x.id === id)
+      if (r) { setRepo(r.repo_url); setBranch(r.branch); setToken('') }
+    } else {
+      setRepo(''); setBranch('main')
+    }
+  }
 
   // Applied cloud resources
   const { data: allResources = [] } = useQuery({
@@ -217,9 +235,10 @@ export function NewDeploymentPage() {
     try {
       const targetType = resolveTargetType()
       const body: Record<string, unknown> = { name, repo_url: repo, branch, target_type: targetType }
+      if (repoId) body.repo_id = repoId
       const resourceId = resolveResourceId()
       if (resourceId) body.target_resource_id = resourceId
-      if (token) body.git_auth = { type: 'token', token }
+      if (token && !repoId) body.git_auth = { type: 'token', token }
       if (declaredFramework) body.declared_framework = declaredFramework
       if (localDomain) body.domain = localDomain
       if (targetType === 'k8s') {
@@ -440,17 +459,40 @@ export function NewDeploymentPage() {
                   <FormField label="Stack name">
                     <input value={name} onChange={e => setName(e.target.value)} placeholder="my-app" required className={inputCls} />
                   </FormField>
-                  <FormField label="Git repository URL">
-                    <input value={repo} onChange={e => setRepo(e.target.value)} placeholder="https://github.com/you/my-app" required className={inputCls} />
-                  </FormField>
-                  <div className="grid grid-cols-2 gap-3">
-                    <FormField label="Branch">
-                      <input value={branch} onChange={e => setBranch(e.target.value)} placeholder="main" className={inputCls} />
+
+                  {/* Repository: pick a stored one or add a new one (auto-registered in the store). */}
+                  {storedRepos.length > 0 && (
+                    <FormField label="Repository" hint="reuse a stored repo or add a new one">
+                      <select value={repoId} onChange={e => selectStoredRepo(e.target.value)} className={selectCls}>
+                        <option value="">+ Add a new repository</option>
+                        {storedRepos.map((r) => (
+                          <option key={r.id} value={r.id}>{r.name} — {r.repo_url} ({r.branch})</option>
+                        ))}
+                      </select>
                     </FormField>
-                    <FormField label="Git token" hint="private repos">
-                      <input value={token} onChange={e => setToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
-                    </FormField>
-                  </div>
+                  )}
+
+                  {repoId ? (
+                    <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground">
+                      Deploying from stored repo <span className="font-mono text-foreground">{repo}</span>
+                      <span className="ml-1">on <span className="font-mono text-foreground">{branch}</span></span>
+                      {' '}· credentials reused from the store.
+                    </div>
+                  ) : (
+                    <>
+                      <FormField label="Git repository URL">
+                        <input value={repo} onChange={e => setRepo(e.target.value)} placeholder="https://github.com/you/my-app" required className={inputCls} />
+                      </FormField>
+                      <div className="grid grid-cols-2 gap-3">
+                        <FormField label="Branch">
+                          <input value={branch} onChange={e => setBranch(e.target.value)} placeholder="main" className={inputCls} />
+                        </FormField>
+                        <FormField label="Git token" hint="private repos">
+                          <input value={token} onChange={e => setToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
+                        </FormField>
+                      </div>
+                    </>
+                  )}
                   <FormField label="Framework" hint="auto-generates Procfile + DB env vars">
                     <div className="flex flex-wrap gap-1.5">
                       {DECLARED_FRAMEWORK_OPTIONS.map((opt) => (
@@ -593,7 +635,7 @@ export function NewDeploymentPage() {
               <Button variant="outline" className="flex-1" onClick={() => {
                 setFormStep('form'); setWizardStep(1); setLocation(null); setLocalTarget(null)
                 setCloudProvider(null); setDockerMode(null); setCloudTarget(null)
-                setName(''); setRepo(''); setBranch('main'); setToken(''); setDeclaredFramework('')
+                setName(''); setRepo(''); setBranch('main'); setToken(''); setRepoId(''); setDeclaredFramework('')
                 setLocalDomain(''); setVmResourceId(''); setEcsResourceId(''); setAciResourceId('')
                 setNamespaceOverride(''); setK8sConfig(undefined)
                 setSuccess(null)

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Rexxzar/autodevops/internal/auth"
+	"github.com/Rexxzar/autodevops/internal/compliance"
 	"github.com/Rexxzar/autodevops/internal/console"
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/docker"
@@ -32,13 +33,14 @@ type Server struct {
 	console       *console.Manager
 	k8sCtrl       *k8s.Controller
 	dockerMgr     *docker.Manager
+	compliance    *compliance.Scanner
 	publicIP      string
 	ingressDomain string
 	registryHost  string
 }
 
-func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, k8sCtrl *k8s.Controller, dockerMgr *docker.Manager, publicIP, ingressDomain, registryHost string) http.Handler {
-	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, k8sCtrl: k8sCtrl, dockerMgr: dockerMgr, publicIP: publicIP, ingressDomain: ingressDomain, registryHost: registryHost}
+func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, k8sCtrl *k8s.Controller, dockerMgr *docker.Manager, complianceScanner *compliance.Scanner, publicIP, ingressDomain, registryHost string) http.Handler {
+	s := &Server{db: db, auth: a, hub: hub, vault: vault, deploy: orchestrator, tfRunner: tfRunner, tfEngine: tfEngine, console: consoleManager, k8sCtrl: k8sCtrl, dockerMgr: dockerMgr, compliance: complianceScanner, publicIP: publicIP, ingressDomain: ingressDomain, registryHost: registryHost}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -82,6 +84,17 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 			r.Get("/deployments/{id}/apps/{appId}/repo/files/*", s.handleGetRepoFile)
 			r.Put("/deployments/{id}/apps/{appId}/repo/files/*", s.handlePutRepoFile)
 			r.Post("/deployments/{id}/apps/{appId}/repo/commit", s.handleCommitRepo)
+			// Git Repo Store — first-class, reusable repositories.
+			r.Get("/repos", s.handleListRepos)
+			r.Post("/repos", s.handleCreateRepo)
+			r.Get("/repos/{id}", s.handleGetRepo)
+			r.Delete("/repos/{id}", s.handleDeleteRepo)
+			r.Get("/repos/{id}/files", s.handleListStoreFiles)
+			r.Get("/repos/{id}/files/*", s.handleGetStoreFile)
+			r.Put("/repos/{id}/files/*", s.handlePutStoreFile)
+			r.Post("/repos/{id}/commit", s.handleCommitStoreRepo)
+			r.Post("/repos/{id}/refresh", s.handleRefreshStoreRepo)
+			r.Post("/repos/{id}/scan", s.handleScanRepo)
 			r.Get("/clusters", s.handleListClusters)
 			r.Get("/clusters/pods", s.handleListPods)
 			r.Get("/cloud/accounts", s.handleListCloudAccounts)

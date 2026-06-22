@@ -246,6 +246,7 @@ type gitAuthRequest struct {
 type appCreateRequest struct {
 	Name              string
 	Kind              string // "git" (default) | "image"
+	RepoID            string // kind == "git", optional — back this app with a stored repo (Git Repo Store)
 	RepoURL           string
 	Branch            string
 	TargetKind        string // "local_k8s" | "local_docker" | "cloud_vm"
@@ -298,6 +299,29 @@ func (s *Server) createApp(ctx context.Context, deploymentID string, req appCrea
 	if req.Kind == "image" {
 		appID, err = s.createImageApp(ctx, deploymentID, req)
 		return appID, "", err
+	}
+
+	// Resolve repo backing (Git Repo Store). An explicit RepoID fills in the
+	// repo URL/branch and copies the stored credentials into this app's own
+	// per-app secret (apps stay independent — deleting the repo never breaks
+	// them). Without a RepoID, the repo is auto-registered into the store after
+	// insert so every deployed git repo shows up on the Repositories page.
+	var backingRepoID string
+	if req.RepoID != "" {
+		auth, repoURL, repoBranch, rErr := s.repoGitAuth(ctx, req.RepoID)
+		if rErr != nil {
+			return "", "", fmt.Errorf("resolve stored repo: %w", rErr)
+		}
+		backingRepoID = req.RepoID
+		if req.RepoURL == "" {
+			req.RepoURL = repoURL
+		}
+		if req.Branch == "" {
+			req.Branch = repoBranch
+		}
+		if req.GitAuth == nil && auth != nil {
+			req.GitAuth = auth
+		}
 	}
 
 	webhookSecretRaw := make([]byte, 32)
@@ -357,6 +381,22 @@ func (s *Server) createApp(ctx context.Context, deploymentID string, req appCrea
 	if err != nil {
 		return "", "", fmt.Errorf("insert app: %w", err)
 	}
+
+	// Auto-register a brand-new repo into the store, then link the app to its
+	// backing repo. Best-effort — store bookkeeping must never fail a deploy.
+	if backingRepoID == "" && req.RepoURL != "" {
+		if rid, regErr := s.findOrCreateRepoByURL(ctx, req.RepoURL, branch, req.GitAuth); regErr != nil {
+			slog.Warn("repo store: auto-register failed", "repo_url", req.RepoURL, "error", regErr)
+		} else {
+			backingRepoID = rid
+		}
+	}
+	if backingRepoID != "" {
+		if linkErr := s.linkAppRepo(ctx, appID, backingRepoID); linkErr != nil {
+			slog.Warn("repo store: link app to repo failed", "app_id", appID, "repo_id", backingRepoID, "error", linkErr)
+		}
+	}
+
 	return appID, webhookSecret, nil
 }
 
@@ -482,6 +522,7 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name              string            `json:"name"`
+		RepoID            string            `json:"repo_id,omitempty"` // back this app with a stored repo (Git Repo Store)
 		RepoURL           string            `json:"repo_url"`
 		Branch            string            `json:"branch"`
 		TargetType        string            `json:"target_type"`
@@ -498,8 +539,8 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Name == "" || req.RepoURL == "" {
-		writeError(w, http.StatusBadRequest, "name and repo_url required")
+	if req.Name == "" || (req.RepoURL == "" && req.RepoID == "") {
+		writeError(w, http.StatusBadRequest, "name and repo_url (or repo_id) required")
 		return
 	}
 	targetKind, err := normalizeTargetType(req.TargetType)
@@ -529,6 +570,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 
 	appID, webhookSecret, err := s.createApp(ctx, deploymentID, appCreateRequest{
 		Name:              req.Name,
+		RepoID:            req.RepoID,
 		RepoURL:           req.RepoURL,
 		Branch:            req.Branch,
 		TargetKind:        targetKind,
@@ -615,6 +657,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name              string            `json:"name"`
 		Kind              string            `json:"kind,omitempty"` // "git" (default) | "image"
+		RepoID            string            `json:"repo_id,omitempty"`
 		RepoURL           string            `json:"repo_url,omitempty"`
 		Branch            string            `json:"branch,omitempty"`
 		TargetType        string            `json:"target_type"`
@@ -655,8 +698,8 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Kind {
 	case "git":
-		if req.RepoURL == "" {
-			writeError(w, http.StatusBadRequest, "repo_url required")
+		if req.RepoURL == "" && req.RepoID == "" {
+			writeError(w, http.StatusBadRequest, "repo_url (or repo_id) required")
 			return
 		}
 		if req.GitAuth != nil && req.GitAuth.Type != deploy.GitAuthToken && req.GitAuth.Type != deploy.GitAuthSSHKey {
@@ -680,6 +723,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 	appID, webhookSecret, err := s.createApp(r.Context(), deploymentID, appCreateRequest{
 		Name:              req.Name,
 		Kind:              req.Kind,
+		RepoID:            req.RepoID,
 		RepoURL:           req.RepoURL,
 		Branch:            req.Branch,
 		TargetKind:        targetKind,

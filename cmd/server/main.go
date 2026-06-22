@@ -148,7 +148,7 @@ func main() {
 	consoleManager := console.NewManager(console.NewRegistry(pool, vault, cfg.KubeconfigPath))
 	go consoleManager.Run(ctx)
 
-	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, k8sCtrl, dockerMgr, cfg.PublicIP, cfg.IngressDomain, cfg.RegistryPush)
+	handler := api.NewServer(pool, a, hub, vault, orchestrator, tfRunner, tfEngine, consoleManager, k8sCtrl, dockerMgr, complianceScanner, cfg.PublicIP, cfg.IngressDomain, cfg.RegistryPush)
 
 	srv := &http.Server{
 		Addr:        fmt.Sprintf(":%s", cfg.Port),

@@ -11,12 +11,14 @@ import {
   Activity,
   Terminal,
   Package,
+  GitBranch,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const nav = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/deployments', label: 'Deployments', icon: Rocket, badge: 'live' },
+  { to: '/repos', label: 'Repositories', icon: GitBranch },
   { to: '/clusters', label: 'Clusters', icon: Boxes, badge: 'live' },
   { to: '/resources', label: 'Cloud Resources', icon: Cloud },
   { to: '/local-resources', label: 'Local Resources', icon: Server },

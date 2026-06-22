@@ -129,6 +129,50 @@ func (s *Scanner) RunAll(ctx context.Context, appID, repoPath, imageRef string) 
 	return Gate(all, s.threshold)
 }
 
+// ScanSource runs the source-level scanners (GitLeaks, Hadolint, tfsec) against
+// a repo working tree with no built image — the manual "Run compliance check"
+// action on a stored repo. Trivy's image scan is deliberately skipped (there is
+// no image to scan; that runs at deploy time via RunAll). Previous findings for
+// the repo are cleared first so each scan reflects the current tree. Findings
+// are persisted with repo_id (not app_id) and published via SSE. Returns a
+// non-nil error only when the gate blocks.
+func (s *Scanner) ScanSource(ctx context.Context, repoID, repoPath string) error {
+	var all []Finding
+
+	if findings, err := runGitleaks(ctx, repoPath); err != nil {
+		slog.Warn("compliance: gitleaks skipped", "error", err)
+	} else {
+		all = append(all, findings...)
+	}
+
+	if findings, err := runHadolint(ctx, repoPath); err != nil {
+		slog.Warn("compliance: hadolint skipped", "error", err)
+	} else {
+		all = append(all, findings...)
+	}
+
+	if findings, err := runTfsec(ctx, repoPath); err != nil {
+		slog.Warn("compliance: tfsec skipped", "error", err)
+	} else {
+		all = append(all, findings...)
+	}
+
+	if _, err := s.pool.Exec(ctx, `DELETE FROM compliance_findings WHERE repo_id = $1`, repoID); err != nil {
+		slog.Warn("compliance: clear previous repo findings", "repo_id", repoID, "error", err)
+	}
+	for _, f := range all {
+		if err := s.persistRepo(ctx, repoID, f); err != nil {
+			slog.Warn("compliance: persist finding", "scanner", f.Scanner, "rule", f.RuleID, "error", err)
+		}
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE git_repos SET last_scanned_at = now() WHERE id = $1`, repoID); err != nil {
+		slog.Warn("compliance: update last_scanned_at", "repo_id", repoID, "error", err)
+	}
+
+	slog.Info("compliance: source scan complete", "repo_id", repoID, "total_findings", len(all))
+	return Gate(all, s.threshold)
+}
+
 // Gate returns a non-nil error if any finding meets or exceeds threshold,
 // listing all blocking findings in the message.
 func Gate(findings []Finding, threshold Severity) error {
@@ -153,6 +197,21 @@ func (s *Scanner) persist(ctx context.Context, appID string, f Finding) error {
 	`, appID, f.Scanner, f.Severity.String(), f.RuleID, f.Message, f.FilePath, f.LineNumber)
 	if err != nil {
 		return fmt.Errorf("compliance: persist: %w", err)
+	}
+	s.hub.Publish(sse.Event{Type: "compliance.finding", Payload: f})
+	return nil
+}
+
+// persistRepo inserts a repo-scoped finding (manual repo-store scan) — same
+// shape as persist but keyed on repo_id instead of app_id.
+func (s *Scanner) persistRepo(ctx context.Context, repoID string, f Finding) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO compliance_findings
+		  (repo_id, scanner, severity, rule_id, message, file_path, line_number)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7, 0))
+	`, repoID, f.Scanner, f.Severity.String(), f.RuleID, f.Message, f.FilePath, f.LineNumber)
+	if err != nil {
+		return fmt.Errorf("compliance: persist repo finding: %w", err)
 	}
 	s.hub.Publish(sse.Event{Type: "compliance.finding", Payload: f})
 	return nil

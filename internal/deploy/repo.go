@@ -46,9 +46,16 @@ func (o *Orchestrator) repoDir(appID string) string {
 // in the cloned workspace for appID, skipping binary extensions and dirs like
 // node_modules / .git / dist.
 func (o *Orchestrator) ListRepoFiles(appID string) ([]string, error) {
-	root := o.repoDir(appID)
+	return listEditableFiles(o.repoDir(appID))
+}
+
+// listEditableFiles walks root and returns relative slash-separated paths of
+// all editable files, skipping binary extensions and dirs like
+// node_modules / .git / dist. Shared by the per-app editor (ListRepoFiles) and
+// the repo-store editor (ListStoreFiles).
+func listEditableFiles(root string) ([]string, error) {
 	if _, err := os.Stat(root); err != nil {
-		return nil, fmt.Errorf("repo not cloned yet — trigger a deploy first")
+		return nil, fmt.Errorf("repo not cloned yet")
 	}
 	var files []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -77,7 +84,13 @@ func (o *Orchestrator) ListRepoFiles(appID string) ([]string, error) {
 // ReadRepoFile reads a file from the workspace. relPath must be relative and
 // within the workspace root (path-traversal-safe).
 func (o *Orchestrator) ReadRepoFile(appID, relPath string) ([]byte, error) {
-	abs, err := o.safeRepoPath(appID, relPath)
+	return readEditableFile(o.repoDir(appID), relPath)
+}
+
+// readEditableFile reads relPath under root, enforcing the path stays within
+// root and the file is small enough to edit in a browser.
+func readEditableFile(root, relPath string) ([]byte, error) {
+	abs, err := safeJoin(root, relPath)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +106,13 @@ func (o *Orchestrator) ReadRepoFile(appID, relPath string) ([]byte, error) {
 
 // WriteRepoFile writes content to a file in the workspace.
 func (o *Orchestrator) WriteRepoFile(appID, relPath string, content []byte) error {
-	abs, err := o.safeRepoPath(appID, relPath)
+	return writeEditableFile(o.repoDir(appID), relPath, content)
+}
+
+// writeEditableFile writes content to relPath under root (path-traversal-safe),
+// creating parent dirs as needed.
+func writeEditableFile(root, relPath string, content []byte) error {
+	abs, err := safeJoin(root, relPath)
 	if err != nil {
 		return err
 	}
@@ -159,10 +178,11 @@ func (o *Orchestrator) CommitAndPush(ctx context.Context, appID, message string)
 	return nil
 }
 
-// safeRepoPath joins workspace root + relPath and verifies the result stays
-// within the root — prevents path traversal attacks.
-func (o *Orchestrator) safeRepoPath(appID, relPath string) (string, error) {
-	root := filepath.Clean(o.repoDir(appID))
+// safeJoin joins a workspace root + relPath and verifies the result stays
+// within root — prevents path traversal attacks. Shared by the per-app and
+// repo-store editors.
+func safeJoin(root, relPath string) (string, error) {
+	root = filepath.Clean(root)
 	abs := filepath.Clean(filepath.Join(root, filepath.FromSlash(relPath)))
 	if abs != root && !strings.HasPrefix(abs, root+string(os.PathSeparator)) {
 		return "", fmt.Errorf("invalid path: must be within the repository")
