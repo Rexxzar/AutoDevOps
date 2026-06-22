@@ -589,7 +589,7 @@ export function NewDeploymentPage() {
                     <input type="checkbox" className="mt-0.5" checked={complianceEnforce} onChange={(e) => setComplianceEnforce(e.target.checked)} />
                     <span>
                       <span className="font-medium text-foreground">Enforce the compliance gate</span><br />
-                      Off by default. When on, the deploy is blocked by high+ <span className="font-medium text-foreground">secret / Dockerfile / IaC</span> findings (gitleaks, hadolint, tfsec). Image CVEs (trivy) are always informational — they&apos;re scanned &amp; shown but never block (mostly unfixable base-image noise).
+                      Off by default. When on, a deploy is blocked by high+ <span className="font-medium text-foreground">secret, Dockerfile or IaC</span> findings (gitleaks, hadolint, tfsec) and <span className="font-medium text-foreground">critical CVEs in your own dependencies</span>. Base-image OS CVEs stay informational.
                     </span>
                   </label>
 

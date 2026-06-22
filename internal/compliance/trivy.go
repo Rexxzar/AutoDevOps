@@ -12,7 +12,8 @@ type trivyReport struct {
 }
 
 type trivyResult struct {
-	Target          string            `json:"Target"`
+	Target          string               `json:"Target"`
+	Class           string               `json:"Class"` // "os-pkgs" (base image) | "lang-pkgs" (app deps)
 	Vulnerabilities []trivyVulnerability `json:"Vulnerabilities"`
 }
 
@@ -37,9 +38,8 @@ func runTrivy(ctx context.Context, imageRef string) ([]Finding, error) {
 	out, err := exec.CommandContext(ctx, path,
 		"image",
 		"--scanners", "vuln", // CVEs only — gitleaks handles secrets; also faster
-		"--ignore-unfixed",   // only CVEs with an available fix — base images carry
-		// dozens of unfixed/won't-fix OS CVEs that aren't actionable; reporting
-		// only fixable ones keeps findings meaningful.
+		"--ignore-unfixed",   // only CVEs with an available fix (drops won't-fix base-OS noise)
+		"--severity", "HIGH,CRITICAL", // skip low/medium — pure base-image noise that never reaches the gate
 		"--format", "json",
 		"--quiet",
 		"--exit-code", "0",
@@ -58,8 +58,18 @@ func parseTrivy(data []byte) ([]Finding, error) {
 	}
 
 	var findings []Finding
+	// Dedupe by CVE id — the same vulnerability is reported once per package that
+	// links the affected library (e.g. one zlib CVE shows up 10+ times), which
+	// massively inflates the count. Show each CVE once.
+	seen := make(map[string]bool)
 	for _, result := range report.Results {
 		for _, v := range result.Vulnerabilities {
+			if v.VulnerabilityID != "" {
+				if seen[v.VulnerabilityID] {
+					continue
+				}
+				seen[v.VulnerabilityID] = true
+			}
 			msg := v.Title
 			if msg == "" {
 				msg = v.VulnerabilityID
@@ -77,6 +87,7 @@ func parseTrivy(data []byte) ([]Finding, error) {
 				RuleID:   v.VulnerabilityID,
 				Message:  msg,
 				FilePath: result.Target,
+				Class:    result.Class,
 			})
 		}
 	}

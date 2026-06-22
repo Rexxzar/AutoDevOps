@@ -192,7 +192,7 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		case gateErr != nil:
 			// Report-only: surface findings as a warning, but proceed.
 			slog.Warn("compliance: findings present, enforcement off (report-only)", "app_id", appID, "error", gateErr)
-			o.publishLog(appID, "⚠️ compliance findings recorded (report-only — not blocking; enable enforcement to block): "+gateErr.Error())
+			o.publishLog(appID, "⚠️ compliance findings recorded (report-only, not blocking; enable enforcement to block): "+gateErr.Error())
 			o.publishStep(appID, StepCompliance, StepDone)
 		default:
 			o.publishStep(appID, StepCompliance, StepDone)

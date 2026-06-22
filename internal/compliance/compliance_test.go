@@ -82,15 +82,37 @@ func TestGate_BlockOnActionable(t *testing.T) {
 	}
 }
 
-// Image CVEs are report-only — even a wall of trivy criticals must never block.
-func TestGate_TrivyNeverBlocks(t *testing.T) {
+// Base-image OS CVEs (os-pkgs) are report-only — even a wall of criticals must
+// never block, since the app developer can't fix them.
+func TestGate_TrivyBaseImageNeverBlocks(t *testing.T) {
 	findings := []Finding{
-		{Scanner: "trivy", Severity: SeverityCritical, RuleID: "CVE-2021-3711"},
-		{Scanner: "trivy", Severity: SeverityHigh, RuleID: "CVE-2022-0778"},
-		{Scanner: "trivy", Severity: SeverityCritical, RuleID: "CVE-2022-37434"},
+		{Scanner: "trivy", Class: "os-pkgs", Severity: SeverityCritical, RuleID: "CVE-2021-3711"},
+		{Scanner: "trivy", Class: "os-pkgs", Severity: SeverityHigh, RuleID: "CVE-2022-0778"},
+		{Scanner: "trivy", Class: "os-pkgs", Severity: SeverityCritical, RuleID: "CVE-2022-37434"},
 	}
 	if err := Gate(findings, SeverityHigh); err != nil {
-		t.Errorf("trivy findings are report-only and must not block, got: %v", err)
+		t.Errorf("base-image (os-pkgs) CVEs are report-only and must not block, got: %v", err)
+	}
+}
+
+// A CRITICAL CVE in the app's own dependency (lang-pkgs) blocks.
+func TestGate_TrivyDependencyCriticalBlocks(t *testing.T) {
+	findings := []Finding{
+		{Scanner: "trivy", Class: "lang-pkgs", Severity: SeverityCritical, RuleID: "CVE-2024-DEP"},
+	}
+	if err := Gate(findings, SeverityHigh); err == nil {
+		t.Error("critical CVE in app dependency (lang-pkgs) should block")
+	}
+}
+
+// A HIGH (not critical) lang-pkgs CVE does NOT block — keeps the buildpack's own
+// Go-binary highs from being false positives.
+func TestGate_TrivyDependencyHighDoesNotBlock(t *testing.T) {
+	findings := []Finding{
+		{Scanner: "trivy", Class: "lang-pkgs", Severity: SeverityHigh, RuleID: "CVE-2024-GOBIN"},
+	}
+	if err := Gate(findings, SeverityHigh); err != nil {
+		t.Errorf("a high (non-critical) lang-pkgs CVE should not block, got: %v", err)
 	}
 }
 

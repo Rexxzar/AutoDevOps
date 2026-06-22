@@ -1192,8 +1192,8 @@ function AppCard({
               <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Compliance gate</p>
               <p className="text-xs text-muted-foreground">
                 {app.compliance_enforce
-                  ? 'Enforced — blocks on high+ secret / Dockerfile / IaC findings (image CVEs stay informational)'
-                  : 'Report-only — records findings, never blocks'}
+                  ? 'Enforced: blocks on high+ secret, Dockerfile or IaC findings, and critical CVEs in your own dependencies. Base-image CVEs stay informational.'
+                  : 'Report-only: findings are recorded and shown, but never block a deploy.'}
               </p>
             </div>
             <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs">

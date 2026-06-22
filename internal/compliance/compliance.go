@@ -69,6 +69,11 @@ type Finding struct {
 	Message    string   `json:"message"`
 	FilePath   string   `json:"file_path,omitempty"`
 	LineNumber int      `json:"line_number,omitempty"`
+	// Class is trivy's finding class — "os-pkgs" (base-image OS packages,
+	// inherited/unfixable by the app developer) vs "lang-pkgs" (the app's own
+	// dependencies). Empty for the other scanners. Used by Gate to decide what
+	// can block. Not persisted (in-memory hint for the gate only).
+	Class string `json:"class,omitempty"`
 }
 
 // Scanner orchestrates all four compliance tools and owns the DB + SSE writes.
@@ -206,26 +211,34 @@ func (s *Scanner) ScanSource(ctx context.Context, repoID, repoPath string) error
 	return Gate(all, s.threshold)
 }
 
-// Gate returns a non-nil error if any actionable finding meets or exceeds
-// threshold, listing all blocking findings in the message. Image-CVE findings
-// (trivy) are report-only and NEVER block: they are dominated by inherited
-// base-image OS/runtime CVEs the app developer cannot fix at deploy time
-// (patching those is a platform/golden-image concern), so blocking on them would
-// make every deploy fail. Secrets (gitleaks), Dockerfile (hadolint) and IaC
-// (tfsec) findings ARE the developer's own and actionable, so they can block.
+// Gate returns a non-nil error if any actionable finding warrants blocking,
+// listing all blocking findings in the message. What can block:
+//   - gitleaks / hadolint / tfsec (secrets, Dockerfile, IaC) at or above
+//     threshold — these are the developer's own and fixable.
+//   - trivy image CVEs in the app's OWN dependencies (Class "lang-pkgs") at
+//     CRITICAL — a vulnerable package the developer added.
+//
+// What never blocks (report-only): trivy base-image OS CVEs (Class "os-pkgs"),
+// which are inherited and unfixable at deploy time (a platform/golden-image
+// concern), and trivy lang-pkgs below CRITICAL — the buildpack injects its own
+// Go binaries (also lang-pkgs) whose high-severity findings aren't the
+// developer's either, so the bar for dependency CVEs is kept at critical.
 func Gate(findings []Finding, threshold Severity) error {
 	var blocked []string
 	for _, f := range findings {
 		if f.Scanner == "trivy" {
-			continue // report-only — see doc comment
+			if f.Class == "lang-pkgs" && f.Severity >= SeverityCritical {
+				blocked = append(blocked, fmt.Sprintf("%s[%s]:%s", f.Scanner, f.Severity, f.RuleID))
+			}
+			continue
 		}
 		if f.Severity >= threshold {
 			blocked = append(blocked, fmt.Sprintf("%s[%s]:%s", f.Scanner, f.Severity, f.RuleID))
 		}
 	}
 	if len(blocked) > 0 {
-		return fmt.Errorf("compliance gate blocked — %d finding(s) at or above %s: %s",
-			len(blocked), threshold, strings.Join(blocked, "; "))
+		return fmt.Errorf("compliance gate blocked: %d finding(s): %s",
+			len(blocked), strings.Join(blocked, "; "))
 	}
 	return nil
 }
