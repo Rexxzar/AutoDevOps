@@ -135,6 +135,7 @@ export function NewDeploymentPage() {
   const [localDomain, setLocalDomain] = useState('')
   const [namespaceOverride, setNamespaceOverride] = useState('')
   const [k8sConfig, setK8sConfig] = useState<K8sConfigValue | undefined>(undefined)
+  const [complianceEnforce, setComplianceEnforce] = useState(false)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -245,6 +246,7 @@ export function NewDeploymentPage() {
         if (namespaceOverride) body.namespace_override = namespaceOverride
         if (k8sConfig) body.k8s_config = k8sConfig
       }
+      if (complianceEnforce) body.compliance_enforce = true
       const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>('/deployments', {
         method: 'POST', body: JSON.stringify(body),
       })
@@ -583,6 +585,14 @@ export function NewDeploymentPage() {
                     </>
                   )}
 
+                  <label className="flex items-start gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground cursor-pointer">
+                    <input type="checkbox" className="mt-0.5" checked={complianceEnforce} onChange={(e) => setComplianceEnforce(e.target.checked)} />
+                    <span>
+                      <span className="font-medium text-foreground">Enforce the compliance gate</span><br />
+                      Off by default. When on, the deploy is blocked by high+ <span className="font-medium text-foreground">secret / Dockerfile / IaC</span> findings (gitleaks, hadolint, tfsec). Image CVEs (trivy) are always informational — they&apos;re scanned &amp; shown but never block (mostly unfixable base-image noise).
+                    </span>
+                  </label>
+
                   {error && (
                     <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
                       <AlertCircle className="size-4 shrink-0" />{error}
@@ -637,7 +647,7 @@ export function NewDeploymentPage() {
                 setCloudProvider(null); setDockerMode(null); setCloudTarget(null)
                 setName(''); setRepo(''); setBranch('main'); setToken(''); setRepoId(''); setDeclaredFramework('')
                 setLocalDomain(''); setVmResourceId(''); setEcsResourceId(''); setAciResourceId('')
-                setNamespaceOverride(''); setK8sConfig(undefined)
+                setNamespaceOverride(''); setK8sConfig(undefined); setComplianceEnforce(false)
                 setSuccess(null)
               }}>
                 New deployment

@@ -201,11 +201,19 @@ func (s *Scanner) ScanSource(ctx context.Context, repoID, repoPath string) error
 	return Gate(all, s.threshold)
 }
 
-// Gate returns a non-nil error if any finding meets or exceeds threshold,
-// listing all blocking findings in the message.
+// Gate returns a non-nil error if any actionable finding meets or exceeds
+// threshold, listing all blocking findings in the message. Image-CVE findings
+// (trivy) are report-only and NEVER block: they are dominated by inherited
+// base-image OS/runtime CVEs the app developer cannot fix at deploy time
+// (patching those is a platform/golden-image concern), so blocking on them would
+// make every deploy fail. Secrets (gitleaks), Dockerfile (hadolint) and IaC
+// (tfsec) findings ARE the developer's own and actionable, so they can block.
 func Gate(findings []Finding, threshold Severity) error {
 	var blocked []string
 	for _, f := range findings {
+		if f.Scanner == "trivy" {
+			continue // report-only — see doc comment
+		}
 		if f.Severity >= threshold {
 			blocked = append(blocked, fmt.Sprintf("%s[%s]:%s", f.Scanner, f.Severity, f.RuleID))
 		}

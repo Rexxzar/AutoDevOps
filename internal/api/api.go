@@ -75,6 +75,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 			r.Post("/deployments/{id}/apps/{appId}/links", s.handleCreateAppLink)
 			r.Delete("/deployments/{id}/apps/{appId}/links/{linkId}", s.handleDeleteAppLink)
 			r.Put("/deployments/{id}/apps/{appId}/domain", s.handleUpdateAppDomain)
+			r.Put("/deployments/{id}/apps/{appId}/compliance", s.handleUpdateAppCompliance)
 			r.Put("/deployments/{id}/apps/{appId}/secret-files", s.handleUpdateSecretFiles)
 			r.Get("/deployments/{id}/apps/{appId}/k8s-manifests", s.handleGetK8sManifests)
 			r.Post("/deployments/{id}/apps/{appId}/k8s-apply", s.handleApplyK8sManifest)

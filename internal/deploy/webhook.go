@@ -165,11 +165,12 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		return err // buildImage already persisted status=failed, published SSE, and marked its step failed
 	}
 
-	// Fetch the image_ref that buildImage persisted — both deploy branches need it.
+	// Fetch image_ref + compliance enforcement flag — both deploy branches need them.
 	var imageRef string
+	var complianceEnforce bool
 	if err := o.pool.QueryRow(ctx,
-		"SELECT COALESCE(image_ref,'') FROM deployment_apps WHERE id = $1", appID,
-	).Scan(&imageRef); err != nil {
+		"SELECT COALESCE(image_ref,''), compliance_enforce FROM deployment_apps WHERE id = $1", appID,
+	).Scan(&imageRef, &complianceEnforce); err != nil {
 		return fmt.Errorf("deploy: fetch image_ref: %w", err)
 	}
 
@@ -177,13 +178,25 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		o.publishStep(appID, StepCompliance, StepActive)
 		// Scan via the externally-reachable push host — the stored image_ref uses
 		// the in-cluster pull host (registry.local:5000) that trivy can't reach.
-		if err := o.complianceGate.RunAll(ctx, appID, repoPath, o.scanImageRef(imageRef)); err != nil {
+		// The gate is report-only by default: findings are always recorded and
+		// surfaced, but only BLOCK the deploy when enforcement is enabled for the
+		// app (otherwise base-image CVEs would block every normal deploy).
+		gateErr := o.complianceGate.RunAll(ctx, appID, repoPath, o.scanImageRef(imageRef))
+		switch {
+		case gateErr != nil && complianceEnforce:
+			o.publishLog(appID, "❌ "+gateErr.Error())
 			o.publishStep(appID, StepCompliance, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})
-			return fmt.Errorf("deploy: %w", err)
+			return fmt.Errorf("deploy: %w", gateErr)
+		case gateErr != nil:
+			// Report-only: surface findings as a warning, but proceed.
+			slog.Warn("compliance: findings present, enforcement off (report-only)", "app_id", appID, "error", gateErr)
+			o.publishLog(appID, "⚠️ compliance findings recorded (report-only — not blocking; enable enforcement to block): "+gateErr.Error())
+			o.publishStep(appID, StepCompliance, StepDone)
+		default:
+			o.publishStep(appID, StepCompliance, StepDone)
 		}
-		o.publishStep(appID, StepCompliance, StepDone)
 	} else {
 		o.publishStep(appID, StepCompliance, StepSkipped)
 	}

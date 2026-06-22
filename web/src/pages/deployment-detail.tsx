@@ -55,6 +55,7 @@ interface AppDetail {
   updated_at: string
   volume_path?: string
   secret_file_paths?: string[]
+  compliance_enforce?: boolean
   tls_status?: string
   tls_error?: string
   k8s_config?: {
@@ -736,6 +737,7 @@ function AppCard({
   const [secretFileOpen, setSecretFileOpen] = useState(false)
   const [removingSecretPath, setRemovingSecretPath] = useState<string | null>(null)
   const [secretFileError, setSecretFileError] = useState('')
+  const [savingEnforce, setSavingEnforce] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
   const [manifestsOpen, setManifestsOpen] = useState(false)
@@ -815,6 +817,20 @@ function AppCard({
       setSecretFileError(err instanceof Error ? err.message : 'Failed to remove secret file')
     } finally {
       setRemovingSecretPath(null)
+    }
+  }
+
+  async function toggleEnforce(next: boolean) {
+    setSavingEnforce(true)
+    try {
+      await apiFetch(`/deployments/${stackId}/apps/${app.id}/compliance`, {
+        method: 'PUT', body: JSON.stringify({ enforce: next }),
+      })
+      onLinksChanged()
+    } catch {
+      // best-effort; the next deployment GET reflects the true state
+    } finally {
+      setSavingEnforce(false)
     }
   }
 
@@ -1167,6 +1183,31 @@ function AppCard({
                 </div>
               ))
             )}
+          </div>
+        )}
+
+        {app.kind === 'git' && (
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <div className="min-w-0">
+              <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Compliance gate</p>
+              <p className="text-xs text-muted-foreground">
+                {app.compliance_enforce
+                  ? 'Enforced — blocks on high+ secret / Dockerfile / IaC findings (image CVEs stay informational)'
+                  : 'Report-only — records findings, never blocks'}
+              </p>
+            </div>
+            <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs">
+              {savingEnforce && <Loader2 className="size-3 animate-spin" />}
+              <span className={cn(app.compliance_enforce ? 'text-foreground font-medium' : 'text-muted-foreground')}>
+                {app.compliance_enforce ? 'Enforce' : 'Report-only'}
+              </span>
+              <input
+                type="checkbox"
+                checked={!!app.compliance_enforce}
+                disabled={savingEnforce}
+                onChange={(e) => toggleEnforce(e.target.checked)}
+              />
+            </label>
           </div>
         )}
 

@@ -261,6 +261,7 @@ type appCreateRequest struct {
 	VolumePath        string            // kind == "image", optional — see Phase 4 volume_path
 	SecretFiles       map[string]string // container path -> base64 content, optional — see secret_files
 	K8sConfig         json.RawMessage   // kind == "git", optional — local_k8s per-app tuning (replicas/HPA/probes/...)
+	ComplianceEnforce bool              // kind == "git", optional — block the deploy when the gate finds ≥threshold issues (default false = report-only)
 }
 
 // storeSecretFiles encrypts files (container path -> base64 content) into the
@@ -367,7 +368,7 @@ func (s *Server) createApp(ctx context.Context, deploymentID string, req appCrea
 		k8sConfigArg = []byte(req.K8sConfig)
 	}
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context, secret_files_id, secret_file_paths, declared_framework, k8s_config)
+		INSERT INTO deployment_apps (deployment_id, name, repo_url, branch, target_kind, target_resource_id, domain, webhook_secret_id, git_credentials_secret_id, build_context, secret_files_id, secret_file_paths, declared_framework, k8s_config, compliance_enforce)
 		SELECT $1, $2, $3, $4, $5, NULLIF($6, '')::uuid, NULLIF($7, ''),
 		       (SELECT id FROM secrets WHERE name = $8),
 		       (SELECT id FROM secrets WHERE name = $9),
@@ -375,9 +376,10 @@ func (s *Server) createApp(ctx context.Context, deploymentID string, req appCrea
 		       (SELECT id FROM secrets WHERE name = $11),
 		       $12,
 		       NULLIF($13, ''),
-		       $14
+		       $14,
+		       $15
 		RETURNING id::text
-	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext, secretFilesName, secretFilePaths, req.DeclaredFramework, k8sConfigArg).Scan(&appID)
+	`, deploymentID, req.Name, req.RepoURL, branch, req.TargetKind, req.TargetResourceID, req.Domain, webhookSecretName, gitCredsSecretName, req.BuildContext, secretFilesName, secretFilePaths, req.DeclaredFramework, k8sConfigArg, req.ComplianceEnforce).Scan(&appID)
 	if err != nil {
 		return "", "", fmt.Errorf("insert app: %w", err)
 	}
@@ -534,6 +536,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		SecretFiles       map[string]string `json:"secret_files,omitempty"`
 		NamespaceOverride string            `json:"namespace_override,omitempty"` // local_k8s: per-stack namespace override
 		K8sConfig         json.RawMessage   `json:"k8s_config,omitempty"`         // local_k8s: per-app tuning (replicas/HPA/probes/...)
+		ComplianceEnforce bool              `json:"compliance_enforce,omitempty"` // block deploy on gate findings (default false = report-only)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -581,6 +584,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		DeclaredFramework: req.DeclaredFramework,
 		SecretFiles:       req.SecretFiles,
 		K8sConfig:         req.K8sConfig,
+		ComplianceEnforce: req.ComplianceEnforce,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create deployment")
@@ -672,6 +676,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 		VolumePath        string            `json:"volume_path,omitempty"`
 		SecretFiles       map[string]string `json:"secret_files,omitempty"`
 		K8sConfig         json.RawMessage   `json:"k8s_config,omitempty"` // kind == "git", local_k8s per-app tuning
+		ComplianceEnforce bool              `json:"compliance_enforce,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -738,6 +743,7 @@ func (s *Server) handleAddApp(w http.ResponseWriter, r *http.Request) {
 		VolumePath:        req.VolumePath,
 		SecretFiles:       req.SecretFiles,
 		K8sConfig:         req.K8sConfig,
+		ComplianceEnforce: req.ComplianceEnforce,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -792,7 +798,8 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		       image_env_secret_id IS NOT NULL,
 		       COALESCE(declared_framework, ''),
 		       k8s_config,
-		       COALESCE(target_resource_id::text, '')
+		       COALESCE(target_resource_id::text, ''),
+		       compliance_enforce
 		FROM deployment_apps WHERE deployment_id = $1 ORDER BY created_at ASC
 	`, id)
 	if err != nil {
@@ -830,8 +837,9 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		// Steps hydrates the deploy-progress pipeline for pages that load (or
 		// reconnect their SSE stream) mid-deploy — deploy.step events aren't
 		// replayed on reconnect, so the frontend seeds stepsByApp from here.
-		Steps            []deploy.StepEvent `json:"steps,omitempty"`
-		TargetResourceID string             `json:"target_resource_id,omitempty"`
+		Steps             []deploy.StepEvent `json:"steps,omitempty"`
+		TargetResourceID  string             `json:"target_resource_id,omitempty"`
+		ComplianceEnforce bool               `json:"compliance_enforce"`
 	}
 	var apps []appDetail
 	index := make(map[string]int)
@@ -839,7 +847,7 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		var a appDetail
 		var targetKind string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Role, &a.RepoURL, &a.Branch,
-			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus, &a.TLSError, &a.HasGitCredentials, &a.HasImageEnv, &a.DeclaredFramework, &a.K8sConfig, &a.TargetResourceID); err != nil {
+			&a.Framework, &targetKind, &a.Namespace, &a.ImageRef, &a.Port, &a.Domain, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.VolumePath, &a.SecretFilePaths, &a.TLSStatus, &a.TLSError, &a.HasGitCredentials, &a.HasImageEnv, &a.DeclaredFramework, &a.K8sConfig, &a.TargetResourceID, &a.ComplianceEnforce); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan app")
 			return
 		}
@@ -1085,6 +1093,35 @@ func (s *Server) handleUpdateAppDomain(w http.ResponseWriter, r *http.Request) {
 	s.triggerAppIfGit(appID, appKind)
 
 	writeJSON(w, http.StatusOK, map[string]string{"domain": req.Domain})
+}
+
+// handleUpdateAppCompliance toggles whether the compliance gate BLOCKS this
+// app's deploys (true) or just records findings (false, report-only default).
+// It does not re-trigger a deploy — the flag takes effect on the next one.
+func (s *Server) handleUpdateAppCompliance(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var req struct {
+		Enforce bool `json:"enforce"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	tag, err := s.db.Exec(r.Context(),
+		`UPDATE deployment_apps SET compliance_enforce = $3, updated_at = now() WHERE id = $1 AND deployment_id = $2`,
+		appID, deploymentID, req.Enforce,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update compliance setting")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"compliance_enforce": req.Enforce})
 }
 
 // handleUpdateSecretFiles adds and/or removes per-app secret files (container

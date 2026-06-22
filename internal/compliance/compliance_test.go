@@ -71,14 +71,26 @@ func TestGate_Pass(t *testing.T) {
 	}
 }
 
-func TestGate_BlockOnCritical(t *testing.T) {
+func TestGate_BlockOnActionable(t *testing.T) {
 	findings := []Finding{
 		{Scanner: "trivy", Severity: SeverityCritical, RuleID: "CVE-2023-999"},
 		{Scanner: "gitleaks", Severity: SeverityHigh, RuleID: "aws-access-key"},
 	}
 	err := Gate(findings, SeverityHigh)
 	if err == nil {
-		t.Error("expected gate to block on critical + high findings, got nil")
+		t.Error("expected gate to block on the actionable gitleaks high finding, got nil")
+	}
+}
+
+// Image CVEs are report-only — even a wall of trivy criticals must never block.
+func TestGate_TrivyNeverBlocks(t *testing.T) {
+	findings := []Finding{
+		{Scanner: "trivy", Severity: SeverityCritical, RuleID: "CVE-2021-3711"},
+		{Scanner: "trivy", Severity: SeverityHigh, RuleID: "CVE-2022-0778"},
+		{Scanner: "trivy", Severity: SeverityCritical, RuleID: "CVE-2022-37434"},
+	}
+	if err := Gate(findings, SeverityHigh); err != nil {
+		t.Errorf("trivy findings are report-only and must not block, got: %v", err)
 	}
 }
 
@@ -97,10 +109,10 @@ func TestGate_EmptyFindings(t *testing.T) {
 	}
 }
 
-func TestGate_ErrorMessageListsAll(t *testing.T) {
+func TestGate_ErrorMessageListsActionable(t *testing.T) {
 	findings := []Finding{
-		{Scanner: "trivy", Severity: SeverityCritical, RuleID: "CVE-A"},
-		{Scanner: "trivy", Severity: SeverityCritical, RuleID: "CVE-B"},
+		{Scanner: "trivy", Severity: SeverityCritical, RuleID: "CVE-A"}, // report-only — excluded
+		{Scanner: "hadolint", Severity: SeverityHigh, RuleID: "DL4000"},
 		{Scanner: "gitleaks", Severity: SeverityHigh, RuleID: "aws-key"},
 	}
 	err := Gate(findings, SeverityHigh)
@@ -108,10 +120,13 @@ func TestGate_ErrorMessageListsAll(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	msg := err.Error()
-	for _, ruleID := range []string{"CVE-A", "CVE-B", "aws-key"} {
+	for _, ruleID := range []string{"DL4000", "aws-key"} {
 		if !contains(msg, ruleID) {
-			t.Errorf("error message missing %q: %s", ruleID, msg)
+			t.Errorf("error message missing actionable finding %q: %s", ruleID, msg)
 		}
+	}
+	if contains(msg, "CVE-A") {
+		t.Errorf("report-only trivy finding must not appear in the block message: %s", msg)
 	}
 }
 
