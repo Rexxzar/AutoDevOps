@@ -258,3 +258,22 @@ func TestParseHadolint(t *testing.T) {
 func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }
+
+func TestRepoRelative(t *testing.T) {
+	cases := []struct {
+		name, base, p, want string
+	}{
+		{"relative clone path", "data/repos/repos/abc", "data/repos/repos/abc/config/credentials.env", "config/credentials.env"},
+		{"nested file", "data/repos/x", "data/repos/x/src/app/main.go", "src/app/main.go"},
+		{"already at root", "data/repos/x", "data/repos/x/Dockerfile", "Dockerfile"},
+		{"empty stays empty", "data/repos/x", "", ""},
+		{"unrelated path unchanged", "data/repos/x", "elsewhere/file.txt", "elsewhere/file.txt"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := repoRelative(c.base, c.p); got != c.want {
+				t.Errorf("repoRelative(%q, %q) = %q, want %q", c.base, c.p, got, c.want)
+			}
+		})
+	}
+}

@@ -133,16 +133,23 @@ func (s *Scanner) RunAll(ctx context.Context, appID, repoPath, imageRef string) 
 	return Gate(all, s.threshold)
 }
 
-// repoRelative converts an absolute scanner-reported file path to one relative
-// to the repo root (slash-separated), so findings reference paths the editor
-// can open (e.g. "config/credentials.env", not the full clone path). Paths that
-// are already relative, or outside base, are returned unchanged.
+// repoRelative converts a scanner-reported file path to one relative to the
+// repo root (slash-separated), so findings reference paths the editor can open
+// (e.g. "config/credentials.env", not the full clone path). Scanners report
+// paths either absolute or relative to the server's working dir (e.g.
+// "data/repos/repos/<id>/config/credentials.env"), so both base and p are
+// resolved against the working dir before computing the relative path. Paths
+// outside base are returned unchanged.
 func repoRelative(base, p string) string {
-	if p == "" || !filepath.IsAbs(p) {
+	if p == "" {
 		return p
 	}
-	if rel, err := filepath.Rel(base, p); err == nil && !strings.HasPrefix(rel, "..") {
-		return filepath.ToSlash(rel)
+	absBase, e1 := filepath.Abs(base)
+	absP, e2 := filepath.Abs(p)
+	if e1 == nil && e2 == nil {
+		if rel, err := filepath.Rel(absBase, absP); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
 	}
 	return p
 }
