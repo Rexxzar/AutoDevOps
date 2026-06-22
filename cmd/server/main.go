@@ -106,6 +106,12 @@ func main() {
 	}
 
 	complianceScanner := compliance.New(pool, hub, cfg.ComplianceThreshold)
+	// Auto-install the scanner binaries (gitleaks/hadolint/tfsec/trivy) the same
+	// way terraform is resolved — detect on PATH or download pinned versions into
+	// a user-writable dir — so a fresh AutoDevOps host gets a working compliance
+	// gate with no manual setup. Best-effort + non-blocking: absent scanners are
+	// skipped at scan time, and the ~90MB of downloads must not delay boot.
+	go compliance.EnsureTools(ctx, filepath.Join(cfg.DataDir, "compliance", "bin"))
 	orchestrator := deploy.New(pool, hub, vault, reposDir, cfg.BuilderImage, cfg.RegistryPush, cfg.RegistryPull, cfg.IngressDomain, kubeDeployer, dockerDeployer, imagePusher, imageSaver, aciRedeployer, complianceScanner)
 	if dockerMgr != nil {
 		if cfg.PublicIP != "" {
