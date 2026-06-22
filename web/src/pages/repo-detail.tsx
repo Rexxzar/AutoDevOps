@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, GitBranch, Loader2, Save, GitCommit, FileText, ChevronRight,
   Plus, X, ShieldCheck, ShieldAlert, Trash2, Lock, Globe,
-  Code2, Rocket, Copy, Check, AlertCircle, Play,
+  Code2, Rocket, Copy, Check, AlertCircle, Play, RefreshCw,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
@@ -21,11 +21,29 @@ export function RepoDetailPage() {
   const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('code')
   const [deleting, setDeleting] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0) // bumped after a pull to force the Code tab to reload files
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['repo', id],
     queryFn: () => apiFetch<RepoDetail>(`/repos/${id}`),
   })
+
+  // pullLatest fetches origin/<branch> and hard-resets the server clone to it,
+  // then forces the Code tab to reload — the fix for "I pushed to the repo but
+  // AutoDevOps still shows the old files".
+  async function pullLatest() {
+    setRefreshing(true)
+    try {
+      await apiFetch(`/repos/${id}/refresh`, { method: 'POST' })
+      setReloadKey((k) => k + 1)
+      refetch()
+    } catch (e) {
+      alert(`Pull failed: ${e}`)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   async function deleteRepo() {
     if (!confirm('Remove this repository from the store? Deployments that used it keep running; their link is just cleared.')) return
@@ -78,6 +96,10 @@ export function RepoDetailPage() {
             <CloneURL url={repo.repo_url} />
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={pullLatest} disabled={refreshing} title="Fetch the latest commit from the remote and update the files shown here">
+              <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+              Pull latest
+            </Button>
             <Button variant="outline" size="sm" className="gap-1.5 text-critical hover:text-critical" onClick={deleteRepo} disabled={deleting}>
               {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
               Remove
@@ -95,7 +117,7 @@ export function RepoDetailPage() {
 
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        {tab === 'code' && <CodeTab repoId={id} hasCredentials={repo.has_credentials} />}
+        {tab === 'code' && <CodeTab repoId={id} hasCredentials={repo.has_credentials} reloadKey={reloadKey} />}
         {tab === 'compliance' && <ComplianceTab repoId={id} detail={data} onScanned={() => refetch()} />}
         {tab === 'deployments' && <DeploymentsTab detail={data} />}
       </div>
@@ -136,7 +158,7 @@ function CloneURL({ url }: { url: string }) {
 
 // ── Code tab: GitHub-style file browser + editor ────────────────────────────
 
-function CodeTab({ repoId, hasCredentials }: { repoId: string; hasCredentials: boolean }) {
+function CodeTab({ repoId, hasCredentials, reloadKey }: { repoId: string; hasCredentials: boolean; reloadKey: number }) {
   const [files, setFiles] = useState<string[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [content, setContent] = useState('')
@@ -163,7 +185,14 @@ function CodeTab({ repoId, hasCredentials }: { repoId: string; hasCredentials: b
       .finally(() => setLoadingFiles(false))
   }, [repoId])
 
-  useEffect(() => { loadFiles() }, [loadFiles])
+  // Reload on mount and whenever reloadKey changes (after a "Pull latest"),
+  // clearing the open file since its content may have changed on the remote.
+  useEffect(() => {
+    setSelectedFile(null)
+    setContent('')
+    setOriginalContent('')
+    loadFiles()
+  }, [loadFiles, reloadKey])
 
   async function selectFile(path: string) {
     if (isDirty && selectedFile && !confirm(`Discard unsaved changes to ${selectedFile}?`)) return
