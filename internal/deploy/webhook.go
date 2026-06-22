@@ -175,7 +175,9 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 
 	if o.complianceGate != nil {
 		o.publishStep(appID, StepCompliance, StepActive)
-		if err := o.complianceGate.RunAll(ctx, appID, repoPath, imageRef); err != nil {
+		// Scan via the externally-reachable push host — the stored image_ref uses
+		// the in-cluster pull host (registry.local:5000) that trivy can't reach.
+		if err := o.complianceGate.RunAll(ctx, appID, repoPath, o.scanImageRef(imageRef)); err != nil {
 			o.publishStep(appID, StepCompliance, StepFailed)
 			dep, _ := o.persistStatus(ctx, appID, "failed")
 			o.hub.Publish(sse.Event{Type: "deploy.status", Payload: dep})

@@ -36,6 +36,7 @@ func runTrivy(ctx context.Context, imageRef string) ([]Finding, error) {
 
 	out, err := exec.CommandContext(ctx, path,
 		"image",
+		"--scanners", "vuln", // CVEs only — gitleaks handles secrets; also faster
 		"--format", "json",
 		"--quiet",
 		"--exit-code", "0",

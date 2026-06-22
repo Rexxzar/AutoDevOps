@@ -57,6 +57,22 @@ func TestImageRefs(t *testing.T) {
 	}
 }
 
+func TestScanImageRef(t *testing.T) {
+	o := &Orchestrator{registryPush: "localhost:5001", registryPull: "registry.local:5000"}
+	cases := []struct{ name, in, want string }{
+		{"local pull ref swapped to push host", "registry.local:5000/my-app:abc123", "localhost:5001/my-app:abc123"},
+		{"cloud ref unchanged", "myreg.azurecr.io/my-app:abc123", "myreg.azurecr.io/my-app:abc123"},
+		{"empty unchanged", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := o.scanImageRef(c.in); got != c.want {
+				t.Errorf("scanImageRef(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestHeadSHA12(t *testing.T) {
 	dir := t.TempDir()
 

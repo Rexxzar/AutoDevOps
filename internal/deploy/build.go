@@ -103,6 +103,20 @@ func (o *Orchestrator) imageRefs(name, sha12 string) (pushRef, pullRef string) {
 		fmt.Sprintf("%s/%s:%s", o.registryPull, name, sha12)
 }
 
+// scanImageRef converts a stored image_ref (which uses the in-cluster pull host,
+// e.g. registry.local:5000) into the externally-reachable push host (e.g.
+// localhost:5001) so the compliance scanner (trivy) can actually read the image
+// — registry.local:5000 doesn't resolve from the host and the local registry is
+// plain HTTP, whereas the push host is reachable AND the image is present in the
+// local Docker daemon under that tag. Non-local refs (cloud ECR/ACR) don't match
+// the pull prefix and pass through unchanged.
+func (o *Orchestrator) scanImageRef(imageRef string) string {
+	if o.registryPull != "" && o.registryPush != "" && strings.HasPrefix(imageRef, o.registryPull+"/") {
+		return o.registryPush + strings.TrimPrefix(imageRef, o.registryPull)
+	}
+	return imageRef
+}
+
 // hasDockerfile reports whether repoPath (the build-context root) contains a
 // Dockerfile, in which case buildImage builds it via the Docker SDK instead
 // of Paketo Buildpacks — "Dockerfile-if-present, else Paketo". Mirrors
