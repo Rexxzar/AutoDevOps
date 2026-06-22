@@ -32,6 +32,10 @@ func runGitleaks(ctx context.Context, repoPath string) ([]Finding, error) {
 	if err := exec.CommandContext(ctx, path,
 		"detect",
 		"--source", repoPath,
+		"--no-git", // scan the working-tree files, not just git history — the
+		// repo clone is shallow (depth 1) so history-only scanning misses
+		// secrets that live in the files on disk; this matches how hadolint/
+		// tfsec scan the checked-out files.
 		"--report-format", "json",
 		"--report-path", tmp.Name(),
 		"--no-banner",

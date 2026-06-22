@@ -303,6 +303,34 @@ function CodeTab({ repoId, hasCredentials }: { repoId: string; hasCredentials: b
 
 // ── Compliance tab ──────────────────────────────────────────────────────────
 
+// ScanningPanel is the animated "scan in progress" state — a spinning ring
+// around a shield, with the source scanners listed as pulsing chips.
+function ScanningPanel() {
+  const scanners = ['GitLeaks', 'Hadolint', 'tfsec']
+  return (
+    <div className="flex flex-col items-center gap-5 py-16">
+      <div className="relative flex size-16 items-center justify-center">
+        <span className="absolute inset-0 rounded-full border-2 border-border" />
+        <span className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-primary" />
+        <span className="absolute inset-1.5 animate-ping rounded-full bg-primary/10" />
+        <ShieldCheck className="size-6 text-primary" />
+      </div>
+      <div className="space-y-1 text-center">
+        <p className="text-sm font-medium">Scanning repository…</p>
+        <p className="text-xs text-muted-foreground">Running source compliance scanners</p>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {scanners.map((s, i) => (
+          <span key={s} className="flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground">
+            <span className="size-1.5 animate-pulse rounded-full bg-primary" style={{ animationDelay: `${i * 250}ms` }} />
+            {s}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function ComplianceTab({ repoId, detail, onScanned }: { repoId: string; detail: RepoDetail; onScanned: () => void }) {
   const [findings, setFindings] = useState<RepoFinding[]>(detail.findings)
   const [scanning, setScanning] = useState(false)
@@ -351,7 +379,7 @@ function ComplianceTab({ repoId, detail, onScanned }: { repoId: string; detail: 
         </div>
       )}
 
-      {findings.length > 0 && (
+      {!scanning && findings.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-2">
           {severityOrder.map((s) => (counts[s] ?? 0) > 0 && (
             <div key={s} className={cn('flex items-center gap-2 rounded-lg border px-3 py-1.5', severityStyle[s])}>
@@ -363,7 +391,9 @@ function ComplianceTab({ repoId, detail, onScanned }: { repoId: string; detail: 
       )}
 
       <div className="overflow-hidden rounded-xl border border-border bg-card">
-        {findings.length === 0 ? (
+        {scanning ? (
+          <ScanningPanel />
+        ) : findings.length === 0 ? (
           <div className="flex flex-col items-center gap-3 py-16 text-center">
             <div className="flex size-10 items-center justify-center rounded-lg border border-border bg-card">
               <ShieldCheck className="size-4 text-muted-foreground" />
