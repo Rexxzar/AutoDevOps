@@ -111,6 +111,13 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 			r.Get("/compliance/findings", s.handleListComplianceFindings)
 			r.Post("/clusters", s.handleCreateCluster)
 			r.Get("/terraform/runs", s.handleListTerraformRuns)
+			// Terraform Store — workspace catalog, download/export, lifecycle.
+			r.Get("/terraform/workspaces", s.handleListWorkspaces)
+			r.Post("/terraform/import", s.handleImportTerraform)
+			r.Get("/resources/{id}/terraform/download", s.handleDownloadResourceTerraform)
+			r.Get("/resources/{id}/terraform/export", s.handleExportResourceTerraform)
+			r.Get("/resources/{id}/findings", s.handleListResourceFindings)
+			r.Delete("/resources/{id}/terraform/workspace", s.handleDeleteWorkspace)
 			r.Get("/resources", s.handleListResources)
 			r.Post("/resources", s.handleCreateResource)
 			r.Post("/resources/preview", s.handlePreviewResource)

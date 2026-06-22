@@ -2573,6 +2573,7 @@ func (s *Server) handlePlanResourceTerraform(w http.ResponseWriter, r *http.Requ
 			slog.Error("terraform: re-plan with edited config failed", "id", id, "error", err)
 			status = "failed"
 		}
+		s.scanWorkspaceTfsec(ctx, id) // tfsec the (re)written config — report-only
 		s.setResourceStatus(ctx, id, status)
 	}()
 

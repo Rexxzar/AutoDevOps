@@ -211,6 +211,32 @@ func (s *Scanner) ScanSource(ctx context.Context, repoID, repoPath string) error
 	return Gate(all, s.threshold)
 }
 
+// ScanWorkspace runs tfsec against a provisioned resource's terraform workspace
+// (generated or imported IaC) and records the findings scoped to resource_id.
+// Report-only at the call site (surfaced, not blocking) but still returns the
+// gate verdict for callers that want it. Previous findings for the resource are
+// cleared first so each scan reflects the current config.
+func (s *Scanner) ScanWorkspace(ctx context.Context, resourceID, dir string) error {
+	findings, err := runTfsec(ctx, dir)
+	if err != nil {
+		slog.Warn("compliance: tfsec skipped", "resource_id", resourceID, "error", err)
+		findings = nil
+	}
+	for i := range findings {
+		findings[i].FilePath = repoRelative(dir, findings[i].FilePath)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM compliance_findings WHERE resource_id = $1`, resourceID); err != nil {
+		slog.Warn("compliance: clear previous resource findings", "resource_id", resourceID, "error", err)
+	}
+	for _, f := range findings {
+		if err := s.persistResource(ctx, resourceID, f); err != nil {
+			slog.Warn("compliance: persist resource finding", "scanner", f.Scanner, "rule", f.RuleID, "error", err)
+		}
+	}
+	slog.Info("compliance: workspace scan complete", "resource_id", resourceID, "total_findings", len(findings))
+	return Gate(findings, s.threshold)
+}
+
 // Gate returns a non-nil error if any actionable finding warrants blocking,
 // listing all blocking findings in the message. What can block:
 //   - gitleaks / hadolint / tfsec (secrets, Dockerfile, IaC) at or above
@@ -266,6 +292,21 @@ func (s *Scanner) persistRepo(ctx context.Context, repoID string, f Finding) err
 	`, repoID, f.Scanner, f.Severity.String(), f.RuleID, f.Message, f.FilePath, f.LineNumber)
 	if err != nil {
 		return fmt.Errorf("compliance: persist repo finding: %w", err)
+	}
+	s.hub.Publish(sse.Event{Type: "compliance.finding", Payload: f})
+	return nil
+}
+
+// persistResource inserts a resource-scoped finding (tfsec on a terraform
+// workspace) — keyed on resource_id.
+func (s *Scanner) persistResource(ctx context.Context, resourceID string, f Finding) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO compliance_findings
+		  (resource_id, scanner, severity, rule_id, message, file_path, line_number)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7, 0))
+	`, resourceID, f.Scanner, f.Severity.String(), f.RuleID, f.Message, f.FilePath, f.LineNumber)
+	if err != nil {
+		return fmt.Errorf("compliance: persist resource finding: %w", err)
 	}
 	s.hub.Publish(sse.Event{Type: "compliance.finding", Payload: f})
 	return nil

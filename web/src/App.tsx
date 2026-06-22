@@ -9,6 +9,8 @@ import { LocalResourcesPage } from '@/pages/local-resources'
 import { ImageRegistryPage } from '@/pages/image-registry'
 import { ReposPage } from '@/pages/repos'
 import { RepoDetailPage } from '@/pages/repo-detail'
+import { TerraformPage } from '@/pages/terraform'
+import { TerraformDetailPage } from '@/pages/terraform-detail'
 import { ResourceDetailPage } from '@/pages/resource-detail'
 import { DeploymentDetailPage } from '@/pages/deployment-detail'
 import { CompliancePage } from '@/pages/compliance'
@@ -40,6 +42,8 @@ function DashboardLayout() {
             <Route path="/repos/:id" element={<RepoDetailPage />} />
             <Route path="/clusters" element={<ClustersPage />} />
             <Route path="/resources" element={<ResourcesPage />} />
+            <Route path="/terraform" element={<TerraformPage />} />
+            <Route path="/terraform/:id" element={<TerraformDetailPage />} />
             <Route path="/local-resources" element={<LocalResourcesPage />} />
             <Route path="/resources/:id" element={<ResourceDetailPage />} />
             <Route path="/local-resources/:id" element={<ResourceDetailPage />} />

@@ -12,6 +12,7 @@ import {
   Terminal,
   Package,
   GitBranch,
+  FileCode2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -21,6 +22,7 @@ const nav = [
   { to: '/repos', label: 'Repositories', icon: GitBranch },
   { to: '/clusters', label: 'Clusters', icon: Boxes, badge: 'live' },
   { to: '/resources', label: 'Cloud Resources', icon: Cloud },
+  { to: '/terraform', label: 'Terraform', icon: FileCode2 },
   { to: '/local-resources', label: 'Local Resources', icon: Server },
   { to: '/image-registry', label: 'Image Registry', icon: Package },
   { to: '/compliance', label: 'Compliance', icon: ShieldCheck },
