@@ -1676,7 +1676,7 @@ func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := secretNameParam(r)
 	value, err := s.vault.Get(r.Context(), name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "secret not found")
@@ -1686,7 +1686,7 @@ func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := secretNameParam(r)
 	if err := s.vault.Delete(r.Context(), name); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete secret")
 		return

@@ -3,9 +3,26 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
+
+// secretNameParam returns the {name} path param, URL-decoded. chi hands back the
+// raw (un-decoded) path segment, so a name the client percent-encoded (e.g.
+// "git-credentials%3A...%3Aapp" from encodeURIComponent) arrives with literal
+// "%3A" and would never match the stored name. Decoding here fixes GET/DELETE
+// for the colon-bearing names every platform-managed secret uses. It is a no-op
+// for names sent with raw colons (no percent-escapes to decode).
+func secretNameParam(r *http.Request) string {
+	name := chi.URLParam(r, "name")
+	if decoded, err := url.PathUnescape(name); err == nil {
+		return decoded
+	}
+	return name
+}
 
 // secretSummary is the metadata view of a vault secret for the Secrets page.
 // It deliberately never carries the decrypted value — the listing must not
