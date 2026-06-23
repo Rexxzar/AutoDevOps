@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/Rexxzar/autodevops/internal/healmetrics"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/jackc/pgx/v5/pgxpool"
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +43,7 @@ type PodHealth struct {
 	Status       PodStatus `json:"status"`
 	Reason       string    `json:"reason,omitempty"`
 	RestartCount int32     `json:"restart_count"`
+	FailedAt     time.Time `json:"failed_at,omitempty"` // last container-termination time (best-effort, for MTTD)
 }
 
 // Controller connects to a K8s cluster and runs the pod health Watch loop.
@@ -48,6 +51,7 @@ type Controller struct {
 	clientset     kubernetes.Interface
 	dynClient     dynamic.Interface
 	healer        *healer
+	observer      *healmetrics.Observer
 	serverURL     string
 	clusterID     string
 	ingressDomain string
@@ -85,6 +89,7 @@ func New(kubeconfigPath, clusterID string, pool *pgxpool.Pool, hub *sse.Hub, ing
 		clientset:     clientset,
 		dynClient:     dynClient,
 		healer:        newHealer(clientset, pool, hub),
+		observer:      healmetrics.NewObserver(pool),
 		serverURL:     cfg.Host,
 		clusterID:     clusterID,
 		ingressDomain: ingressDomain,
@@ -145,6 +150,37 @@ func (c *Controller) handlePod(ctx context.Context, pod *corev1.Pod) {
 	}
 	c.hub.Publish(sse.Event{Type: "pod.health", Payload: h})
 	c.healer.handle(ctx, h)
+	c.observeHeal(ctx, h)
+}
+
+// observeHeal records self-heal episodes for MTTD/MTTR (metrics only — runs
+// beside the healer, never affects it). Keyed per-app (namespace + app) because
+// healing deletes the pod and the Deployment recreates it under a new name, so
+// recovery = "a healthy pod for this app reappeared". ErrImagePull is skipped —
+// that's a misconfiguration, not an auto-healable crash.
+func (c *Controller) observeHeal(ctx context.Context, h PodHealth) {
+	app := appFromPodName(h.PodName)
+	switch h.Status {
+	case StatusHealthy, StatusSucceeded:
+		c.observer.Observe(ctx, "pod", app, h.Namespace, "", true, time.Time{})
+	case StatusUnhealthy:
+		if h.Reason == "ErrImagePull" || h.Reason == "ImagePullBackOff" {
+			return
+		}
+		c.observer.Observe(ctx, "pod", app, h.Namespace, h.Reason, false, h.FailedAt)
+	}
+}
+
+// appFromPodName strips the ReplicaSet hash and pod suffix from a Deployment pod
+// name (e.g. "web-7d9f8c6b5-abcde" -> "web"), so episodes correlate across the
+// pod replacement a restart causes. Falls back to the full name if it doesn't
+// look like a Deployment pod.
+func appFromPodName(podName string) string {
+	parts := strings.Split(podName, "-")
+	if len(parts) >= 3 {
+		return strings.Join(parts[:len(parts)-2], "-")
+	}
+	return podName
 }
 
 func (c *Controller) upsertPodHealth(ctx context.Context, h PodHealth) error {
@@ -192,6 +228,13 @@ func classify(pod *corev1.Pod) PodHealth {
 
 	for _, cs := range pod.Status.ContainerStatuses {
 		h.RestartCount += cs.RestartCount
+		// Best-effort failure time for MTTD: the most recent container termination.
+		if t := cs.LastTerminationState.Terminated; t != nil && t.FinishedAt.Time.After(h.FailedAt) {
+			h.FailedAt = t.FinishedAt.Time
+		}
+		if t := cs.State.Terminated; t != nil && t.FinishedAt.Time.After(h.FailedAt) {
+			h.FailedAt = t.FinishedAt.Time
+		}
 		if w := cs.State.Waiting; w != nil {
 			switch w.Reason {
 			case "CrashLoopBackOff", "OOMKilled", "Error",

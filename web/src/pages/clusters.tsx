@@ -346,6 +346,26 @@ export function ClustersPage() {
       }
       setHealEvents((prev) => [event, ...prev].slice(0, 40))
     }
+
+    // Docker container self-healing — folded into the same live stream.
+    if ((type === 'container.heal.restart' || type === 'container.heal.gaveup') && liveStream) {
+      const isRestart = type === 'container.heal.restart'
+      const name = String(d.name ?? d.container_name ?? '')
+      const event: HealEvent = {
+        id: `h_${Date.now()}`,
+        ts: nowStamp(),
+        cluster: 'docker',
+        pod: name,
+        action: isRestart
+          ? `Auto-restart (attempt ${d.attempt ?? '?'})`
+          : 'Gave up — restart budget exhausted',
+        detail: isRestart
+          ? `${d.reason ?? 'unknown'} · ${name}`
+          : `Container exceeded max restart attempts`,
+        tone: isRestart ? 'info' : 'warning',
+      }
+      setHealEvents((prev) => [event, ...prev].slice(0, 40))
+    }
   }, [liveStream])
 
   useSSE(token, handleSSEEvent)
@@ -446,16 +466,72 @@ export function ClustersPage() {
           </div>
         </div>
 
-        <Card className={cn('h-[640px] w-full shrink-0 overflow-hidden p-0 lg:sticky lg:top-6 lg:w-[360px]')}>
-          <HealEventStream
-            events={healEvents}
-            live={liveStream}
-            onToggleLive={() => setLiveStream((v) => !v)}
-          />
-        </Card>
+        <div className="flex w-full shrink-0 flex-col gap-4 lg:sticky lg:top-6 lg:w-[360px]">
+          <HealMetricsCard />
+          <Card className="h-[560px] overflow-hidden p-0">
+            <HealEventStream
+              events={healEvents}
+              live={liveStream}
+              onToggleLive={() => setLiveStream((v) => !v)}
+            />
+          </Card>
+        </div>
       </div>
 
       {selectedPod && <PodDetail pod={selectedPod} onClose={() => setSelectedPod(null)} />}
+    </div>
+  )
+}
+
+interface HealMetrics {
+  overall: {
+    total: number
+    recovered: number
+    unrecovered: number
+    recovery_rate: number
+    avg_mttd_seconds?: number
+    avg_mttr_seconds?: number
+  }
+}
+
+function fmtHealSeconds(s?: number): string {
+  if (s == null) return '—'
+  if (s < 1) return '<1s'
+  if (s < 60) return `${Math.round(s)}s`
+  const m = Math.floor(s / 60)
+  const rem = Math.round(s % 60)
+  return `${m}m ${rem}s`
+}
+
+// HealMetricsCard shows aggregate MTTD/MTTR/recovery rate from /heal/metrics —
+// the headline self-healing numbers for the evaluation (covers pods + containers).
+function HealMetricsCard() {
+  const { data } = useQuery({
+    queryKey: ['heal-metrics'],
+    queryFn: () => apiFetch<HealMetrics>('/heal/metrics'),
+    refetchInterval: 30_000,
+  })
+  const o = data?.overall
+  return (
+    <Card className="p-4">
+      <h3 className="text-sm font-semibold">Self-healing metrics</h3>
+      <div className="mt-3 grid grid-cols-3 gap-3">
+        <HealStat label="Recovery rate" value={o && o.total > 0 ? `${Math.round(o.recovery_rate * 100)}%` : '—'} />
+        <HealStat label="Avg MTTD" value={fmtHealSeconds(o?.avg_mttd_seconds)} />
+        <HealStat label="Avg MTTR" value={fmtHealSeconds(o?.avg_mttr_seconds)} />
+      </div>
+      <p className="mt-2 text-[0.65rem] text-muted-foreground">
+        {o && o.total > 0 ? `${o.recovered}/${o.total} episodes recovered (pods + containers)` : 'No healing episodes recorded yet'}
+      </p>
+    </Card>
+  )
+}
+
+function HealStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[0.6rem] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="font-mono text-base font-semibold">{value}</p>
     </div>
   )
 }

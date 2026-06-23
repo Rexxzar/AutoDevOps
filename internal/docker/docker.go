@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rexxzar/autodevops/internal/healmetrics"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	dockertypes "github.com/docker/docker/api/types"
 	dockernetwork "github.com/docker/docker/api/types/network"
@@ -30,9 +31,10 @@ type ContainerHealth struct {
 	Kind          string `json:"kind"`           // "deployment" | "resource"
 	Name          string `json:"name"`           // app/resource name, not container name
 	ContainerName string `json:"container_name,omitempty"`
-	ContainerID   string `json:"container_id,omitempty"`
-	Status        string `json:"status"` // "running" | "stopped" | "failed" | "missing" | "unknown"
-	Reason        string `json:"reason,omitempty"`
+	ContainerID   string    `json:"container_id,omitempty"`
+	Status        string    `json:"status"` // "running" | "stopped" | "failed" | "missing" | "unknown"
+	Reason        string    `json:"reason,omitempty"`
+	ExitedAt      time.Time `json:"exited_at,omitempty"` // when the container last stopped (best-effort, for MTTD)
 }
 
 // ErrDockerNotFound is returned by DockerDeploy when the daemon is unreachable.
@@ -63,6 +65,7 @@ type Manager struct {
 	pool         *pgxpool.Pool
 	hub          *sse.Hub
 	healer       *healer
+	observer     *healmetrics.Observer
 	workDir      string
 	registryPush string // host:port accessible from the Docker host (e.g. "localhost:5001")
 	registryPull string // host:port stored in image_ref for K8s use (e.g. "registry.local:5000")
@@ -90,6 +93,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, workDir, registryPush, registryPull s
 		registryPull: registryPull,
 	}
 	m.healer = newHealer(cli, pool, hub)
+	m.observer = healmetrics.NewObserver(pool)
 	return m, nil
 }
 
@@ -174,6 +178,20 @@ func (m *Manager) checkContainer(ctx context.Context, id, name, kind, cname stri
 	h := classify(id, name, kind, cname, inspect, err)
 	m.hub.Publish(sse.Event{Type: "container.health", Payload: h})
 	m.healer.handle(ctx, h)
+	m.observeHeal(ctx, h)
+}
+
+// observeHeal records self-heal episodes for MTTD/MTTR (metrics only — runs
+// beside the healer, never affects it). Only definite transitions are recorded:
+// "running" closes an episode (recovery); a crash/stop opens one. Transient
+// "missing"/"unknown" are skipped so they don't create spurious episodes.
+func (m *Manager) observeHeal(ctx context.Context, h ContainerHealth) {
+	switch h.Status {
+	case "running":
+		m.observer.Observe(ctx, "container", h.Name, "", "", true, time.Time{})
+	case "stopped", "failed", "restarting":
+		m.observer.Observe(ctx, "container", h.Name, "", h.Reason, false, h.ExitedAt)
+	}
 }
 
 // sanitizeDockerName lower-cases and replaces underscores with hyphens, the
@@ -245,6 +263,12 @@ func classify(id, name, kind, cname string, inspect dockertypes.ContainerJSON, i
 		h.Reason = inspect.State.Error
 	default:
 		h.Status = inspect.State.Status
+	}
+	// Best-effort actual-stop time for MTTD (zero/"0001-..." when never exited).
+	if h.Status != "running" {
+		if t, perr := time.Parse(time.RFC3339Nano, inspect.State.FinishedAt); perr == nil && !t.IsZero() {
+			h.ExitedAt = t
+		}
 	}
 	return h
 }

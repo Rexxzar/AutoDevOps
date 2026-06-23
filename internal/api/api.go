@@ -137,6 +137,8 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 			r.Post("/resources/{id}/console/sessions/{sessionId}/resize", s.handleConsoleResize)
 			r.Delete("/resources/{id}/console/sessions/{sessionId}", s.handleCloseConsoleSession)
 			r.Post("/resources/{id}/console/exec", s.handleConsoleExec)
+			r.Get("/heal/episodes", s.handleListHealEpisodes)
+			r.Get("/heal/metrics", s.handleHealMetrics)
 			r.Get("/notifications", s.handleListNotifications)
 			r.Get("/notifications/unread-count", s.handleUnreadCount)
 			r.Post("/notifications/read", s.handleMarkNotificationsRead)
