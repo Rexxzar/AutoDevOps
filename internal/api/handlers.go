@@ -3298,3 +3298,91 @@ func (s *Server) handleGetAppWorkflow(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(yaml))
 }
+
+// handleInstallCICD auto-installs the GitHub Actions workflow into the app's
+// repo: commits .github/workflows/autodevops-<name>.yml and sets the two
+// repository secrets (AUTODEVOPS_WEBHOOK_SECRET, AUTODEVOPS_URL). Requires a
+// GitHub token with repo+workflow scope — supplied in the body, or the app's
+// stored git token if it has the scope.
+// POST /deployments/{id}/apps/{appId}/cicd/install
+func (s *Server) handleInstallCICD(w http.ResponseWriter, r *http.Request) {
+	deploymentID := chi.URLParam(r, "id")
+	appID := chi.URLParam(r, "appId")
+
+	var req struct {
+		ServerURL   string `json:"server_url"`
+		GitHubToken string `json:"github_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.ServerURL) == "" {
+		writeError(w, http.StatusBadRequest, "server_url required")
+		return
+	}
+
+	var (
+		name, branch, framework, repoURL string
+		webhookSecretID                  string
+		gitCredsSecretID                 *string
+	)
+	err := s.db.QueryRow(r.Context(), `
+		SELECT name, branch, COALESCE(framework, 'unknown'), repo_url,
+		       webhook_secret_id::text, git_credentials_secret_id::text
+		FROM deployment_apps
+		WHERE id = $1 AND deployment_id = $2 AND kind = 'git' AND status != 'destroyed'
+	`, appID, deploymentID).Scan(&name, &branch, &framework, &repoURL, &webhookSecretID, &gitCredsSecretID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "git app not found")
+		return
+	}
+
+	if !strings.Contains(repoURL, "github.com") {
+		writeError(w, http.StatusBadRequest, "CI/CD auto-install is only supported for GitHub repositories")
+		return
+	}
+
+	// Resolve the GitHub token: explicit override wins, else the app's stored
+	// token (SSH-key auth can't set secrets, so it doesn't qualify).
+	token := strings.TrimSpace(req.GitHubToken)
+	if token == "" && gitCredsSecretID != nil {
+		raw, err := s.vault.GetByID(r.Context(), *gitCredsSecretID)
+		if err == nil {
+			var creds struct {
+				Type  string `json:"type"`
+				Token string `json:"token"`
+			}
+			if json.Unmarshal(raw, &creds) == nil && creds.Type == "token" {
+				token = creds.Token
+			}
+		}
+	}
+	if token == "" {
+		writeError(w, http.StatusBadRequest,
+			"a GitHub token with repo+workflow scope is required (the repo has no stored token, or it uses SSH auth)")
+		return
+	}
+
+	webhookSecret, err := s.vault.GetByID(r.Context(), webhookSecretID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load webhook secret")
+		return
+	}
+
+	result, err := s.deploy.InstallCICD(r.Context(), deploy.CICDInstallParams{
+		AppID:         appID,
+		Name:          name,
+		Branch:        branch,
+		Framework:     framework,
+		RepoURL:       repoURL,
+		GitHubToken:   token,
+		WebhookSecret: string(webhookSecret),
+		ServerURL:     req.ServerURL,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}

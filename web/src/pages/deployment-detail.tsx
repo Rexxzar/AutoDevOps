@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  ArrowLeft, Plus, Trash2, Loader2, RefreshCw, Download, AlertCircle, CheckCircle2, ExternalLink, X, FileText, Database, Eye, EyeOff, Copy, Check,
+  ArrowLeft, Plus, Trash2, Loader2, RefreshCw, Download, AlertCircle, CheckCircle2, ExternalLink, X, FileText, Database, Eye, EyeOff, Copy, Check, Rocket,
 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
@@ -740,6 +740,7 @@ function AppCard({
   const [savingEnforce, setSavingEnforce] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
+  const [cicdOpen, setCicdOpen] = useState(false)
   const [manifestsOpen, setManifestsOpen] = useState(false)
   const [envVisible, setEnvVisible] = useState(false)
   const [envData, setEnvData] = useState<Record<string, string> | null>(null)
@@ -1235,6 +1236,12 @@ function AppCard({
               Edit files
             </Button>
           )}
+          {app.kind === 'git' && app.repo_url?.includes('github.com') && (
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setCicdOpen(true)}>
+              <Rocket className="size-3.5" />
+              Set up CI/CD
+            </Button>
+          )}
           {app.kind === 'git' && (
             <Button size="sm" variant="outline" className="gap-1.5" onClick={onDownloadWorkflow}>
               <Download className="size-3.5" />
@@ -1294,6 +1301,18 @@ function AppCard({
           appName={app.name}
           open={manifestsOpen}
           onClose={() => setManifestsOpen(false)}
+        />
+      )}
+
+      {app.kind === 'git' && (
+        <CICDSetupDialog
+          stackId={stackId}
+          appId={app.id}
+          appName={app.name}
+          repoURL={app.repo_url ?? ''}
+          hasGitToken={app.has_git_credentials}
+          open={cicdOpen}
+          onClose={() => setCicdOpen(false)}
         />
       )}
     </Card>
@@ -1940,6 +1959,126 @@ function AddAppDialog({
             <Button type="submit" size="sm" className="gap-1.5" disabled={loading}>
               {loading && <Loader2 className="size-3.5 animate-spin" />}
               {loading ? 'Adding…' : 'Add app'}
+            </Button>
+          </div>
+        </form>
+      )}
+    </Dialog>
+  )
+}
+
+// CICDSetupDialog auto-installs the GitHub Actions workflow into the repo:
+// commits .github/workflows/autodevops-<name>.yml and sets the two repo
+// secrets via POST /deployments/{id}/apps/{appId}/cicd/install (T15 + auto-install).
+function CICDSetupDialog({
+  stackId, appId, appName, repoURL, hasGitToken, open, onClose,
+}: {
+  stackId: string
+  appId: string
+  appName: string
+  repoURL: string
+  hasGitToken: boolean
+  open: boolean
+  onClose: () => void
+}) {
+  const [serverURL, setServerURL] = useState(window.location.origin)
+  const [githubToken, setGithubToken] = useState('')
+  const [installing, setInstalling] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<{
+    workflow_path: string
+    commit_sha?: string
+    already_up_to_date: boolean
+    secrets_set: string[]
+  } | null>(null)
+
+  // owner/repo for an Actions deep-link.
+  const m = repoURL.replace(/\.git$/, '').match(/github\.com[/:]([^/]+)\/([^/]+)/)
+  const actionsURL = m ? `https://github.com/${m[1]}/${m[2]}/actions` : ''
+
+  function handleClose() {
+    setError(''); setResult(null); setGithubToken(''); setInstalling(false)
+    onClose()
+  }
+
+  async function install(e: React.FormEvent) {
+    e.preventDefault()
+    setInstalling(true); setError('')
+    try {
+      const r = await apiFetch<typeof result>(`/deployments/${stackId}/apps/${appId}/cicd/install`, {
+        method: 'POST',
+        body: JSON.stringify({ server_url: serverURL.trim(), github_token: githubToken.trim() }),
+      })
+      setResult(r)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Install failed')
+    } finally {
+      setInstalling(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onClose={handleClose} title={`Set up CI/CD — ${appName}`} className="max-w-lg">
+      {result ? (
+        <div className="space-y-4 p-5">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="size-5 text-success" />
+            <p className="text-sm font-semibold">CI/CD installed</p>
+          </div>
+          <ul className="space-y-1.5 text-sm">
+            <li className="flex items-center gap-2">
+              <Check className="size-4 text-success" />
+              {result.already_up_to_date
+                ? <>Workflow already present (<code className="rounded bg-muted px-1 font-mono text-xs">{result.workflow_path}</code>)</>
+                : <>Committed <code className="rounded bg-muted px-1 font-mono text-xs">{result.workflow_path}</code>{result.commit_sha ? ` @ ${result.commit_sha}` : ''}</>}
+            </li>
+            {result.secrets_set.map((s) => (
+              <li key={s} className="flex items-center gap-2">
+                <Check className="size-4 text-success" />
+                Set repo secret <code className="rounded bg-muted px-1 font-mono text-xs">{s}</code>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-muted-foreground text-pretty">
+            Every push to this branch now runs CI and, on success, triggers an AutoDevOps deploy.
+          </p>
+          <div className="flex justify-end gap-2 pt-1">
+            {actionsURL && (
+              <a href={actionsURL} target="_blank" rel="noreferrer">
+                <Button type="button" variant="outline" className="gap-1.5">
+                  <ExternalLink className="size-4" /> View on GitHub
+                </Button>
+              </a>
+            )}
+            <Button type="button" onClick={handleClose}>Done</Button>
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={install} className="space-y-4 p-5">
+          <p className="text-xs text-muted-foreground text-pretty">
+            AutoDevOps will commit a GitHub Actions workflow to your repo and set the
+            two repository secrets it needs — no manual GitHub steps.
+          </p>
+          <FormField label="AutoDevOps server URL" hint="how GitHub reaches this server">
+            <input value={serverURL} onChange={(e) => setServerURL(e.target.value)} required className={inputCls} placeholder="https://autodevops.example.com" />
+          </FormField>
+          <FormField label="GitHub token" hint={hasGitToken ? 'optional — uses the repo’s stored token if blank' : 'required'}>
+            <input value={githubToken} onChange={(e) => setGithubToken(e.target.value)} type="password" placeholder="ghp_… (needs repo + workflow scope)" className={inputCls} />
+          </FormField>
+          <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/8 px-3 py-2.5 text-xs text-info">
+            <AlertCircle className="size-4 shrink-0" />
+            <span>The token must have <strong>repo</strong> and <strong>workflow</strong> scope — writing workflow files and repo secrets both require it. A stored SSH key can&apos;t set secrets.</span>
+          </div>
+          {error && (
+            <div className="flex items-start gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
+              <AlertCircle className="size-4 shrink-0" /><span className="break-words">{error}</span>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button type="button" variant="outline" onClick={handleClose}>Cancel</Button>
+            <Button type="submit" className="gap-1.5" disabled={installing || !serverURL.trim() || (!hasGitToken && !githubToken.trim())}>
+              {installing ? <Loader2 className="size-4 animate-spin" /> : <Rocket className="size-4" />}
+              {installing ? 'Installing…' : 'Install CI/CD'}
             </Button>
           </div>
         </form>

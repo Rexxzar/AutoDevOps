@@ -80,6 +80,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 			r.Get("/deployments/{id}/apps/{appId}/k8s-manifests", s.handleGetK8sManifests)
 			r.Post("/deployments/{id}/apps/{appId}/k8s-apply", s.handleApplyK8sManifest)
 			r.Get("/deployments/{id}/apps/{appId}/workflow", s.handleGetAppWorkflow)
+			r.Post("/deployments/{id}/apps/{appId}/cicd/install", s.handleInstallCICD)
 			r.Get("/deployments/{id}/apps/{appId}/env", s.handleGetAppEnv)
 			r.Get("/deployments/{id}/apps/{appId}/repo/files", s.handleListRepoFiles)
 			r.Get("/deployments/{id}/apps/{appId}/repo/files/*", s.handleGetRepoFile)

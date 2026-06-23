@@ -92,6 +92,7 @@ func ciSteps(framework string) string {
           node-version: '20'
           cache: npm
       - run: npm ci
+      - run: npm run build --if-present
       - run: npm test --if-present
       - run: npm run lint --if-present
 `
@@ -99,20 +100,28 @@ func ciSteps(framework string) string {
 		return `      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
+      - name: Install dependencies (fails the build if none succeed)
         run: |
-          pip install -r requirements.txt 2>/dev/null \
-            || pip install '.[dev]' 2>/dev/null \
-            || pip install . 2>/dev/null \
-            || true
+          pip install -r requirements.txt \
+            || pip install '.[dev]' \
+            || pip install .
       - name: Run tests
-        run: pytest --tb=short 2>/dev/null || python -m pytest --tb=short 2>/dev/null || true
+        run: |
+          pip install pytest >/dev/null 2>&1 || true
+          if command -v pytest >/dev/null; then
+            pytest --tb=short; code=$?
+            # exit 5 = "no tests collected" — not a failure; anything else is.
+            if [ "$code" -ne 0 ] && [ "$code" -ne 5 ]; then exit "$code"; fi
+          else
+            echo "pytest unavailable — skipping tests"
+          fi
 `
 	case "go":
 		return `      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+      - run: go build ./...
       - run: go test ./...
       - run: go vet ./...
 `
@@ -144,11 +153,16 @@ func ciSteps(framework string) string {
           tools: composer
           coverage: none
       - run: composer install --prefer-dist --no-progress
+      - name: Lint PHP syntax (fails the build on a parse error)
+        run: |
+          find . -path ./vendor -prune -o -name '*.php' -print0 \
+            | xargs -0 -n1 -P4 php -l > /dev/null
       - name: Run tests
         run: |
-          ./vendor/bin/phpunit --testdox 2>/dev/null \
-            || composer test 2>/dev/null \
-            || true
+          if [ -x ./vendor/bin/phpunit ]; then ./vendor/bin/phpunit --testdox
+          elif composer run-script --list 2>/dev/null | grep -q '^  test'; then composer test
+          else echo "no phpunit/test script — skipping tests"
+          fi
 `
 	default:
 		return `      - name: No framework detected
