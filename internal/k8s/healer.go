@@ -5,10 +5,13 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/Rexxzar/autodevops/internal/notify"
 	"github.com/Rexxzar/autodevops/internal/sse"
+	"github.com/jackc/pgx/v5/pgxpool"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -28,14 +31,16 @@ type podRecord struct {
 
 type healer struct {
 	clientset kubernetes.Interface
+	pool      *pgxpool.Pool
 	hub       *sse.Hub
 	mu        sync.Mutex
 	records   map[string]*podRecord
 }
 
-func newHealer(clientset kubernetes.Interface, hub *sse.Hub) *healer {
+func newHealer(clientset kubernetes.Interface, pool *pgxpool.Pool, hub *sse.Hub) *healer {
 	return &healer{
 		clientset: clientset,
+		pool:      pool,
 		hub:       hub,
 		records:   make(map[string]*podRecord),
 	}
@@ -76,6 +81,13 @@ func (h *healer) handle(ctx context.Context, ph PodHealth) {
 		h.mu.Unlock()
 		slog.Warn("k8s: heal gave up", "pod", ph.PodName, "namespace", ph.Namespace, "attempts", healMaxAttempts)
 		h.hub.Publish(sse.Event{Type: "pod.heal.gaveup", Payload: ph})
+		notify.Publish(ctx, h.pool, h.hub, notify.Notification{
+			Type:     "heal",
+			Severity: notify.Critical,
+			Title:    "Self-healing gave up: " + ph.PodName,
+			Body:     "Pod in namespace " + ph.Namespace + " failed to recover after " + strconv.Itoa(healMaxAttempts) + " restart attempts.",
+			Link:     "/clusters",
+		})
 		return
 	}
 

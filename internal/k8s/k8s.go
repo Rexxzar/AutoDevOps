@@ -84,7 +84,7 @@ func New(kubeconfigPath, clusterID string, pool *pgxpool.Pool, hub *sse.Hub, ing
 	return &Controller{
 		clientset:     clientset,
 		dynClient:     dynClient,
-		healer:        newHealer(clientset, hub),
+		healer:        newHealer(clientset, pool, hub),
 		serverURL:     cfg.Host,
 		clusterID:     clusterID,
 		ingressDomain: ingressDomain,

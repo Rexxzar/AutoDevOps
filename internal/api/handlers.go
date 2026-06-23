@@ -28,6 +28,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/docker"
 	"github.com/Rexxzar/autodevops/internal/k8s"
+	"github.com/Rexxzar/autodevops/internal/notify"
 	"github.com/Rexxzar/autodevops/internal/registry"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/Rexxzar/autodevops/internal/terraform"
@@ -933,9 +934,11 @@ func (s *Server) triggerAppIfGit(appID, kind string) {
 		return
 	}
 	go func() {
-		if err := s.deploy.ProcessPush(context.Background(), appID); err != nil {
+		err := s.deploy.ProcessPush(context.Background(), appID)
+		if err != nil {
 			slog.Error("deploy: re-trigger after link change", "app_id", appID, "error", err)
 		}
+		s.notifyDeployResult(context.Background(), appID, err)
 	}()
 }
 
@@ -1259,9 +1262,12 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		go func() {
-			if err := s.deploy.ProcessPush(context.Background(), appID); err != nil {
+			s.notifyDeployStarted(context.Background(), appID)
+			err := s.deploy.ProcessPush(context.Background(), appID)
+			if err != nil {
 				slog.Error("deploy: process push", "app_id", appID, "error", err)
 			}
+			s.notifyDeployResult(context.Background(), appID, err)
 		}()
 
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
@@ -1327,9 +1333,12 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		go func() {
-			if err := s.deploy.ProcessPush(context.Background(), appID); err != nil {
+			s.notifyDeployStarted(context.Background(), appID)
+			err := s.deploy.ProcessPush(context.Background(), appID)
+			if err != nil {
 				slog.Error("deploy: process push (gitlab)", "app_id", appID, "error", err)
 			}
+			s.notifyDeployResult(context.Background(), appID, err)
 		}()
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 	default:
@@ -2525,6 +2534,22 @@ func (s *Server) handleApplyResource(w http.ResponseWriter, r *http.Request) {
 			s.setResourceOutputs(ctx, id, run.Outputs)
 		}
 		s.setResourceStatus(ctx, id, status)
+
+		if status == "applied" {
+			notify.Publish(ctx, s.db, s.hub, notify.Notification{
+				Type: "resource", Severity: notify.Success,
+				Title: "Resource provisioned: " + rr.Name, Link: "/resources/" + id,
+			})
+		} else {
+			body := ""
+			if err != nil {
+				body = err.Error()
+			}
+			notify.Publish(ctx, s.db, s.hub, notify.Notification{
+				Type: "resource", Severity: notify.Critical,
+				Title: "Provisioning failed: " + rr.Name, Body: body, Link: "/resources/" + id,
+			})
+		}
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "apply_initiated", "id": id})
@@ -3121,6 +3146,7 @@ func (s *Server) handleTriggerApp(w http.ResponseWriter, r *http.Request) {
 			slog.Error("deploy: manual trigger", "app_id", appID, "error", err)
 			s.hub.Publish(sse.Event{Type: "deploy.log", Payload: deploy.LogEvent{AppID: appID, Line: "❌ " + err.Error()}})
 		}
+		s.notifyDeployResult(context.Background(), appID, err)
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "deployment_id": deploymentID, "app_id": appID})
 }
@@ -3384,5 +3410,13 @@ func (s *Server) handleInstallCICD(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+
+	notify.Publish(r.Context(), s.db, s.hub, notify.Notification{
+		Type: "deploy", Severity: notify.Success,
+		Title: "CI/CD installed: " + name,
+		Body:  "Workflow committed and repository secrets set. Pushes to " + branch + " now build, test and deploy.",
+		Link:  "/deployments/" + deploymentID,
+	})
+
 	writeJSON(w, http.StatusOK, result)
 }

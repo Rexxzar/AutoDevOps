@@ -1,25 +1,14 @@
-import { Search, Sun, Moon, Bell, Plus, ChevronDown, LogOut } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
+import { Search, Sun, Moon, Plus, ChevronDown, LogOut } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { useTheme } from '@/lib/theme'
 import { useAuth } from '@/lib/auth'
-import { apiFetch } from '@/lib/api'
-
-interface Finding { severity: string }
+import { NotificationBell } from '@/components/layout/notification-bell'
 
 export function Topbar() {
   const { theme, toggleTheme } = useTheme()
-  const { logout, token } = useAuth()
+  const { logout } = useAuth()
   const navigate = useNavigate()
-
-  const { data: findings = [] } = useQuery({
-    queryKey: ['compliance-findings-badge'],
-    queryFn: () => apiFetch<Finding[]>('/compliance/findings'),
-    refetchInterval: 30_000,
-    enabled: !!token,
-  })
-  const badgeCount = findings.filter((f) => f.severity === 'critical' || f.severity === 'high').length
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur lg:px-6">
@@ -55,14 +44,7 @@ export function Topbar() {
         <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label="Toggle theme">
           {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
         </Button>
-        <Button variant="ghost" size="icon-sm" aria-label="Notifications" className="relative">
-          <Bell className="size-4" />
-          {badgeCount > 0 && (
-            badgeCount > 9
-              ? <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-critical px-1 font-mono text-[0.55rem] font-bold text-white">9+</span>
-              : <span className="absolute right-1 top-1 size-2 rounded-full bg-critical" />
-          )}
-        </Button>
+        <NotificationBell />
         <Button variant="ghost" size="icon-sm" onClick={logout} aria-label="Sign out">
           <LogOut className="size-4" />
         </Button>

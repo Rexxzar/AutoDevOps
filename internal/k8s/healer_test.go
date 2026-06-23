@@ -39,7 +39,7 @@ func TestHealer_triggersRestartOnUnhealthy(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "app"}}
 	clientset := fake.NewSimpleClientset(pod)
 	hub := sse.NewHub()
-	h := newHealer(clientset, hub)
+	h := newHealer(clientset, nil, hub)
 
 	h.handle(context.Background(), PodHealth{
 		Namespace: "default", PodName: "app",
@@ -58,7 +58,7 @@ func TestHealer_respectsBackoff(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "app"}}
 	clientset := fake.NewSimpleClientset(pod)
 	hub := sse.NewHub()
-	h := newHealer(clientset, hub)
+	h := newHealer(clientset, nil, hub)
 
 	ph := PodHealth{Namespace: "default", PodName: "app", Status: StatusUnhealthy}
 
@@ -82,7 +82,7 @@ func TestHealer_respectsBackoff(t *testing.T) {
 
 func TestHealer_givesUpAfterMaxAttempts(t *testing.T) {
 	hub := sse.NewHub()
-	h := newHealer(fake.NewSimpleClientset(), hub)
+	h := newHealer(fake.NewSimpleClientset(), nil, hub)
 
 	// Collect SSE events
 	events := make([]sse.Event, 0)
@@ -123,7 +123,7 @@ func TestHealer_resetsOnHealthy(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "app"}}
 	clientset := fake.NewSimpleClientset(pod)
 	hub := sse.NewHub()
-	h := newHealer(clientset, hub)
+	h := newHealer(clientset, nil, hub)
 
 	ph := PodHealth{Namespace: "default", PodName: "app", Status: StatusUnhealthy}
 	h.handle(context.Background(), ph)

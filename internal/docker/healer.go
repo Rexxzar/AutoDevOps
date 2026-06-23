@@ -5,9 +5,11 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/Rexxzar/autodevops/internal/notify"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/docker/docker/api/types/container"
 	dockerclient "github.com/docker/docker/client"
@@ -86,6 +88,13 @@ func (h *healer) handle(ctx context.Context, ch ContainerHealth) {
 		slog.Warn("docker: heal gave up", "container", ch.ContainerName, "attempts", healMaxAttempts)
 		h.hub.Publish(sse.Event{Type: "container.heal.gaveup", Payload: ch})
 		h.persistFailed(ctx, ch)
+		notify.Publish(ctx, h.pool, h.hub, notify.Notification{
+			Type:     "heal",
+			Severity: notify.Critical,
+			Title:    "Self-healing gave up: " + ch.Name,
+			Body:     "Container failed to recover after " + strconv.Itoa(healMaxAttempts) + " restart attempts.",
+			Link:     "/deployments",
+		})
 		return
 	}
 	if time.Now().Before(rec.nextAllowedAt) {
