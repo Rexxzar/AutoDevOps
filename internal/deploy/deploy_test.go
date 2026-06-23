@@ -275,7 +275,7 @@ func TestProcessPushLifecycle(t *testing.T) {
 	}
 
 	pool := testPostgres(t)
-	vault, err := secrets.New("deploy-orchestrator-test-master-key", pool)
+	vault, err := secrets.New(context.Background(), "deploy-orchestrator-test-master-key", pool)
 	if err != nil {
 		t.Fatalf("init vault: %v", err)
 	}

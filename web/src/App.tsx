@@ -14,8 +14,8 @@ import { TerraformDetailPage } from '@/pages/terraform-detail'
 import { ResourceDetailPage } from '@/pages/resource-detail'
 import { DeploymentDetailPage } from '@/pages/deployment-detail'
 import { CompliancePage } from '@/pages/compliance'
+import { SecretsPage } from '@/pages/secrets'
 import { SettingsPage } from '@/pages/settings'
-import { PlaceholderPage } from '@/pages/placeholder'
 import { LoginPage } from '@/pages/login'
 import { NewDeploymentPage } from '@/pages/new-deployment'
 import { NewResourcePage } from '@/pages/new-resource'
@@ -49,15 +49,7 @@ function DashboardLayout() {
             <Route path="/local-resources/:id" element={<ResourceDetailPage />} />
             <Route path="/image-registry" element={<ImageRegistryPage />} />
             <Route path="/compliance" element={<CompliancePage />} />
-            <Route
-              path="/secrets"
-              element={
-                <PlaceholderPage
-                  title="Secrets"
-                  description="AES-256-GCM encrypted vault with argon2id-derived keys and rotation."
-                />
-              }
-            />
+            <Route path="/secrets" element={<SecretsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>

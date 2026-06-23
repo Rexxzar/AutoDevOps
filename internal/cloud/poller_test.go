@@ -487,7 +487,7 @@ func TestPollerLifecycle(t *testing.T) {
 	}
 
 	pool := testPostgres(t)
-	vault, err := secrets.New("cloud-poller-test-master-key", pool)
+	vault, err := secrets.New(context.Background(), "cloud-poller-test-master-key", pool)
 	if err != nil {
 		t.Fatalf("init vault: %v", err)
 	}

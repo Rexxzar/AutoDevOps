@@ -69,7 +69,7 @@ func main() {
 	a := auth.New(cfg.JWTSecret)
 	hub := sse.NewHub()
 
-	vault, err := secrets.New(cfg.MasterKey, pool)
+	vault, err := secrets.New(ctx, cfg.MasterKey, pool)
 	if err != nil {
 		slog.Error("init vault", "error", err)
 		os.Exit(1)
