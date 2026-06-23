@@ -139,11 +139,6 @@ func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef
 		reader.Close()
 	}
 
-	// Remove any pre-existing container so re-deploys are clean.
-	if err := m.removeContainer(ctx, cname); err != nil {
-		return err
-	}
-
 	secretMounts, err := m.writeSecretFiles(stackName, appName, secretFiles)
 	if err != nil {
 		return err
@@ -180,19 +175,15 @@ func (m *Manager) DockerDeploy(ctx context.Context, stackName, appName, imageRef
 		},
 	}
 
-	resp, err := m.client.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, cname)
-	if err != nil {
-		return fmt.Errorf("docker: create container %s: %w", cname, err)
-	}
-	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return fmt.Errorf("docker: start container %s: %w", cname, err)
+	// Rollback-safe swap: keeps the old container until the new one is healthy.
+	if err := m.deployContainerSafely(ctx, cname, cfg, hostCfg, netCfg); err != nil {
+		return err
 	}
 
 	slog.Info("docker: container started",
 		"name", appName,
 		"container", cname,
 		"host_port", port,
-		"id", resp.ID[:12],
 	)
 	return nil
 }
@@ -231,11 +222,6 @@ func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, 
 	io.Copy(io.Discard, reader)
 	reader.Close()
 
-	// Remove any pre-existing container so re-deploys are clean.
-	if err := m.removeContainer(ctx, cname); err != nil {
-		return err
-	}
-
 	secretMounts, err := m.writeSecretFiles(stackName, appName, secretFiles)
 	if err != nil {
 		return err
@@ -273,12 +259,9 @@ func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, 
 		},
 	}
 
-	resp, err := m.client.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, cname)
-	if err != nil {
-		return fmt.Errorf("docker: create container %s: %w", cname, err)
-	}
-	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return fmt.Errorf("docker: start container %s: %w", cname, err)
+	// Rollback-safe swap: keeps the old container until the new one is healthy.
+	if err := m.deployContainerSafely(ctx, cname, cfg, hostCfg, netCfg); err != nil {
+		return err
 	}
 
 	slog.Info("docker: image app container started",
@@ -286,7 +269,6 @@ func (m *Manager) DockerDeployImageApp(ctx context.Context, stackName, appName, 
 		"container", cname,
 		"host_port", port,
 		"port", containerPort,
-		"id", resp.ID[:12],
 	)
 	return nil
 }

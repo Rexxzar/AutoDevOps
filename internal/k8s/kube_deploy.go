@@ -382,15 +382,38 @@ func (c *Controller) waitForDeployment(ctx context.Context, namespace, name stri
 			return ctx.Err()
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				return fmt.Errorf("watch channel closed before %s/%s became available", namespace, name)
+				return fmt.Errorf("watch channel closed before %s/%s rollout completed", namespace, name)
 			}
 			dep, ok := event.Object.(*appsv1.Deployment)
 			if !ok {
 				continue
 			}
-			if dep.Status.AvailableReplicas >= 1 {
+			if rolloutComplete(dep) {
 				return nil
 			}
 		}
 	}
+}
+
+// rolloutComplete reports whether the Deployment's NEW revision is fully rolled
+// out — the same conditions `kubectl rollout status` waits for. Checking only
+// AvailableReplicas>=1 is insufficient: during a surge the OLD pods already
+// satisfy it, so a crash-looping new revision would be misreported as a success
+// while the old version is actually the one still serving. Requiring the new
+// pods to be created, available, and the old ones retired makes the pipeline
+// honestly report failure when the new image doesn't come up (and K8s keeps the
+// old pods serving in the meantime, so it's still zero-downtime-safe).
+func rolloutComplete(dep *appsv1.Deployment) bool {
+	desired := int32(1)
+	if dep.Spec.Replicas != nil {
+		desired = *dep.Spec.Replicas
+	}
+	// The controller must have observed the latest spec, else the status fields
+	// below still describe the previous revision.
+	if dep.Status.ObservedGeneration < dep.Generation {
+		return false
+	}
+	return dep.Status.UpdatedReplicas == desired && // new-template pods created
+		dep.Status.Replicas == desired && // old pods fully retired (no leftover surge)
+		dep.Status.AvailableReplicas == desired // and the new pods are ready/available
 }
