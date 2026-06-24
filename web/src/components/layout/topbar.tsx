@@ -11,7 +11,7 @@ export function Topbar() {
   const navigate = useNavigate()
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur lg:px-6">
+    <header className="relative z-50 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur lg:px-6">
       <button className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-accent">
         <span className="flex size-5 items-center justify-center rounded bg-primary/15 text-[0.6rem] font-bold text-primary">
           AD
