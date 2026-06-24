@@ -267,13 +267,21 @@ export function ClustersPage() {
   const { token } = useAuth()
   const [selectedPod, setSelectedPod] = useState<Pod | null>(null)
   const [podMap, setPodMap] = useState<PodMap>({})
-  const [healEvents, setHealEvents] = useState<HealEvent[]>(initialHealEvents)
+  const [healEvents, setHealEvents] = useState<HealEvent[]>([])
   const [liveStream, setLiveStream] = useState(true)
 
   const { data: clusters = [], isLoading } = useQuery({
     queryKey: ['clusters'],
     queryFn: () => apiFetch<ApiCluster[]>('/clusters'),
     refetchInterval: 15_000,
+  })
+
+  // Backfill the stream with recent episodes so it isn't empty when you arrive
+  // (live SSE is real-time only and won't replay heals that already happened).
+  const { data: healEpisodes = [] } = useQuery({
+    queryKey: ['heal-episodes'],
+    queryFn: () => apiFetch<HealEpisode[]>('/heal/episodes?limit=30'),
+    refetchInterval: 30_000,
   })
 
   const { data: podRows } = useQuery({
@@ -371,6 +379,13 @@ export function ClustersPage() {
   useSSE(token, handleSSEEvent)
 
   const totalPods = Object.keys(podMap).length
+
+  // Stream = live SSE events first, then historical episodes (deduped, capped).
+  const streamEvents = useMemo(() => {
+    const live = healEvents
+    const historical = healEpisodes.map(episodeToHealEvent)
+    return [...live, ...historical].slice(0, 40)
+  }, [healEvents, healEpisodes])
 
   return (
     <div>
@@ -470,7 +485,7 @@ export function ClustersPage() {
           <HealMetricsCard />
           <Card className="h-[560px] overflow-hidden p-0">
             <HealEventStream
-              events={healEvents}
+              events={streamEvents.length ? streamEvents : initialHealEvents}
               live={liveStream}
               onToggleLive={() => setLiveStream((v) => !v)}
             />
@@ -481,6 +496,37 @@ export function ClustersPage() {
       {selectedPod && <PodDetail pod={selectedPod} onClose={() => setSelectedPod(null)} />}
     </div>
   )
+}
+
+interface HealEpisode {
+  id: string
+  target_kind: string
+  target_name: string
+  scope?: string
+  reason?: string
+  detected_at: string
+  recovered_at?: string
+  gave_up: boolean
+  mttr_seconds?: number
+}
+
+// episodeToHealEvent renders a persisted heal episode as a stream row, so the
+// Self-Healing Stream shows history on load (not just live SSE events).
+function episodeToHealEvent(e: HealEpisode): HealEvent {
+  const recovered = !!e.recovered_at
+  return {
+    id: `ep_${e.id}`,
+    ts: new Date(e.recovered_at ?? e.detected_at).toLocaleTimeString(),
+    cluster: e.target_kind === 'pod' ? 'k8s' : 'docker',
+    pod: e.target_name,
+    action: recovered
+      ? `Self-healed${e.mttr_seconds != null ? ` (${Math.round(e.mttr_seconds)}s)` : ''}`
+      : e.gave_up
+        ? 'Gave up — restart budget exhausted'
+        : 'Detected — healing in progress',
+    detail: `${e.target_kind}${e.scope ? ` · ${e.scope}` : ''}${e.reason ? ` · ${e.reason}` : ''}`,
+    tone: recovered ? 'success' : e.gave_up ? 'critical' : 'warning',
+  }
 }
 
 interface HealMetrics {

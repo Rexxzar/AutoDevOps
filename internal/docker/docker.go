@@ -93,7 +93,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, workDir, registryPush, registryPull s
 		registryPull: registryPull,
 	}
 	m.healer = newHealer(cli, pool, hub)
-	m.observer = healmetrics.NewObserver(pool)
+	m.observer = healmetrics.NewObserver(pool, hub)
 	return m, nil
 }
 
