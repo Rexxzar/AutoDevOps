@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { Boxes, Cpu, Server, X, ChevronDown, ChevronRight, AlertCircle, RefreshCw } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card } from '@/components/ui/card'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
@@ -265,9 +265,9 @@ function PodLegend() {
 
 export function ClustersPage() {
   const { token } = useAuth()
+  const qc = useQueryClient()
   const [selectedPod, setSelectedPod] = useState<Pod | null>(null)
   const [podMap, setPodMap] = useState<PodMap>({})
-  const [healEvents, setHealEvents] = useState<HealEvent[]>([])
   const [liveStream, setLiveStream] = useState(true)
 
   const { data: clusters = [], isLoading } = useQuery({
@@ -281,7 +281,7 @@ export function ClustersPage() {
   const { data: healEpisodes = [] } = useQuery({
     queryKey: ['heal-episodes'],
     queryFn: () => apiFetch<HealEpisode[]>('/heal/episodes?limit=30'),
-    refetchInterval: 30_000,
+    refetchInterval: 10_000,
   })
 
   const { data: podRows } = useQuery({
@@ -335,57 +335,25 @@ export function ClustersPage() {
       }))
     }
 
-    if ((type === 'pod.heal.restart' || type === 'pod.heal.gaveup') && liveStream) {
-      const isRestart = type === 'pod.heal.restart'
-      const podName = String(d.pod_name ?? '')
-      const event: HealEvent = {
-        id: `h_${Date.now()}`,
-        ts: nowStamp(),
-        cluster: String(d.cluster_id ?? ''),
-        pod: extractAppName(podName),
-        action: isRestart
-          ? `Auto-restart (attempt ${d.attempt ?? '?'})`
-          : 'Gave up — restart budget exhausted',
-        detail: isRestart
-          ? `${d.reason ?? 'unknown'} · ${podName}`
-          : `Pod exceeded max restart attempts`,
-        tone: isRestart ? 'info' : 'warning',
-        backoff: isRestart ? undefined : undefined,
-      }
-      setHealEvents((prev) => [event, ...prev].slice(0, 40))
+    // Self-heal activity (pod or container) — refresh the episode-backed stream
+    // so the one-row-per-crash timeline updates promptly without duplicating it
+    // with a separate live feed.
+    if (liveStream && (type === 'pod.heal.restart' || type === 'pod.heal.gaveup' ||
+        type === 'container.heal.restart' || type === 'container.heal.gaveup')) {
+      qc.invalidateQueries({ queryKey: ['heal-episodes'] })
     }
-
-    // Docker container self-healing — folded into the same live stream.
-    if ((type === 'container.heal.restart' || type === 'container.heal.gaveup') && liveStream) {
-      const isRestart = type === 'container.heal.restart'
-      const name = String(d.name ?? d.container_name ?? '')
-      const event: HealEvent = {
-        id: `h_${Date.now()}`,
-        ts: nowStamp(),
-        cluster: 'docker',
-        pod: name,
-        action: isRestart
-          ? `Auto-restart (attempt ${d.attempt ?? '?'})`
-          : 'Gave up — restart budget exhausted',
-        detail: isRestart
-          ? `${d.reason ?? 'unknown'} · ${name}`
-          : `Container exceeded max restart attempts`,
-        tone: isRestart ? 'info' : 'warning',
-      }
-      setHealEvents((prev) => [event, ...prev].slice(0, 40))
-    }
-  }, [liveStream])
+  }, [liveStream, qc])
 
   useSSE(token, handleSSEEvent)
 
   const totalPods = Object.keys(podMap).length
 
-  // Stream = live SSE events first, then historical episodes (deduped, capped).
-  const streamEvents = useMemo(() => {
-    const live = healEvents
-    const historical = healEpisodes.map(episodeToHealEvent)
-    return [...live, ...historical].slice(0, 40)
-  }, [healEvents, healEpisodes])
+  // Stream = one row per heal episode (newest first), evolving Detected ->
+  // Self-healed/Gave-up. Single source of truth, so no duplicate rows.
+  const streamEvents = useMemo(
+    () => healEpisodes.map(episodeToHealEvent).slice(0, 40),
+    [healEpisodes],
+  )
 
   return (
     <div>
