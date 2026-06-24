@@ -253,7 +253,7 @@ func startCloudPoller(ctx context.Context, cfg *config.Config, pool *pgxpool.Poo
 // with guided install instructions rather than blocking server startup.
 func startDockerManager(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, hub *sse.Hub, reposDir string) *docker.Manager {
 	composeDir := filepath.Join(cfg.DataDir, "compose")
-	mgr, err := docker.New(pool, hub, composeDir, cfg.RegistryPush, cfg.RegistryPull)
+	mgr, err := docker.New(pool, hub, composeDir, cfg.RegistryPush, cfg.RegistryPull, cfg.DockerPollInterval)
 	if err != nil {
 		slog.Warn("docker: manager init failed, container target disabled", "error", err)
 		return nil

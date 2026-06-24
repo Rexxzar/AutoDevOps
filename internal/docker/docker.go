@@ -69,6 +69,7 @@ type Manager struct {
 	workDir      string
 	registryPush string // host:port accessible from the Docker host (e.g. "localhost:5001")
 	registryPull string // host:port stored in image_ref for K8s use (e.g. "registry.local:5000")
+	pollInterval time.Duration
 }
 
 // New builds a Manager. The Docker client is constructed from the environment
@@ -76,13 +77,16 @@ type Manager struct {
 // identical to how the pack library connects for image builds. New never pings
 // the daemon; ErrDockerNotFound surfaces at DockerDeploy time so the server
 // starts even when Docker is absent.
-func New(pool *pgxpool.Pool, hub *sse.Hub, workDir, registryPush, registryPull string) (*Manager, error) {
+func New(pool *pgxpool.Pool, hub *sse.Hub, workDir, registryPush, registryPull string, pollInterval time.Duration) (*Manager, error) {
 	cli, err := dockerclient.NewClientWithOpts(
 		dockerclient.FromEnv,
 		dockerclient.WithAPIVersionNegotiation(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("docker: new client: %w", err)
+	}
+	if pollInterval <= 0 {
+		pollInterval = 10 * time.Second
 	}
 	m := &Manager{
 		client:       cli,
@@ -91,6 +95,7 @@ func New(pool *pgxpool.Pool, hub *sse.Hub, workDir, registryPush, registryPull s
 		workDir:      workDir,
 		registryPush: registryPush,
 		registryPull: registryPull,
+		pollInterval: pollInterval,
 	}
 	m.healer = newHealer(cli, pool, hub)
 	m.observer = healmetrics.NewObserver(pool, hub)
@@ -119,7 +124,7 @@ func (m *Manager) BridgeGatewayIP(ctx context.Context) string {
 // Run starts the 30-second health-poll loop and blocks until ctx is cancelled.
 // Mirrors k8s.Controller.Run.
 func (m *Manager) Run(ctx context.Context) error {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(m.pollInterval)
 	defer ticker.Stop()
 	for {
 		select {

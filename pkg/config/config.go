@@ -16,6 +16,10 @@ type Config struct {
 	ClusterName       string
 	DataDir           string
 	CloudPollInterval time.Duration
+	// DockerPollInterval is how often the Docker target's health monitor
+	// inspects managed containers — also the detection latency (MTTD) bound for
+	// Docker self-healing. Default 10s; lower = snappier, more API calls.
+	DockerPollInterval time.Duration
 	// Paketo Buildpacks (T13)
 	BuilderImage string // CNB builder image, e.g. paketobuildpacks/builder-jammy-full:latest
 	RegistryPush string // host:port pack pushes to (host-accessible), e.g. localhost:5001
@@ -56,6 +60,7 @@ func Load() *Config {
 		ClusterName:         env("K8S_CLUSTER_NAME", "autodevops"),
 		DataDir:             env("DATA_DIR", "./data"),
 		CloudPollInterval:   envDuration("CLOUD_POLL_INTERVAL", 60*time.Second),
+		DockerPollInterval:  envDuration("DOCKER_POLL_INTERVAL", 10*time.Second),
 		BuilderImage:        env("BUILDER_IMAGE", "paketobuildpacks/builder-jammy-full:latest"),
 		RegistryPush:        env("REGISTRY_PUSH", "localhost:5001"),
 		RegistryPull:        env("REGISTRY_PULL", "registry.local:5000"),
