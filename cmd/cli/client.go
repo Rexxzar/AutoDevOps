@@ -66,18 +66,6 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (c *Client) del(ctx context.Context, path string) error {
-	resp, err := c.req(ctx, http.MethodDelete, path, nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return apiError(resp)
-	}
-	return nil
-}
-
 func (c *Client) post(ctx context.Context, path string, body, out any) error {
 	resp, err := c.req(ctx, http.MethodPost, path, body)
 	if err != nil {

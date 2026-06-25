@@ -202,7 +202,7 @@ func cloudAccountsRemoveCmd() *cobra.Command {
 				fmt.Println("Aborted.")
 				return nil
 			}
-			if err := c.del(context.Background(), "/cloud/accounts/"+id); err != nil {
+			if err := c.delete(context.Background(), "/cloud/accounts/"+id); err != nil {
 				return err
 			}
 			success(fmt.Sprintf("Removed %s", args[0]))

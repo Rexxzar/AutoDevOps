@@ -142,17 +142,75 @@ autodev resources create -f resource.json
 
 ---
 
-## Deployments (existing — to be expanded)
+## Deployments
+
+`autodev deployments` (alias `deploy`, `deps`). Cloud targets (`vm`/`ecs`/`aci`)
+deploy onto a provisioned + applied resource (`--resource <name>`); the account
+comes from the resource. ACI/ECS need a registry linked to that resource.
 
 | Command | What it does | Example |
 |---|---|---|
-| `deploy` | Register a Git repo for deployment | `autodev deploy --name my-app --repo <url> --target k8s` |
-| `get <resource>` | List deployments/clusters/containers/resources/compliance | `autodev get deployments` |
-| `status <name>` | Detailed deployment status | `autodev status my-app` |
-| `logs <name>` | Stream live deploy events | `autodev logs my-app` |
-| `destroy <name>` | Destroy a deployment | `autodev destroy my-app` |
+| `deployments list` | List deployments | `autodev deployments list` |
+| `deployments get <name>` | Apps, status, domains, links | `autodev deployments get shophub` |
+| `deployments create` | Create a deployment (flags or `-f`) | *(see below)* |
+| `deployments trigger <name> [app]` | Redeploy (rebuild + redeploy) | `autodev deployments trigger shophub` |
+| `deployments destroy <name>` | Destroy a deployment (`-y`) | `autodev deployments destroy shophub -y` |
+| `deployments logs <name>` | Stream live deploy + health events | `autodev deployments logs shophub` |
+| `deployments apps list <name>` | List apps in a deployment | `autodev deployments apps list shophub` |
+| `deployments apps add <name> ...` | Add an app to a deployment | `autodev deployments apps add shophub --name worker --target container --repo <url>` |
+| `deployments apps remove <name> <app>` | Remove an app | `autodev deployments apps remove shophub worker` |
+| `deployments link <name> <app> <target>` | Connect apps (`AUTODEVOPS_<ALIAS>_*`) | `autodev deployments link shophub backend db --alias DB --port 5432` |
+| `deployments links <name>` | List app links | `autodev deployments links shophub` |
+| `deployments unlink <name> <app> <alias>` | Remove a link | `autodev deployments unlink shophub backend DB` |
+| `deployments import` | Import a docker-compose repo as a multi-app stack | `autodev deployments import --repo <url> --target container` |
+
+**Create:**
+```bash
+# local k8s, from a git repo (single app — auto Dockerfile/Paketo)
+autodev deployments create --name shophub --target k8s --repo https://github.com/you/app --branch main
+
+# local docker, image-kind app
+autodev deployments create --name cache --target container --kind image --image redis:7 --port 6379
+
+# cloud: onto a provisioned + applied resource
+autodev deployments create --name api --target ecs --resource my-ecs --repo https://github.com/you/api
+
+# full control via a spec file (matches the create request body)
+autodev deployments create -f deployment.json
+```
+
+Create/add flags: `--name --target k8s|container|vm|ecs|aci --resource --kind git|image
+--repo --branch --git-token --build-context --framework --image --port --env k=v --volume --domain`, or `-f`.
 
 ---
+
+## Clusters & pods
+
+| Command | What it does | Example |
+|---|---|---|
+| `clusters list` | Registered K8s clusters (status, pod count) | `autodev clusters list` |
+| `clusters pods` | Pod health + restart counts | `autodev clusters pods --namespace default --status unhealthy` |
+| `clusters register` | Register a cluster | `autodev clusters register --name kind --endpoint https://127.0.0.1:6443` |
+
+`pods` filters: `--namespace`, `--cluster <name>`, `--status`.
+
+## Self-healing
+
+`autodev heal` — observability for the self-healing controller (K8s pods **and**
+Docker containers).
+
+| Command | What it does | Example |
+|---|---|---|
+| `heal metrics` | Recovery rate, avg **MTTD**, avg **MTTR** (overall + per kind) | `autodev heal metrics` |
+| `heal episodes` | Recent heal cycles (detected → recovered, MTTR) | `autodev heal episodes --limit 20` |
+| `heal stream` | Live tail of heal events (Ctrl+C) | `autodev heal stream` |
+
+## Compliance
+
+| Command | What it does | Example |
+|---|---|---|
+| `compliance findings` | List findings (`--severity`, `--scanner`) | `autodev compliance findings --severity critical` |
+| `compliance summary` | Counts by severity + scanner (+ actionable total) | `autodev compliance summary` |
 
 ## Shell completion
 
