@@ -13,6 +13,7 @@ import {
   Package,
   GitBranch,
   FileCode2,
+  ScrollText,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -26,6 +27,7 @@ const nav = [
   { to: '/local-resources', label: 'Local Resources', icon: Server },
   { to: '/image-registry', label: 'Image Registry', icon: Package },
   { to: '/compliance', label: 'Compliance', icon: ShieldCheck },
+  { to: '/logs', label: 'Logs', icon: ScrollText },
   { to: '/secrets', label: 'Secrets', icon: KeyRound },
 ]
 

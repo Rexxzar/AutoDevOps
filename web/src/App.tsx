@@ -14,6 +14,7 @@ import { TerraformDetailPage } from '@/pages/terraform-detail'
 import { ResourceDetailPage } from '@/pages/resource-detail'
 import { DeploymentDetailPage } from '@/pages/deployment-detail'
 import { CompliancePage } from '@/pages/compliance'
+import { LogsPage } from '@/pages/logs'
 import { SecretsPage } from '@/pages/secrets'
 import { SettingsPage } from '@/pages/settings'
 import { LoginPage } from '@/pages/login'
@@ -49,6 +50,7 @@ function DashboardLayout() {
             <Route path="/local-resources/:id" element={<ResourceDetailPage />} />
             <Route path="/image-registry" element={<ImageRegistryPage />} />
             <Route path="/compliance" element={<CompliancePage />} />
+            <Route path="/logs" element={<LogsPage />} />
             <Route path="/secrets" element={<SecretsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>

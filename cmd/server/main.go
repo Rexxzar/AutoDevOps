@@ -22,6 +22,7 @@ import (
 	"github.com/Rexxzar/autodevops/internal/deploy"
 	"github.com/Rexxzar/autodevops/internal/docker"
 	"github.com/Rexxzar/autodevops/internal/k8s"
+	"github.com/Rexxzar/autodevops/internal/logstore"
 	"github.com/Rexxzar/autodevops/internal/secrets"
 	"github.com/Rexxzar/autodevops/internal/sse"
 	"github.com/Rexxzar/autodevops/internal/terraform"
@@ -55,6 +56,12 @@ func main() {
 		slog.Error("migrations failed", "error", err)
 		os.Exit(1)
 	}
+
+	// Tee all slog output into the logs table for the dashboard's system log
+	// (the migration above created it). Async + best-effort, never blocks.
+	logHandler, logWriter := logstore.New(slog.NewTextHandler(os.Stderr, nil), pool)
+	slog.SetDefault(slog.New(logHandler))
+	go logWriter.Run(ctx)
 
 	hash, err := auth.HashPassword(cfg.AdminPassword)
 	if err != nil {
