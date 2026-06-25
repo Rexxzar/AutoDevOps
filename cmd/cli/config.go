@@ -9,6 +9,11 @@ import (
 type Config struct {
 	ServerURL string `json:"server_url"`
 	Token     string `json:"token"`
+	Email     string `json:"email,omitempty"` // who the saved token belongs to (for whoami)
+	// Default cloud account used by `resources create` when --account is omitted
+	// (set via `autodev cloud use`). ID is authoritative; Name is for display.
+	DefaultAccount     string `json:"default_account,omitempty"`
+	DefaultAccountName string `json:"default_account_name,omitempty"`
 }
 
 func configPath() string {

@@ -22,7 +22,7 @@ func isTTY() bool {
 }
 
 func colorize(color, s string) string {
-	if !isTTY() {
+	if flagNoColor || !isTTY() {
 		return s
 	}
 	return color + s + colorReset

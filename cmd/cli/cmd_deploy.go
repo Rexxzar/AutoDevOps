@@ -12,8 +12,9 @@ func deployCmd() *cobra.Command {
 	var trigger bool
 
 	cmd := &cobra.Command{
-		Use:   "deploy",
-		Short: "Register a Git repo for deployment",
+		Use:     "deploy",
+		GroupID: groupDeploy,
+		Short:   "Register a Git repo for deployment",
 		Example: `  autodev deploy --name my-app --repo https://github.com/you/my-app --target k8s
   autodev deploy --name my-api --repo https://github.com/you/api --target container --trigger`,
 		RunE: func(cmd *cobra.Command, args []string) error {

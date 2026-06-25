@@ -15,6 +15,7 @@ import (
 func logsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "logs <name>",
+		GroupID: groupDeploy,
 		Short:   "Stream live events for a deployment",
 		Args:    cobra.ExactArgs(1),
 		Example: `  autodev logs my-app`,

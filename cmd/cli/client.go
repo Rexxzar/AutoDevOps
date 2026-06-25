@@ -19,8 +19,14 @@ type Client struct {
 }
 
 func newClient(cfg *Config) *Client {
+	// Server routes are mounted under /api (the Go binary serves the SPA at /*),
+	// so the client targets <server>/api. ServerURL stays the bare root.
+	base := strings.TrimRight(cfg.ServerURL, "/")
+	if !strings.HasSuffix(base, "/api") {
+		base += "/api"
+	}
 	return &Client{
-		base: strings.TrimRight(cfg.ServerURL, "/"),
+		base: base,
 		tok:  cfg.Token,
 		http: &http.Client{Timeout: 30 * time.Second},
 	}
@@ -58,6 +64,18 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		return apiError(resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) del(ctx context.Context, path string) error {
+	resp, err := c.req(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return apiError(resp)
+	}
+	return nil
 }
 
 func (c *Client) post(ctx context.Context, path string, body, out any) error {
@@ -128,7 +146,9 @@ func (c *Client) streamSSE(ctx context.Context, path string, fn func(SSEEvent)) 
 }
 
 func apiError(resp *http.Response) error {
-	var e struct{ Error string `json:"error"` }
+	var e struct {
+		Error string `json:"error"`
+	}
 	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &e); err == nil && e.Error != "" {
 		return fmt.Errorf("server: %s", e.Error)

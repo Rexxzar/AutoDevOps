@@ -24,6 +24,7 @@ type apiDeployment struct {
 func statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "status <name>",
+		GroupID: groupDeploy,
 		Short:   "Show detailed status of a deployment",
 		Args:    cobra.ExactArgs(1),
 		Example: `  autodev status my-app`,

@@ -15,6 +15,7 @@ func destroyCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "destroy <name>",
+		GroupID: groupDeploy,
 		Short:   "Destroy a deployment",
 		Args:    cobra.ExactArgs(1),
 		Example: `  autodev destroy my-app

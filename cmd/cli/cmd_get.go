@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"text/tabwriter"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -14,8 +14,9 @@ import (
 
 func getCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "get <resource>",
-		Short: "List resources (deployments, clusters, containers, resources, compliance)",
+		Use:     "get <resource>",
+		GroupID: groupDeploy,
+		Short:   "List resources (deployments, clusters, containers, resources, compliance)",
 	}
 	cmd.AddCommand(
 		getDeploymentsCmd(),
