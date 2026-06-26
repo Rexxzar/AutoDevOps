@@ -205,12 +205,70 @@ Docker containers).
 | `heal episodes` | Recent heal cycles (detected → recovered, MTTR) | `autodev heal episodes --limit 20` |
 | `heal stream` | Live tail of heal events (Ctrl+C) | `autodev heal stream` |
 
+## System logs
+
+| Command | What it does | Example |
+|---|---|---|
+| `logs` | View the control-plane system log | `autodev logs --level ERROR` |
+| `logs -f` | Tail the log live (polls for new entries) | `autodev logs --source docker -f` |
+
+Filters: `--level`, `--source`, `-q/--search`, `--since 15m`, `--limit`.
+
 ## Compliance
 
 | Command | What it does | Example |
 |---|---|---|
 | `compliance findings` | List findings (`--severity`, `--scanner`) | `autodev compliance findings --severity critical` |
 | `compliance summary` | Counts by severity + scanner (+ actionable total) | `autodev compliance summary` |
+
+## Secrets
+
+`autodev secrets` — the AES-256-GCM vault.
+
+| Command | What it does | Example |
+|---|---|---|
+| `secrets list` | List secrets (metadata only; `--category`) | `autodev secrets list --category user` |
+| `secrets get <name>` | Reveal a secret's value | `autodev secrets get my-api-key` |
+| `secrets set <name> [value]` | Create/update a user secret (value via arg or stdin) | `echo -n s3cr3t \| autodev secrets set my-api-key` |
+| `secrets delete <name>` | Delete a secret | `autodev secrets delete my-api-key` |
+| `secrets status` | Vault key version, rotations, secret count | `autodev secrets status` |
+| `secrets rotate` | Rotate the data key (re-encrypts all; values unchanged) | `autodev secrets rotate` |
+| `secrets rotate-master --new-key <k>` | Re-wrap under a new MASTER_KEY (update env before restart!) | `autodev secrets rotate-master --new-key …` |
+
+## Notifications
+
+| Command | What it does | Example |
+|---|---|---|
+| `notifications list` | Recent notifications (`--unread`) | `autodev notifications list --unread` |
+| `notifications read` | Mark read (`--all` or specific ids) | `autodev notifications read --all` |
+
+## Git repo store
+
+| Command | What it does | Example |
+|---|---|---|
+| `repos list` | Stored repositories (findings, last scan) | `autodev repos list` |
+| `repos get <name>` | Repo details + findings | `autodev repos get my-app` |
+| `repos add` | Register a repo (`--repo --branch --git-token`) | `autodev repos add --repo https://github.com/you/app` |
+| `repos scan <name>` | Run a compliance scan | `autodev repos scan my-app` |
+| `repos refresh <name>` | Pull latest commit | `autodev repos refresh my-app` |
+| `repos remove <name>` | Remove from the store | `autodev repos remove my-app` |
+
+## Terraform store
+
+| Command | What it does | Example |
+|---|---|---|
+| `terraform workspaces` | List workspaces (config/state/runs per resource) | `autodev terraform workspaces` |
+| `terraform runs` | Recent plan/apply/destroy runs | `autodev terraform runs` |
+
+(View a resource's generated `.tf` with `autodev resources tf <name>`.)
+
+## Image registry
+
+| Command | What it does | Example |
+|---|---|---|
+| `images list` | List images in the local registry | `autodev images list` |
+| `images import --source <ref>` | Pull an external image into the registry | `autodev images import --source postgres:16` |
+| `images delete <repo> <tag>` | Delete an image | `autodev images delete app 27e4ecf5` |
 
 ## Shell completion
 
