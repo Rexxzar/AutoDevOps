@@ -328,6 +328,9 @@ func (o *Orchestrator) resolveResourceLinks(ctx context.Context, appID string) (
 					}
 					if err := o.authorizeAWSDevIP(ctx, cloudAccountID, region, outputString(outputs, "rds_security_group_id"), port, ip); err != nil {
 						slog.Warn("deploy: authorize dev ip on rds security group", "alias", alias, "error", err)
+						o.publishLog(appID, fmt.Sprintf("⚠️  Could not open the RDS security group for %s automatically: %v — add an inbound rule for this IP manually.", ip, err))
+					} else {
+						o.publishLog(appID, fmt.Sprintf("🔓 Opened the RDS security group for %s (this deployment's egress IP) so it can reach the database.", ip))
 					}
 				}
 			}
@@ -339,6 +342,9 @@ func (o *Orchestrator) resolveResourceLinks(ctx context.Context, appID string) (
 				if ip := fetchDevIP(); ip != "" {
 					if err := o.authorizeAzureDevIP(ctx, cloudAccountID, outputs, ip); err != nil {
 						slog.Warn("deploy: authorize dev ip on azure postgres firewall", "alias", alias, "error", err)
+						o.publishLog(appID, fmt.Sprintf("⚠️  Could not open the Azure Postgres firewall for %s automatically: %v — add a firewall rule for this IP manually.", ip, err))
+					} else {
+						o.publishLog(appID, fmt.Sprintf("🔓 Opened the Azure Postgres firewall for %s (this deployment's egress IP) so it can reach the database.", ip))
 					}
 				}
 			}

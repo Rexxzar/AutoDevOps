@@ -3032,7 +3032,7 @@ func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request)
 	}
 
 	rows, err := s.db.Query(r.Context(), `
-		SELECT name, target_kind, COALESCE(namespace, ''), COALESCE(domain, '')
+		SELECT id, name, kind, target_kind, COALESCE(namespace, ''), COALESCE(domain, '')
 		FROM deployment_apps WHERE deployment_id = $1 AND status != 'destroyed'
 	`, id)
 	if err != nil {
@@ -3041,15 +3041,19 @@ func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request)
 	}
 	namespaces := map[string]bool{}
 	hasDocker := false
+	var gitAppIDs []string
 	for rows.Next() {
-		var appName, targetKind, namespace, domain string
-		if err := rows.Scan(&appName, &targetKind, &namespace, &domain); err != nil {
+		var appID, appName, kind, targetKind, namespace, domain string
+		if err := rows.Scan(&appID, &appName, &kind, &targetKind, &namespace, &domain); err != nil {
 			rows.Close()
 			writeError(w, http.StatusInternalServerError, "failed to read app row")
 			return
 		}
 		if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace, domain); err != nil {
 			slog.Error("deployments: teardown app failed", "stack", stackName, "app", appName, "error", err)
+		}
+		if kind == "git" {
+			gitAppIDs = append(gitAppIDs, appID)
 		}
 		if targetKind == "local_k8s" && namespace != "" {
 			namespaces[namespace] = true
@@ -3059,6 +3063,12 @@ func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	rows.Close()
+
+	// Remove any CI/CD workflows after the row cursor is closed (each does its
+	// own DB query + network round-trip) — best-effort, never blocks the delete.
+	for _, appID := range gitAppIDs {
+		s.teardownCICD(r.Context(), appID)
+	}
 
 	if s.k8sCtrl != nil {
 		for ns := range namespaces {
@@ -3084,6 +3094,55 @@ func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request)
 // app in the stack at once. If teardown fails, the row is left in its current
 // status so the dashboard keeps showing it (and the user can retry) instead
 // of silently hiding an app whose resources are still running.
+// teardownCICD best-effort removes a git app's generated GitHub Actions
+// workflow from its repo on delete, so a later redeploy under a different name
+// doesn't leave a stale workflow firing at a dead webhook. Never fatal: a
+// failure here (no creds, push rejected, offline) is logged and swallowed so it
+// can't block the actual resource teardown.
+func (s *Server) teardownCICD(ctx context.Context, appID string) {
+	var name, branch, repoURL string
+	var gitCredsSecretID *string
+	err := s.db.QueryRow(ctx, `
+		SELECT name, branch, repo_url, git_credentials_secret_id::text
+		FROM deployment_apps
+		WHERE id = $1 AND kind = 'git'
+	`, appID).Scan(&name, &branch, &repoURL, &gitCredsSecretID)
+	if err != nil {
+		return // not a git app (or gone) — nothing to remove
+	}
+	if !strings.Contains(repoURL, "github.com") {
+		return
+	}
+
+	params := deploy.CICDUninstallParams{Name: name, Branch: branch, RepoURL: repoURL}
+	if gitCredsSecretID != nil {
+		if raw, gErr := s.vault.GetByID(ctx, *gitCredsSecretID); gErr == nil {
+			var creds struct {
+				Type   string `json:"type"`
+				Token  string `json:"token"`
+				SSHKey string `json:"ssh_key"`
+			}
+			if json.Unmarshal(raw, &creds) == nil {
+				params.GitAuthType = creds.Type
+				params.GitToken = creds.Token
+				params.GitSSHKey = creds.SSHKey
+			}
+		}
+	}
+	if params.GitAuthType == "" {
+		return // no usable credentials to push a removal
+	}
+
+	res, err := s.deploy.UninstallCICD(ctx, params)
+	if err != nil {
+		slog.Warn("cicd: teardown workflow failed", "app_id", appID, "app", name, "error", err)
+		return
+	}
+	if res.Removed {
+		slog.Info("cicd: removed workflow on delete", "app", name, "path", res.WorkflowPath, "commit", res.CommitSHA)
+	}
+}
+
 func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	deploymentID := chi.URLParam(r, "id")
 	appID := chi.URLParam(r, "appId")
@@ -3099,6 +3158,8 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "app not found")
 		return
 	}
+
+	s.teardownCICD(r.Context(), appID)
 
 	if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace, domain); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to remove running resources: %v", err))

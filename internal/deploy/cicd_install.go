@@ -148,6 +148,98 @@ func workflowPushError(err error) error {
 	return fmt.Errorf("deploy: push workflow: %w", err)
 }
 
+// CICDUninstallParams carries what's needed to remove an app's generated
+// workflow from its repo. Credentials are passed as plain strings (not the
+// unexported gitCredentials type) so internal/api can populate them from the
+// vault without crossing the package boundary — same pattern as PreviewCompose.
+type CICDUninstallParams struct {
+	Name        string // app name — used to locate the workflow filename
+	Branch      string
+	RepoURL     string
+	GitAuthType string // "token" | "ssh_key" | "" (none stored)
+	GitToken    string
+	GitSSHKey   string
+}
+
+// CICDUninstallResult reports what the uninstall did.
+type CICDUninstallResult struct {
+	WorkflowPath string `json:"workflow_path"`
+	Removed      bool   `json:"removed"`
+	CommitSHA    string `json:"commit_sha,omitempty"`
+}
+
+// UninstallCICD clones the repo, deletes .github/workflows/autodevops-<name>.yml
+// if present, and pushes the removal. It is the counterpart to InstallCICD,
+// called on app/deployment delete so a later redeploy under a different name
+// never leaves a stale workflow firing at a dead webhook. Repository secrets
+// are left in place — they're inert once no workflow references them, and
+// deleting the shared AUTODEVOPS_* pair could break another live deployment of
+// the same repo. Best-effort by design: callers log failures, they don't block
+// the delete.
+func (o *Orchestrator) UninstallCICD(ctx context.Context, p CICDUninstallParams) (*CICDUninstallResult, error) {
+	relPath := ".github/workflows/autodevops-" + sanitizeWorkflowName(p.Name) + ".yml"
+	result := &CICDUninstallResult{WorkflowPath: relPath}
+
+	if _, _, ok := parseGitHubRepo(p.RepoURL); !ok {
+		// Not a GitHub repo — nothing was ever installed.
+		return result, nil
+	}
+	if p.GitAuthType == "" {
+		return nil, fmt.Errorf("deploy: removing the CI/CD workflow needs git credentials, but the repo has none stored")
+	}
+
+	auth, err := buildAuth(&gitCredentials{Type: p.GitAuthType, Token: p.GitToken, SSHKey: p.GitSSHKey})
+	if err != nil {
+		return nil, fmt.Errorf("deploy: build git auth: %w", err)
+	}
+
+	if mkErr := os.MkdirAll(o.workDir, 0o755); mkErr != nil {
+		return nil, fmt.Errorf("deploy: create workspace dir: %w", mkErr)
+	}
+	tmp, err := os.MkdirTemp(o.workDir, "cicd-uninstall-*")
+	if err != nil {
+		return nil, fmt.Errorf("deploy: create temp workspace: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	gitRepo, err := git.PlainCloneContext(ctx, tmp, false, &git.CloneOptions{
+		URL:           p.RepoURL,
+		Auth:          auth,
+		ReferenceName: plumbing.NewBranchReferenceName(p.Branch),
+		SingleBranch:  true,
+		Depth:         1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("deploy: clone %s (branch %s): %w", p.RepoURL, p.Branch, err)
+	}
+
+	absPath := filepath.Join(tmp, filepath.FromSlash(relPath))
+	if _, statErr := os.Stat(absPath); statErr != nil {
+		// No workflow file to remove — nothing to do.
+		return result, nil
+	}
+
+	wt, err := gitRepo.Worktree()
+	if err != nil {
+		return nil, fmt.Errorf("deploy: open worktree: %w", err)
+	}
+	if _, err := wt.Remove(filepath.FromSlash(relPath)); err != nil {
+		return nil, fmt.Errorf("deploy: git remove workflow: %w", err)
+	}
+	commit, err := wt.Commit("ci: remove AutoDevOps CI/CD workflow", &git.CommitOptions{
+		Author: &object.Signature{Name: "AutoDevOps", Email: "autodevops@localhost", When: time.Now()},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("deploy: git commit workflow removal: %w", err)
+	}
+	if err := gitRepo.PushContext(ctx, &git.PushOptions{Auth: auth}); err != nil && err != git.NoErrAlreadyUpToDate {
+		return nil, workflowPushError(err)
+	}
+	result.Removed = true
+	result.CommitSHA = commit.String()[:12]
+	return result, nil
+}
+
 // sanitizeWorkflowName lowercases and replaces non-alphanumeric runs with a
 // single dash so the app name is safe in a filename.
 func sanitizeWorkflowName(name string) string {

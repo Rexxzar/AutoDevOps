@@ -28,7 +28,7 @@ Available on every command. Config is the default; flags override it per-invocat
 | `-v, --version` | Print the CLI version |
 
 ```bash
-autodev get deployments -o json --server https://autodevops.example.com
+autodev deployments list -o json --server https://autodevops.example.com
 ```
 
 ---

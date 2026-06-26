@@ -16,9 +16,9 @@ The CLI talks to the same control plane as the dashboard, so anything you can do
 in the UI you can script here. Configure the server and credentials once with
 "autodev login"; override per-command with --server/--token.`,
 		Example: `  autodev login
-  autodev get deployments
-  autodev get deployments -o json
-  autodev status my-app`,
+  autodev deployments list
+  autodev deployments list -o json
+  autodev resources list`,
 		Version: version,
 		// We print errors ourselves (fatal, below); no usage spam on failures.
 		SilenceUsage:  true,
@@ -57,7 +57,6 @@ in the UI you can script here. Configure the server and credentials once with
 		logoutCmd(),
 		whoamiCmd(),
 		deploymentsCmd(),
-		getCmd(),
 		resourcesCmd(),
 		inventoryCmd(),
 		localCmd(),
