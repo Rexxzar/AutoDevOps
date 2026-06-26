@@ -61,9 +61,14 @@ func (s *Server) handleDNSCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the domain
-	addrs, err := net.LookupHost(domain)
-	if err != nil {
+	// Resolve via a public resolver (8.8.8.8) unioned with the system resolver
+	// (deploy.ResolveHosts) — the same cache-bypassing path the TLS gate uses.
+	// The server's own resolver cache can hold a stale A record for the TTL
+	// after a domain is re-pointed, which otherwise makes this checker report a
+	// false "not pointing here" even though the authoritative record (and
+	// Let's Encrypt) already see the new IP.
+	addrs := deploy.ResolveHosts(domain)
+	if len(addrs) == 0 {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"domain":    domain,
 			"ok":        false,

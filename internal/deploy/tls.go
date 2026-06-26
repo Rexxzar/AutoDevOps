@@ -119,6 +119,17 @@ func resolveAllHosts(domain string) []string {
 	return out
 }
 
+// ResolveHosts is the exported entry point to resolveAllHosts, so the dashboard
+// DNS checker (internal/api) resolves a domain exactly the way the TLS gate
+// does — public resolver (8.8.8.8) unioned with the system resolver — instead
+// of the system resolver alone. The server's own resolver cache can hold a
+// stale record for the TTL after a domain is re-pointed, which is what made the
+// checker report "not pointing here" while the public/authoritative record (and
+// Let's Encrypt) already saw the new IP.
+func ResolveHosts(domain string) []string {
+	return resolveAllHosts(domain)
+}
+
 // certProvisioned reports whether TLS was already successfully provisioned for
 // domain — i.e. a redeploy, not a first-time setup. It checks the final nginx
 // vhost (which AutoDevOps owns and can always read, and which only gets an

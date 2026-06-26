@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, Plus, Trash2, Loader2, RefreshCw, Download, AlertCircle, CheckCircle2, ExternalLink, X, FileText, Database, Eye, EyeOff, Copy, Check, Rocket,
+  Server, Cloud, Container, Box, GitBranch,
 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
@@ -10,7 +11,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { StatusBadge, type StatusKind } from '@/components/ui/status'
 import { targetLabel, frameworkLabel } from '@/components/meta-tags'
-import { TargetPill, FormField, DomainField, K8sOptions, type K8sConfigValue, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { TargetPill, FormField, DomainField, K8sOptions, CardChoice, type K8sConfigValue, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { type GitRepo } from '@/lib/repos'
 import { Pipeline } from '@/components/pipeline'
 import { SetupGuide } from '@/components/setup-guide'
 import { RepoEditor } from '@/components/repo-editor'
@@ -1578,6 +1580,17 @@ function AddLinkDialog({
   )
 }
 
+// Empty-state shown when a chosen cloud target has no applied resource yet —
+// points the user to the Resources page (the "provision first" precondition).
+function NoResourceHint({ label, onProvision }: { label: string; onProvision: () => void }) {
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-sm text-muted-foreground">
+      You don&apos;t have any applied {label} resources yet.{' '}
+      <button type="button" onClick={onProvision} className="underline text-foreground">Go provision one</button>{' '}first, then come back.
+    </div>
+  )
+}
+
 function AddAppDialog({
   stackId, stackNamespace, vmResources, ecsResources, aciResources, serverIP, open, onClose, onCreated,
 }: {
@@ -1591,11 +1604,20 @@ function AddAppDialog({
   onClose: () => void
   onCreated: () => void
 }) {
+  const navigate = useNavigate()
+  // Wizard navigation — mirrors the New Deployment flow: Local/Cloud first,
+  // then the runtime/provider/target, then the form.
+  type Step = 'location' | 'localTarget' | 'cloudProvider' | 'cloudTarget' | 'form'
+  const [step, setStep] = useState<Step>('location')
+  const [location, setLocation] = useState<'local' | 'cloud' | null>(null)
+  const [cloudProvider, setCloudProvider] = useState<'aws' | 'azure' | null>(null)
+
   const [kind, setKind] = useState<'git' | 'image'>('git')
   const [name, setName] = useState('')
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
   const [gitToken, setGitToken] = useState('')
+  const [repoId, setRepoId] = useState('') // when set, back this app with a stored repo
   const [declaredFramework, setDeclaredFramework] = useState('')
   const [target, setTarget] = useState<'k8s' | 'container' | 'vm' | 'ecs' | 'aci'>('k8s')
   const [vmResourceId, setVmResourceId] = useState('')
@@ -1612,25 +1634,57 @@ function AddAppDialog({
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ webhookURL: string; webhookSecret: string } | null>(null)
 
-  const effectiveVmResourceId = vmResourceId || vmResources[0]?.id || ''
+  // Stored repos (Git Repo Store) — pick one or add a new one inline, same as
+  // the New Deployment flow. Backend createApp accepts repo_id directly.
+  const { data: storedRepos = [] } = useQuery({
+    queryKey: ['repos'],
+    queryFn: () => apiFetch<GitRepo[]>('/repos'),
+  })
+
+  // resource_type "vm" covers both AWS EC2 and Azure VM; split by provider so
+  // each cloud path only offers its own instances.
+  const awsVmResources = vmResources.filter((r) => r.provider === 'aws')
+  const azureVmResources = vmResources.filter((r) => r.provider === 'azure')
+  const vmList = cloudProvider === 'aws' ? awsVmResources : azureVmResources
+  const effectiveVmResourceId = vmResourceId || vmList[0]?.id || ''
   const effectiveEcsResourceId = ecsResourceId || ecsResources[0]?.id || ''
   const effectiveAciResourceId = aciResourceId || aciResources[0]?.id || ''
 
+  // Block submit when a cloud target was chosen but no applied resource exists.
+  const cloudResourceMissing =
+    (target === 'vm' && vmList.length === 0) ||
+    (target === 'ecs' && ecsResources.length === 0) ||
+    (target === 'aci' && aciResources.length === 0)
+
+  function selectStoredRepo(id: string) {
+    setRepoId(id)
+    if (id) {
+      const r = storedRepos.find((x) => x.id === id)
+      if (r) { setRepo(r.repo_url); setBranch(r.branch); setGitToken('') }
+    } else {
+      setRepo(''); setBranch('main')
+    }
+  }
+
   function reset() {
+    setStep('location'); setLocation(null); setCloudProvider(null)
     setKind('git')
-    setName(''); setRepo(''); setBranch('main'); setGitToken(''); setDeclaredFramework(''); setTarget('k8s'); setVmResourceId(''); setDomain('')
+    setName(''); setRepo(''); setBranch('main'); setGitToken(''); setRepoId(''); setDeclaredFramework(''); setTarget('k8s'); setVmResourceId(''); setDomain('')
     setEcsResourceId(''); setAciResourceId('')
     setImageRef(''); setPort(''); setVolumePath(''); setK8sConfig(undefined); setEnvRows([]); setSecretFileRows([])
     setError(''); setSuccess(null)
   }
 
-  // "Cloud VM"/"AWS ECS"/"Azure ACI" targets are only offered for git apps with
-  // at least one applied matching resource (Phase 4/8's image-kind deploy path
-  // doesn't support cloud_vm/cloud_ecs/cloud_aci — see
-  // internal/deploy.DeployImageApp's default case).
   function selectKind(next: 'git' | 'image') {
     setKind(next)
-    if (next === 'image' && (target === 'vm' || target === 'ecs' || target === 'aci')) setTarget('k8s')
+  }
+
+  // Walk back one step in the wizard (or close from the first step).
+  function back() {
+    setError('')
+    if (step === 'form') { setStep(location === 'cloud' ? 'cloudTarget' : 'localTarget'); return }
+    if (step === 'cloudTarget') { setStep('cloudProvider'); return }
+    setStep('location')
   }
 
   function handleClose() {
@@ -1669,10 +1723,11 @@ function AddAppDialog({
       }
 
       const body: Record<string, unknown> = { name, kind: 'git', repo_url: repo, branch, target_type: target }
+      if (repoId) body.repo_id = repoId
       if (target === 'vm') body.target_resource_id = effectiveVmResourceId
       if (target === 'ecs') body.target_resource_id = effectiveEcsResourceId
       if (target === 'aci') body.target_resource_id = effectiveAciResourceId
-      if (gitToken) body.git_auth = { type: 'token', token: gitToken }
+      if (gitToken && !repoId) body.git_auth = { type: 'token', token: gitToken }
       if (domain) body.domain = domain
       if (declaredFramework) body.declared_framework = declaredFramework
       if (target === 'k8s' && k8sConfig) body.k8s_config = k8sConfig
@@ -1714,30 +1769,105 @@ function AddAppDialog({
             <Button size="sm" onClick={handleClose}>Done</Button>
           </div>
         </div>
+      ) : step !== 'form' ? (
+        <div className="p-5 space-y-5">
+          {step !== 'location' && (
+            <button type="button" onClick={back} className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground">
+              <ArrowLeft className="size-3.5" /> Back
+            </button>
+          )}
+          <p className="text-center text-sm text-muted-foreground">
+            {step === 'location' && 'Where should this app run?'}
+            {step === 'localTarget' && 'Choose a local runtime'}
+            {step === 'cloudProvider' && 'Which cloud provider?'}
+            {step === 'cloudTarget' && `Choose an ${cloudProvider === 'aws' ? 'AWS' : 'Azure'} target`}
+          </p>
+          {step === 'location' && (
+            <CardChoice compact
+              left={{ title: 'Local', description: 'Run on this machine via Kubernetes or Docker', icon: Server, tags: ['K8s Pod', 'Docker'], onClick: () => { setLocation('local'); setStep('localTarget') } }}
+              right={{ title: 'Cloud', description: 'Deploy to a pre-provisioned AWS or Azure resource', icon: Cloud, tags: ['EC2', 'ECS', 'VM', 'ACI'], onClick: () => { setLocation('cloud'); setKind('git'); setStep('cloudProvider') } }}
+            />
+          )}
+          {step === 'localTarget' && (
+            <CardChoice compact
+              left={{ title: 'Kubernetes', description: 'Deploy as a pod in the local kind cluster with ingress', icon: Box, tags: ['Pod', 'Ingress'], onClick: () => { setTarget('k8s'); setStep('form') } }}
+              right={{ title: 'Container', description: 'Run as a standalone container via the Docker SDK', icon: Container, tags: ['Docker SDK'], onClick: () => { setTarget('container'); setStep('form') } }}
+            />
+          )}
+          {step === 'cloudProvider' && (
+            <CardChoice compact
+              left={{ title: 'AWS', description: 'Deploy to an Amazon Web Services resource', icon: Cloud, tags: ['EC2', 'ECS Fargate'], onClick: () => { setCloudProvider('aws'); setStep('cloudTarget') } }}
+              right={{ title: 'Azure', description: 'Deploy to a Microsoft Azure resource', icon: Cloud, tags: ['VM', 'ACI'], onClick: () => { setCloudProvider('azure'); setStep('cloudTarget') } }}
+            />
+          )}
+          {step === 'cloudTarget' && cloudProvider === 'aws' && (
+            <CardChoice compact
+              left={{ title: 'EC2', description: 'Deploy to an EC2 instance via SSH', icon: Server, tags: ['SSH Deploy'], onClick: () => { setTarget('vm'); setStep('form') } }}
+              right={{ title: 'ECS Fargate', description: 'Deploy to an ECS Fargate service with a registry', icon: Container, tags: ['ECR', 'ALB'], onClick: () => { setTarget('ecs'); setStep('form') } }}
+            />
+          )}
+          {step === 'cloudTarget' && cloudProvider === 'azure' && (
+            <CardChoice compact
+              left={{ title: 'Azure VM', description: 'Deploy to a Virtual Machine via SSH', icon: Server, tags: ['SSH Deploy'], onClick: () => { setTarget('vm'); setStep('form') } }}
+              right={{ title: 'ACI', description: 'Deploy to an Azure Container Instances group', icon: Container, tags: ['ACR'], onClick: () => { setTarget('aci'); setStep('form') } }}
+            />
+          )}
+        </div>
       ) : (
         <form onSubmit={submit} className="p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <button type="button" onClick={back} className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground">
+              <ArrowLeft className="size-3.5" /> Back
+            </button>
+            <span className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">
+              {location === 'local'
+                ? `Local › ${target === 'k8s' ? 'Kubernetes' : 'Container'}`
+                : `Cloud › ${cloudProvider === 'aws' ? 'AWS' : 'Azure'} › ${target === 'vm' ? (cloudProvider === 'aws' ? 'EC2' : 'Azure VM') : target === 'ecs' ? 'ECS' : 'ACI'}`}
+            </span>
+          </div>
           <FormField label="App name">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === 'image' ? 'db' : 'frontend'} required className={inputCls} />
           </FormField>
-          <FormField label="App type">
-            <div className="flex gap-2">
-              <TargetPill label="Git repo" sub="build from source" active={kind === 'git'} onClick={() => selectKind('git')} />
-              <TargetPill label="Container image" sub="e.g. postgres:16" active={kind === 'image'} onClick={() => selectKind('image')} />
-            </div>
-          </FormField>
+          {location === 'local' && (
+            <FormField label="App type">
+              <div className="flex gap-2">
+                <TargetPill label="Git repo" sub="build from source" active={kind === 'git'} onClick={() => selectKind('git')} />
+                <TargetPill label="Container image" sub="e.g. postgres:16" active={kind === 'image'} onClick={() => selectKind('image')} />
+              </div>
+            </FormField>
+          )}
           {kind === 'git' ? (
             <>
-              <FormField label="Git repository URL">
-                <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="https://github.com/you/my-app" required className={inputCls} />
-              </FormField>
-              <div className="grid grid-cols-2 gap-3">
-                <FormField label="Branch">
-                  <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" className={inputCls} />
+              {storedRepos.length > 0 && (
+                <FormField label="Repository" hint="reuse a stored repo or add a new one">
+                  <select value={repoId} onChange={(e) => selectStoredRepo(e.target.value)} className={selectCls}>
+                    <option value="">+ Add a new repository</option>
+                    {storedRepos.map((r) => (
+                      <option key={r.id} value={r.id}>{r.name} — {r.repo_url} ({r.branch})</option>
+                    ))}
+                  </select>
                 </FormField>
-                <FormField label="Git token" hint="private repos">
-                  <input value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
-                </FormField>
-              </div>
+              )}
+              {repoId ? (
+                <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground">
+                  Using stored repo <span className="font-mono text-foreground">{repo}</span> on{' '}
+                  <span className="font-mono text-foreground">{branch}</span> · credentials reused from the store.
+                </div>
+              ) : (
+                <>
+                  <FormField label="Git repository URL">
+                    <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="https://github.com/you/my-app" required className={inputCls} />
+                  </FormField>
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField label="Branch">
+                      <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" className={inputCls} />
+                    </FormField>
+                    <FormField label="Git token" hint="private repos">
+                      <input value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
+                    </FormField>
+                  </div>
+                </>
+              )}
               <FormField label="Framework" hint="auto-generates Procfile + DB env vars">
                 <div className="flex flex-wrap gap-1.5">
                   {DECLARED_FRAMEWORK_OPTIONS.map((opt) => (
@@ -1852,53 +1982,50 @@ function AddAppDialog({
               </Button>
             </div>
           </FormField>
-          <FormField label="Target">
-            <div className="flex gap-2">
-              <TargetPill label="Kubernetes" sub="kind cluster" active={target === 'k8s'} onClick={() => setTarget('k8s')} />
-              <TargetPill label="Container" sub="Docker SDK" active={target === 'container'} onClick={() => setTarget('container')} />
-              {kind === 'git' && vmResources.length > 0 && (
-                <TargetPill label="Cloud VM" sub="SSH deploy" active={target === 'vm'} onClick={() => setTarget('vm')} />
-              )}
-              {kind === 'git' && ecsResources.length > 0 && (
-                <TargetPill label="AWS ECS" sub="Fargate service" active={target === 'ecs'} onClick={() => setTarget('ecs')} />
-              )}
-              {kind === 'git' && aciResources.length > 0 && (
-                <TargetPill label="Azure ACI" sub="container group" active={target === 'aci'} onClick={() => setTarget('aci')} />
-              )}
-            </div>
-          </FormField>
           {target === 'vm' && (
-            <FormField label="VM resource" hint="from the Resources page">
-              <select value={effectiveVmResourceId} onChange={(e) => setVmResourceId(e.target.value)} className={selectCls} required>
-                {vmResources.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
-                  </option>
-                ))}
-              </select>
-            </FormField>
+            vmList.length > 0 ? (
+              <FormField label={cloudProvider === 'aws' ? 'EC2 instance' : 'Azure VM'} hint="from the Resources page">
+                <select value={effectiveVmResourceId} onChange={(e) => setVmResourceId(e.target.value)} className={selectCls} required>
+                  {vmList.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            ) : (
+              <NoResourceHint label={cloudProvider === 'aws' ? 'EC2 instance' : 'Azure VM'} onProvision={() => navigate('/new-resource')} />
+            )
           )}
           {target === 'ecs' && (
-            <FormField label="ECS service" hint="from the Resources page">
-              <select value={effectiveEcsResourceId} onChange={(e) => setEcsResourceId(e.target.value)} className={selectCls} required>
-                {ecsResources.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
-                  </option>
-                ))}
-              </select>
-            </FormField>
+            ecsResources.length > 0 ? (
+              <FormField label="ECS service" hint="from the Resources page">
+                <select value={effectiveEcsResourceId} onChange={(e) => setEcsResourceId(e.target.value)} className={selectCls} required>
+                  {ecsResources.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            ) : (
+              <NoResourceHint label="ECS service" onProvision={() => navigate('/new-resource')} />
+            )
           )}
           {target === 'aci' && (
-            <FormField label="ACI container group" hint="from the Resources page">
-              <select value={effectiveAciResourceId} onChange={(e) => setAciResourceId(e.target.value)} className={selectCls} required>
-                {aciResources.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
-                  </option>
-                ))}
-              </select>
-            </FormField>
+            aciResources.length > 0 ? (
+              <FormField label="ACI container group" hint="from the Resources page">
+                <select value={effectiveAciResourceId} onChange={(e) => setAciResourceId(e.target.value)} className={selectCls} required>
+                  {aciResources.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} ({provisionedTypeLabel[r.provider]?.[r.resource_type] ?? r.resource_type})
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            ) : (
+              <NoResourceHint label="ACI container group" onProvision={() => navigate('/new-resource')} />
+            )
           )}
           {(target === 'ecs' || target === 'aci') && (
             <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3.5 py-2.5 text-xs text-muted-foreground space-y-1.5">
@@ -1956,7 +2083,7 @@ function AddAppDialog({
           )}
           <div className="flex justify-end gap-2">
             <Button type="button" size="sm" variant="outline" onClick={handleClose} disabled={loading}>Cancel</Button>
-            <Button type="submit" size="sm" className="gap-1.5" disabled={loading}>
+            <Button type="submit" size="sm" className="gap-1.5" disabled={loading || cloudResourceMissing}>
               {loading && <Loader2 className="size-3.5 animate-spin" />}
               {loading ? 'Adding…' : 'Add app'}
             </Button>

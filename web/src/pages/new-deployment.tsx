@@ -5,7 +5,7 @@ import { ArrowLeft, Loader2, CheckCircle2, AlertCircle, Server, Cloud, Container
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { TargetPill, FormField, DomainField, K8sOptions, type K8sConfigValue, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { TargetPill, FormField, DomainField, K8sOptions, CardChoice, type K8sConfigValue, inputCls, selectCls } from '@/components/deploy-form-fields'
 import { ComposeImportForm } from '@/components/compose-import-form'
 import { type ProvisionedResource, provisionedTypeLabel } from '@/lib/resources'
 import { DECLARED_FRAMEWORK_OPTIONS } from '@/lib/frameworks'
@@ -18,55 +18,6 @@ type LocalTarget = 'k8s' | 'docker'
 type CloudProvider = 'aws' | 'azure'
 type DockerMode = 'scratch' | 'compose'
 type CloudTarget = 'ec2' | 'ecs' | 'vm' | 'aci'
-
-// ─── Two-card choice layout ──────────────────────────────────────
-
-interface ChoiceOption {
-  title: string
-  description: string
-  icon: React.ElementType
-  tags: string[]
-  onClick: () => void
-}
-
-function CardChoice({ left, right }: { left: ChoiceOption; right: ChoiceOption }) {
-  return (
-    <div className="flex items-stretch gap-0">
-      <ChoiceCard opt={left} />
-      <div className="flex flex-col items-center justify-center px-6 gap-2">
-        <div className="flex-1 w-px bg-border" />
-        <span className="text-[0.65rem] font-medium text-muted-foreground/60 uppercase tracking-widest">or</span>
-        <div className="flex-1 w-px bg-border" />
-      </div>
-      <ChoiceCard opt={right} />
-    </div>
-  )
-}
-
-function ChoiceCard({ opt }: { opt: ChoiceOption }) {
-  const Icon = opt.icon
-  return (
-    <button
-      onClick={opt.onClick}
-      className="group flex flex-1 flex-col items-center gap-5 rounded-2xl border border-border bg-card p-10 text-center transition-all duration-200 hover:scale-[1.03] hover:border-ring/40 hover:shadow-xl"
-    >
-      <div className="flex size-16 items-center justify-center rounded-2xl border border-border bg-background transition-colors group-hover:border-ring/30 group-hover:bg-accent">
-        <Icon className="size-7 text-foreground" />
-      </div>
-      <div className="space-y-1.5">
-        <p className="text-lg font-semibold">{opt.title}</p>
-        <p className="text-xs text-muted-foreground leading-relaxed max-w-[180px]">
-          {opt.description}
-        </p>
-      </div>
-      <div className="flex gap-2 flex-wrap justify-center">
-        {opt.tags.map((t) => (
-          <span key={t} className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">{t}</span>
-        ))}
-      </div>
-    </button>
-  )
-}
 
 // ─── Breadcrumb labels ───────────────────────────────────────────
 

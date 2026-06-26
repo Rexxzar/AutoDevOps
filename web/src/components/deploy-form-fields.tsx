@@ -26,6 +26,64 @@ export function TargetPill({ label, sub, active, onClick }: {
   )
 }
 
+// ─── Two-card "this or that" choice (Local/Cloud, AWS/Azure, …) ───
+// Shared by the New Deployment wizard and the Add-app dialog so both flows
+// look identical. `compact` shrinks it to fit inside a modal.
+
+export interface ChoiceOption {
+  title: string
+  description: string
+  icon: React.ElementType
+  tags: string[]
+  onClick: () => void
+}
+
+export function CardChoice({ left, right, compact }: { left: ChoiceOption; right: ChoiceOption; compact?: boolean }) {
+  return (
+    <div className="flex items-stretch gap-0">
+      <ChoiceCard opt={left} compact={compact} />
+      <div className="flex flex-col items-center justify-center px-5 gap-2">
+        <div className="flex-1 w-px bg-border" />
+        <span className="text-[0.65rem] font-medium text-muted-foreground/60 uppercase tracking-widest">or</span>
+        <div className="flex-1 w-px bg-border" />
+      </div>
+      <ChoiceCard opt={right} compact={compact} />
+    </div>
+  )
+}
+
+function ChoiceCard({ opt, compact }: { opt: ChoiceOption; compact?: boolean }) {
+  const Icon = opt.icon
+  return (
+    <button
+      type="button"
+      onClick={opt.onClick}
+      className={cn(
+        'group flex flex-1 flex-col items-center rounded-2xl border border-border bg-card text-center transition-all duration-200 hover:scale-[1.03] hover:border-ring/40 hover:shadow-xl',
+        compact ? 'gap-3 p-6' : 'gap-5 p-10',
+      )}
+    >
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-2xl border border-border bg-background transition-colors group-hover:border-ring/30 group-hover:bg-accent',
+          compact ? 'size-12' : 'size-16',
+        )}
+      >
+        <Icon className={cn('text-foreground', compact ? 'size-5' : 'size-7')} />
+      </div>
+      <div className="space-y-1.5">
+        <p className={cn('font-semibold', compact ? 'text-base' : 'text-lg')}>{opt.title}</p>
+        <p className="text-xs text-muted-foreground leading-relaxed max-w-[180px]">{opt.description}</p>
+      </div>
+      <div className="flex gap-2 flex-wrap justify-center">
+        {opt.tags.map((t) => (
+          <span key={t} className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">{t}</span>
+        ))}
+      </div>
+    </button>
+  )
+}
+
 export function FormField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
