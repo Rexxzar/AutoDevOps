@@ -549,23 +549,39 @@ function WorldMap({
   }
 
   function onPointerDown(e: React.PointerEvent) {
+    // Don't capture the pointer here — doing so steals the click from a pin,
+    // so selecting a resource (and its region zone) never fires. We only
+    // capture once an actual drag starts (see onPointerMove).
     dragRef.current = { cx: e.clientX, cy: e.clientY, vx: vb.x, vy: vb.y }
     movedRef.current = false
-    ;(e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId)
   }
   function onPointerMove(e: React.PointerEvent) {
     const d = dragRef.current
     if (!d) return
+    const dist = Math.hypot(e.clientX - d.cx, e.clientY - d.cy)
+    if (!movedRef.current && dist <= 3) return // sub-threshold: keep it a click
+    if (!movedRef.current) {
+      movedRef.current = true
+      // real drag now — capture so panning survives the pointer briefly
+      // leaving the svg
+      ;(e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId)
+    }
     const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
     const dx = ((e.clientX - d.cx) / rect.width) * vb.w
     const dy = ((e.clientY - d.cy) / rect.height) * vb.h
-    if (Math.hypot(e.clientX - d.cx, e.clientY - d.cy) > 3) movedRef.current = true
     const [nx, ny] = clampPan(d.vx - dx, d.vy - dy, vb.w, vb.h)
     setVb((prev) => ({ ...prev, x: nx, y: ny }))
   }
   function onPointerUp(e: React.PointerEvent) {
+    const wasDragging = movedRef.current
     dragRef.current = null
-    ;(e.currentTarget as SVGSVGElement).releasePointerCapture?.(e.pointerId)
+    if (wasDragging) {
+      try {
+        ;(e.currentTarget as SVGSVGElement).releasePointerCapture(e.pointerId)
+      } catch {
+        // pointer wasn't captured; nothing to release
+      }
+    }
   }
 
   const showNames = k < 0.55 // reveal per-resource labels once zoomed in
