@@ -276,39 +276,37 @@ export function TopologyPage() {
         {!isLoading && !error && totalResources === 0 && <EmptyState />}
 
         {!isLoading && !error && totalResources > 0 && view === 'map' && (
-          <div className="flex flex-col gap-4 lg:flex-row">
-            <div className="min-w-0 flex-1">
-              <WorldMap
-                regions={regions}
-                nodes={nodes}
-                edges={edges}
-                selected={selectedRegion}
-                onSelect={(key) =>
-                  setSelectedRegion((cur) => (cur === key ? null : key))
-                }
-              />
-              <MapLegend regions={regions} />
-            </div>
+          <div className="relative">
+            <WorldMap
+              regions={regions}
+              nodes={nodes}
+              edges={edges}
+              selected={selectedRegion}
+              onSelect={(key) =>
+                setSelectedRegion((cur) => (cur === key ? null : key))
+              }
+            />
+            <MapLegend regions={regions} />
+            {/* Region detail floats OVER the map (right side) rather than
+                shrinking it — selecting a pin must never resize/re-zoom the map. */}
             {selected && (
-              <aside className="w-full shrink-0 lg:w-[380px]">
-                <div className="lg:sticky lg:top-6">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      Region detail
-                    </span>
-                    <button
-                      onClick={() => setSelectedRegion(null)}
-                      className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      aria-label="Close region detail"
-                    >
-                      <X className="size-4" />
-                    </button>
-                  </div>
-                  <RegionSquare
-                    region={selected}
-                    nodes={nodesByRegion[selected.key] ?? []}
-                  />
+              <aside className="absolute right-3 top-3 z-20 max-h-[calc(100%-1.5rem)] w-[330px] max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-border bg-card/95 shadow-2xl backdrop-blur">
+                <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                  <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    Region detail
+                  </span>
+                  <button
+                    onClick={() => setSelectedRegion(null)}
+                    className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label="Close region detail"
+                  >
+                    <X className="size-4" />
+                  </button>
                 </div>
+                <RegionSquare
+                  region={selected}
+                  nodes={nodesByRegion[selected.key] ?? []}
+                />
               </aside>
             )}
           </div>
@@ -735,8 +733,9 @@ function WorldMap({
         })}
       </svg>
 
-      {/* zoom controls */}
-      <div className="absolute right-3 top-3 flex flex-col gap-1">
+      {/* zoom controls (top-left, so the region-detail overlay on the right
+          never covers them) */}
+      <div className="absolute left-3 top-3 flex flex-col gap-1">
         <MapBtn label="Zoom in" onClick={() => zoomByCentre(0.7)}>
           <ZoomIn className="size-4" />
         </MapBtn>
