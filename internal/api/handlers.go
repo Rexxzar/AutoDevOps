@@ -226,9 +226,13 @@ func (s *Server) validateContainerTarget(ctx context.Context, resourceID, wantTy
 		return fmt.Errorf("target_resource_id must reference an applied resource (status=%q)", status)
 	}
 	if wantType == "aci" || wantType == "ecs" {
+		// Only a live app occupies the resource — a soft-deleted app
+		// (status='destroyed', see handleDeleteApp) has already been torn down
+		// and must not block re-adding one, or reusing the resource after a
+		// failed first attempt.
 		var existingApp string
 		if err := s.db.QueryRow(ctx,
-			`SELECT name FROM deployment_apps WHERE target_resource_id = $1 LIMIT 1`, resourceID,
+			`SELECT name FROM deployment_apps WHERE target_resource_id = $1 AND status <> 'destroyed' LIMIT 1`, resourceID,
 		).Scan(&existingApp); err == nil {
 			return fmt.Errorf("resource is already used by app %q — each ACI/ECS resource can only serve one app", existingApp)
 		}
