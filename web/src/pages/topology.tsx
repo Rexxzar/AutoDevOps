@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Map as MapIcon,
@@ -11,6 +11,9 @@ import {
   Cloud,
   Globe,
   X,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/layout/page-header'
@@ -103,6 +106,29 @@ function topoStatusToKind(s: string): StatusKind {
     idle: 'idle',
   }
   return map[s] ?? 'unknown'
+}
+
+// Health colour for the small status dot on each map pin (hex, since the map
+// surface is a fixed dark navy and shouldn't depend on theme tokens).
+function statusColor(k: StatusKind): string {
+  switch (k) {
+    case 'healthy':
+    case 'ready':
+    case 'running':
+      return '#22c55e'
+    case 'warning':
+    case 'degraded':
+    case 'queued':
+      return '#f59e0b'
+    case 'critical':
+    case 'failed':
+      return '#ef4444'
+    case 'building':
+    case 'pending':
+      return '#38bdf8'
+    default:
+      return '#64748b'
+  }
 }
 
 function resourceIcon(resourceType?: string) {
@@ -239,6 +265,7 @@ export function TopologyPage() {
             <div className="min-w-0 flex-1">
               <WorldMap
                 regions={regions}
+                nodes={nodes}
                 edges={edges}
                 selected={selectedRegion}
                 onSelect={(key) =>
@@ -362,61 +389,158 @@ function EmptyState() {
 }
 
 // ---- World map (SVG) ----
+interface PinPos {
+  x: number
+  y: number
+  node: TopoNode
+}
+const FULL_VB = { x: 0, y: 0, w: WORLD_W, h: WORLD_H }
+const MIN_VB_W = WORLD_W / 9 // max ~9x zoom
+
+function clampPan(x: number, y: number, w: number, h: number): [number, number] {
+  const mx = WORLD_W * 0.15
+  const my = WORLD_H * 0.15
+  return [
+    Math.min(Math.max(x, -mx), WORLD_W - w + mx),
+    Math.min(Math.max(y, -my), WORLD_H - h + my),
+  ]
+}
+
 function WorldMap({
   regions,
+  nodes,
   edges,
   selected,
   onSelect,
 }: {
   regions: TopoRegion[]
+  nodes: TopoNode[]
   edges: TopoEdge[]
   selected: string | null
   onSelect: (key: string) => void
 }) {
-  const located = regions.filter((r) => r.located)
-  const posByKey: Record<string, { x: number; y: number }> = {}
-  for (const r of located) posByKey[r.key] = project(r.lat, r.lon)
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const [vb, setVb] = useState(FULL_VB)
+  const dragRef = useRef<{ cx: number; cy: number; vx: number; vy: number } | null>(null)
+  const movedRef = useRef(false)
 
-  // One arc per unique cross-region pair; direction from → to.
+  // k keeps markers a constant on-screen size as the geography zooms.
+  const k = vb.w / WORLD_W
+
+  // Fan each region's resources out around its centroid (same-region resources
+  // share coordinates, so we spread them on a small ring). Also gives every
+  // edge two concrete endpoints to draw between.
+  const { pins, labels } = useMemo(() => {
+    const byRegion: Record<string, TopoNode[]> = {}
+    for (const n of nodes) (byRegion[n.region_key] ??= []).push(n)
+    const p: Record<string, PinPos> = {}
+    const lbl: { key: string; x: number; y: number; text: string }[] = []
+    for (const r of regions) {
+      if (!r.located) continue
+      const c = project(r.lat, r.lon)
+      const rn = byRegion[r.key] ?? []
+      if (rn.length <= 1) {
+        if (rn[0]) p[rn[0].id] = { x: c.x, y: c.y, node: rn[0] }
+      } else {
+        const radius = 9 + Math.min(rn.length, 10) * 1.3
+        rn.forEach((n, i) => {
+          const a = (2 * Math.PI * i) / rn.length - Math.PI / 2
+          p[n.id] = { x: c.x + radius * Math.cos(a), y: c.y + radius * Math.sin(a), node: n }
+        })
+        lbl.push({ key: r.key, x: c.x, y: c.y, text: r.label || providerLabel(r.provider) })
+      }
+    }
+    return { pins: p, labels: lbl }
+  }, [nodes, regions])
+
+  // One arc per edge whose endpoints both resolved to pins.
   const arcs = useMemo(() => {
-    const seen = new Set<string>()
-    const out: {
-      key: string
-      d: string
-      color: string
-      from: string
-      to: string
-    }[] = []
+    const out: { key: string; d: string; color: string; cross: boolean }[] = []
     for (const e of edges) {
-      if (!e.cross_region) continue
-      const a = posByKey[e.from_region]
-      const b = posByKey[e.to_region]
+      const a = pins[e.from_node]
+      const b = pins[e.to_node]
       if (!a || !b) continue
-      const pairKey = `${e.from_region}->${e.to_region}`
-      if (seen.has(pairKey)) continue
-      seen.add(pairKey)
-      const prov = e.from_region.split(':')[0]
       out.push({
-        key: pairKey,
+        key: e.id,
         d: arcPath(a.x, a.y, b.x, b.y),
-        color: provColor(prov),
-        from: e.from_region,
-        to: e.to_region,
+        color: provColor(e.from_region.split(':')[0]),
+        cross: e.cross_region,
       })
     }
     return out
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edges, regions])
+  }, [edges, pins])
+
+  // Native (non-passive) wheel zoom toward the cursor.
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    function onWheel(e: WheelEvent) {
+      e.preventDefault()
+      const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
+      setVb((prev) => {
+        const px = prev.x + ((e.clientX - rect.left) / rect.width) * prev.w
+        const py = prev.y + ((e.clientY - rect.top) / rect.height) * prev.h
+        let nw = prev.w * (e.deltaY < 0 ? 0.82 : 1.22)
+        nw = Math.max(MIN_VB_W, Math.min(WORLD_W, nw))
+        const scale = nw / prev.w
+        const nh = prev.h * scale
+        const [nx, ny] = clampPan(px - (px - prev.x) * scale, py - (py - prev.y) * scale, nw, nh)
+        return { x: nx, y: ny, w: nw, h: nh }
+      })
+    }
+    svg.addEventListener('wheel', onWheel, { passive: false })
+    return () => svg.removeEventListener('wheel', onWheel)
+  }, [])
+
+  function zoomByCentre(factor: number) {
+    setVb((prev) => {
+      let nw = Math.max(MIN_VB_W, Math.min(WORLD_W, prev.w * factor))
+      const scale = nw / prev.w
+      const nh = prev.h * scale
+      const cx = prev.x + prev.w / 2
+      const cy = prev.y + prev.h / 2
+      const [nx, ny] = clampPan(cx - nw / 2, cy - nh / 2, nw, nh)
+      return { x: nx, y: ny, w: nw, h: nh }
+    })
+  }
+
+  function onPointerDown(e: React.PointerEvent) {
+    dragRef.current = { cx: e.clientX, cy: e.clientY, vx: vb.x, vy: vb.y }
+    movedRef.current = false
+    ;(e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId)
+  }
+  function onPointerMove(e: React.PointerEvent) {
+    const d = dragRef.current
+    if (!d) return
+    const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
+    const dx = ((e.clientX - d.cx) / rect.width) * vb.w
+    const dy = ((e.clientY - d.cy) / rect.height) * vb.h
+    if (Math.hypot(e.clientX - d.cx, e.clientY - d.cy) > 3) movedRef.current = true
+    const [nx, ny] = clampPan(d.vx - dx, d.vy - dy, vb.w, vb.h)
+    setVb((prev) => ({ ...prev, x: nx, y: ny }))
+  }
+  function onPointerUp(e: React.PointerEvent) {
+    dragRef.current = null
+    ;(e.currentTarget as SVGSVGElement).releasePointerCapture?.(e.pointerId)
+  }
+
+  const showNames = k < 0.55 // reveal per-resource labels once zoomed in
+  const zoomed = vb.w < WORLD_W - 1
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border">
+    <div className="relative overflow-hidden rounded-xl border border-border">
       <svg
-        viewBox={`0 0 ${WORLD_W} ${WORLD_H}`}
+        ref={svgRef}
+        viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
         preserveAspectRatio="xMidYMid meet"
-        className="block h-auto w-full"
+        className="block h-auto w-full touch-none select-none"
         role="img"
-        aria-label="World map of managed regions"
-        style={{ background: '#0c1830' }}
+        aria-label="World map of managed resources"
+        style={{ background: '#0c1830', cursor: dragRef.current ? 'grabbing' : 'grab' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={onPointerUp}
       >
         <defs>
           <marker
@@ -434,79 +558,145 @@ function WorldMap({
         <path d={WORLD_PATH} fill="#22405f" />
 
         {/* arcs (under pins) */}
-        {arcs.map((a) => (
-          <path
-            key={a.key}
-            d={a.d}
-            fill="none"
-            stroke={a.color}
-            strokeWidth={1.4}
-            strokeDasharray="5 5"
-            markerEnd="url(#topo-arrow)"
-            opacity={0.9}
-          >
-            <animate
-              attributeName="stroke-dashoffset"
-              from="0"
-              to="-20"
-              dur="1.1s"
-              repeatCount="indefinite"
+        {arcs.map((a) =>
+          a.cross ? (
+            <path
+              key={a.key}
+              d={a.d}
+              fill="none"
+              stroke={a.color}
+              strokeWidth={1.4 * k}
+              strokeDasharray={`${5 * k} ${5 * k}`}
+              markerEnd="url(#topo-arrow)"
+              opacity={0.9}
+            >
+              <animate
+                attributeName="stroke-dashoffset"
+                from="0"
+                to={-20 * k}
+                dur="1.1s"
+                repeatCount="indefinite"
+              />
+            </path>
+          ) : (
+            <path
+              key={a.key}
+              d={a.d}
+              fill="none"
+              stroke="#7f95b3"
+              strokeWidth={0.9 * k}
+              markerEnd="url(#topo-arrow)"
+              opacity={0.5}
             />
-          </path>
+          ),
+        )}
+
+        {/* region labels (only when a region has several resources) */}
+        {labels.map((l) => (
+          <text
+            key={l.key}
+            x={l.x}
+            y={l.y + (18 + 6) * k}
+            textAnchor="middle"
+            fontSize={10 * k}
+            fontWeight="700"
+            fill="#9fb6d4"
+            style={{ pointerEvents: 'none' }}
+          >
+            {l.text}
+          </text>
         ))}
 
-        {/* pins */}
-        {located.map((r) => {
-          const p = posByKey[r.key]
-          const c = provColor(r.provider)
-          const isSel = selected === r.key
-          const labelRight = p.x < WORLD_W * 0.82
+        {/* one pin per resource */}
+        {Object.values(pins).map(({ x, y, node }) => {
+          const c = provColor(node.provider)
+          const sc = statusColor(topoStatusToKind(node.status))
+          const isSel = selected === node.region_key
+          const labelRight = x < WORLD_W * 0.85
           return (
             <g
-              key={r.key}
-              className="cursor-pointer"
-              onClick={() => onSelect(r.key)}
+              key={node.id}
+              style={{ cursor: 'pointer' }}
+              onClick={(e) => {
+                if (movedRef.current) return
+                e.stopPropagation()
+                onSelect(node.region_key)
+              }}
             >
-              <circle cx={p.x} cy={p.y} r={isSel ? 13 : 10} fill={c} opacity={0.16} />
+              <title>
+                {node.name} · {node.resource_type || node.kind} · {node.status}
+              </title>
+              <circle cx={x} cy={y} r={(isSel ? 11 : 9) * k} fill={c} opacity={0.16} />
               <circle
-                cx={p.x}
-                cy={p.y}
-                r={isSel ? 8 : 6.5}
+                cx={x}
+                cy={y}
+                r={(isSel ? 6.5 : 5) * k}
                 fill="none"
                 stroke={c}
-                strokeWidth={isSel ? 2 : 1.3}
+                strokeWidth={(isSel ? 1.8 : 1.2) * k}
               />
-              <circle cx={p.x} cy={p.y} r={4} fill={c} />
-              {/* count badge */}
-              <circle cx={p.x + 6} cy={p.y - 6} r={5.5} fill={c} />
-              <text
-                x={p.x + 6}
-                y={p.y - 6}
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontSize={7}
-                fontWeight="700"
-                fill="#0c1830"
-                style={{ pointerEvents: 'none' }}
-              >
-                {r.node_count}
-              </text>
-              <text
-                x={labelRight ? p.x + 14 : p.x - 14}
-                y={p.y + 3.5}
-                textAnchor={labelRight ? 'start' : 'end'}
-                fontSize={10}
-                fontWeight="600"
-                fill="#eaf2ff"
-                style={{ pointerEvents: 'none' }}
-              >
-                {providerLabel(r.provider)}
-              </text>
+              <circle cx={x} cy={y} r={3.4 * k} fill={c} />
+              {/* health dot */}
+              <circle cx={x + 4.6 * k} cy={y - 4.6 * k} r={2.4 * k} fill={sc} stroke="#0c1830" strokeWidth={0.6 * k} />
+              {showNames && (
+                <text
+                  x={labelRight ? x + 8 * k : x - 8 * k}
+                  y={y + 3 * k}
+                  textAnchor={labelRight ? 'start' : 'end'}
+                  fontSize={8.5 * k}
+                  fontWeight="600"
+                  fill="#eaf2ff"
+                  style={{ pointerEvents: 'none' }}
+                >
+                  {node.name}
+                </text>
+              )}
             </g>
           )
         })}
       </svg>
+
+      {/* zoom controls */}
+      <div className="absolute right-3 top-3 flex flex-col gap-1">
+        <MapBtn label="Zoom in" onClick={() => zoomByCentre(0.7)}>
+          <ZoomIn className="size-4" />
+        </MapBtn>
+        <MapBtn label="Zoom out" onClick={() => zoomByCentre(1.4)}>
+          <ZoomOut className="size-4" />
+        </MapBtn>
+        <MapBtn label="Reset view" onClick={() => setVb(FULL_VB)} disabled={!zoomed}>
+          <Maximize2 className="size-4" />
+        </MapBtn>
+      </div>
+      <div className="pointer-events-none absolute bottom-2 left-3 text-[0.65rem] text-white/45">
+        scroll to zoom · drag to pan
+      </div>
     </div>
+  )
+}
+
+function MapBtn({
+  children,
+  label,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode
+  label: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      disabled={disabled}
+      className="flex size-8 items-center justify-center rounded-md border border-white/15 bg-black/40 text-white/80 backdrop-blur transition-colors hover:bg-black/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {children}
+    </button>
   )
 }
 
