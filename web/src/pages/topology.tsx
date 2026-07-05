@@ -134,6 +134,18 @@ function statusColor(k: StatusKind): string {
   }
 }
 
+// nodeDisplayName is what a pin/card leads with. For the synthetic local host
+// nodes (kind cluster / Docker host) the interesting thing is what's running
+// on them, so a single-app host shows the app/container name (e.g.
+// "ShopHup-Front") rather than the bare "Docker host" label.
+function nodeDisplayName(node: TopoNode): string {
+  if (node.kind === 'local_cluster' || node.kind === 'docker_host') {
+    if (node.apps.length === 1) return node.apps[0].name
+    if (node.apps.length > 1) return `${node.name} (${node.apps.length})`
+  }
+  return node.name
+}
+
 function resourceIcon(resourceType?: string) {
   switch (resourceType) {
     case 'vm':
@@ -431,13 +443,22 @@ function WorldMap({
   const k = vb.w / WORLD_W
 
   // Fan each region's resources out around its centroid (same-region resources
-  // share coordinates, so we spread them on a small ring). Also gives every
-  // edge two concrete endpoints to draw between.
-  const { pins, labels } = useMemo(() => {
+  // share coordinates, so we spread them on a small ring). A region with more
+  // than one resource also gets a labelled boundary drawn around the cluster,
+  // so co-located resources read as one place (e.g. "these all run on the
+  // local host") instead of loose, scattered dots.
+  const { pins, boundaries } = useMemo(() => {
     const byRegion: Record<string, TopoNode[]> = {}
     for (const n of nodes) (byRegion[n.region_key] ??= []).push(n)
     const p: Record<string, PinPos> = {}
-    const lbl: { key: string; x: number; y: number; text: string }[] = []
+    const bnds: {
+      key: string
+      cx: number
+      cy: number
+      r: number
+      label: string
+      color: string
+    }[] = []
     for (const r of regions) {
       if (!r.located) continue
       const c = project(r.lat, r.lon)
@@ -454,10 +475,17 @@ function WorldMap({
           const a = (2 * Math.PI * i) / rn.length - Math.PI / 2
           p[n.id] = { x: c.x + radius * Math.cos(a), y: c.y + radius * Math.sin(a), node: n }
         })
-        lbl.push({ key: r.key, x: c.x, y: c.y, text: r.label || providerLabel(r.provider) })
+        bnds.push({
+          key: r.key,
+          cx: c.x,
+          cy: c.y,
+          r: radius + 11,
+          label: r.label || providerLabel(r.provider),
+          color: provColor(r.provider),
+        })
       }
     }
-    return { pins: p, labels: lbl }
+    return { pins: p, boundaries: bnds }
   }, [nodes, regions])
 
   // One arc per edge whose endpoints both resolved to pins.
@@ -573,6 +601,35 @@ function WorldMap({
 
         <path d={WORLD_PATH} fill="#22405f" />
 
+        {/* region zones: a labelled boundary around each multi-resource region
+            so co-located resources read as one place */}
+        {boundaries.map((b) => (
+          <g key={b.key} style={{ pointerEvents: 'none' }}>
+            <circle
+              cx={b.cx}
+              cy={b.cy}
+              r={b.r}
+              fill={b.color}
+              fillOpacity={0.06}
+              stroke={b.color}
+              strokeOpacity={0.45}
+              strokeWidth={1 * k}
+              strokeDasharray={`${3 * k} ${3 * k}`}
+            />
+            <text
+              x={b.cx}
+              y={b.cy - b.r - 3 * k}
+              textAnchor="middle"
+              fontSize={9.5 * k}
+              fontWeight="700"
+              fill={b.color}
+              opacity={0.9}
+            >
+              {b.label}
+            </text>
+          </g>
+        ))}
+
         {/* arcs (under pins). Registry links are always drawn prominently so
             the ECS→ECR / ACI→ACR connection is visible even within a region. */}
         {arcs.map((a) =>
@@ -607,22 +664,6 @@ function WorldMap({
             />
           ),
         )}
-
-        {/* region labels (only when a region has several resources) */}
-        {labels.map((l) => (
-          <text
-            key={l.key}
-            x={l.x}
-            y={l.y + (18 + 6) * k}
-            textAnchor="middle"
-            fontSize={10 * k}
-            fontWeight="700"
-            fill="#9fb6d4"
-            style={{ pointerEvents: 'none' }}
-          >
-            {l.text}
-          </text>
-        ))}
 
         {/* one pin per resource */}
         {Object.values(pins).map(({ x, y, node }) => {
@@ -668,7 +709,7 @@ function WorldMap({
                   fill="#eaf2ff"
                   style={{ pointerEvents: 'none' }}
                 >
-                  {node.name}
+                  {nodeDisplayName(node)}
                 </text>
               )}
             </g>
@@ -817,7 +858,7 @@ function NodeCard({ node, accent }: { node: TopoNode; accent: string }) {
         </div>
       </div>
       <p className="mt-2 truncate font-mono text-[0.8rem] font-semibold">
-        {node.name}
+        {nodeDisplayName(node)}
       </p>
       {isData && (
         <p className="mt-1.5 text-[0.7rem] text-muted-foreground">
