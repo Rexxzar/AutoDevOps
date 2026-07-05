@@ -479,7 +479,7 @@ function WorldMap({
           key: r.key,
           cx: c.x,
           cy: c.y,
-          r: radius + 11,
+          r: radius + 7,
           label: r.label || providerLabel(r.provider),
           color: provColor(r.provider),
         })
@@ -601,34 +601,36 @@ function WorldMap({
 
         <path d={WORLD_PATH} fill="#22405f" />
 
-        {/* region zones: a labelled boundary around each multi-resource region
-            so co-located resources read as one place */}
-        {boundaries.map((b) => (
-          <g key={b.key} style={{ pointerEvents: 'none' }}>
-            <circle
-              cx={b.cx}
-              cy={b.cy}
-              r={b.r}
-              fill={b.color}
-              fillOpacity={0.06}
-              stroke={b.color}
-              strokeOpacity={0.45}
-              strokeWidth={1 * k}
-              strokeDasharray={`${3 * k} ${3 * k}`}
-            />
-            <text
-              x={b.cx}
-              y={b.cy - b.r - 3 * k}
-              textAnchor="middle"
-              fontSize={9.5 * k}
-              fontWeight="700"
-              fill={b.color}
-              opacity={0.9}
-            >
-              {b.label}
-            </text>
-          </g>
-        ))}
+        {/* region zone: only the selected region gets a labelled boundary, so
+            clusters of geographically-close regions never overlap each other */}
+        {boundaries
+          .filter((b) => b.key === selected)
+          .map((b) => (
+            <g key={b.key} style={{ pointerEvents: 'none' }}>
+              <circle
+                cx={b.cx}
+                cy={b.cy}
+                r={b.r}
+                fill={b.color}
+                fillOpacity={0.08}
+                stroke={b.color}
+                strokeOpacity={0.65}
+                strokeWidth={1.1 * k}
+                strokeDasharray={`${3 * k} ${3 * k}`}
+              />
+              <text
+                x={b.cx}
+                y={b.cy - b.r - 3 * k}
+                textAnchor="middle"
+                fontSize={9.5 * k}
+                fontWeight="700"
+                fill={b.color}
+                opacity={0.95}
+              >
+                {b.label}
+              </text>
+            </g>
+          ))}
 
         {/* arcs (under pins). Registry links are always drawn prominently so
             the ECS→ECR / ACI→ACR connection is visible even within a region. */}
