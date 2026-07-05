@@ -4,6 +4,7 @@ import { Topbar } from '@/components/layout/topbar'
 import { DeploymentsPage } from '@/pages/deployments'
 import { ClustersPage } from '@/pages/clusters'
 import { OverviewPage } from '@/pages/overview'
+import { TopologyPage } from '@/pages/topology'
 import { ResourcesPage } from '@/pages/resources'
 import { LocalResourcesPage } from '@/pages/local-resources'
 import { ImageRegistryPage } from '@/pages/image-registry'
@@ -37,6 +38,7 @@ function DashboardLayout() {
         <main className="flex-1 overflow-y-auto">
           <Routes>
             <Route path="/" element={<OverviewPage />} />
+            <Route path="/topology" element={<TopologyPage />} />
             <Route path="/deployments" element={<DeploymentsPage />} />
             <Route path="/deployments/:id" element={<DeploymentDetailPage />} />
             <Route path="/repos" element={<ReposPage />} />

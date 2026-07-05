@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard,
+  Map as MapIcon,
   Rocket,
   Boxes,
   Cloud,
@@ -19,6 +20,7 @@ import { cn } from '@/lib/utils'
 
 const nav = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
+  { to: '/topology', label: 'Topology', icon: MapIcon, badge: 'live' },
   { to: '/deployments', label: 'Deployments', icon: Rocket, badge: 'live' },
   { to: '/repos', label: 'Repositories', icon: GitBranch },
   { to: '/clusters', label: 'Clusters', icon: Boxes, badge: 'live' },

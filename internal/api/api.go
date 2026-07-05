@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -37,6 +38,10 @@ type Server struct {
 	publicIP      string
 	ingressDomain string
 	registryHost  string
+
+	// geoipOnce guards the one-shot background geolocation of the server's
+	// public IP that seeds the Topology Map's Local pin (see topology_geoip.go).
+	geoipOnce sync.Once
 }
 
 func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vault, orchestrator *deploy.Orchestrator, tfRunner *terraform.Runner, tfEngine *terraform.Engine, consoleManager *console.Manager, k8sCtrl *k8s.Controller, dockerMgr *docker.Manager, complianceScanner *compliance.Scanner, publicIP, ingressDomain, registryHost string) http.Handler {
@@ -64,6 +69,7 @@ func NewServer(db *pgxpool.Pool, a *auth.Auth, hub *sse.Hub, vault *secrets.Vaul
 		r.Group(func(r chi.Router) {
 			r.Use(a.Middleware)
 			r.Get("/events", hub.Handler())
+			r.Get("/topology", s.handleTopology)
 			r.Get("/deployments", s.handleListDeployments)
 			r.Post("/deployments", s.handleCreateDeployment)
 			r.Post("/deployments/import/preview", s.handleImportComposePreview)

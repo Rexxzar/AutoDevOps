@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plus, Server, Cloud, CheckCircle2, AlertCircle, Trash2, ShieldCheck } from 'lucide-react'
+import { Loader2, Plus, Server, Cloud, CheckCircle2, AlertCircle, Trash2, ShieldCheck, MapPin } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -335,6 +335,113 @@ function SelfHealingSection() {
   )
 }
 
+// TopologyLocationSection lets the operator override where the Topology Map's
+// "Local" pin sits. The server auto-detects it once via GeoIP of its public IP,
+// but a laptop behind a VPN (or an air-gapped host) may want an exact spot.
+function TopologyLocationSection() {
+  const qc = useQueryClient()
+  const { data: settings, isLoading } = useQuery<Record<string, string>>({
+    queryKey: ['settings'],
+    queryFn: () => apiFetch<Record<string, string>>('/settings'),
+  })
+
+  const [label, setLabel] = useState('')
+  const [lat, setLat] = useState('')
+  const [lon, setLon] = useState('')
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null)
+
+  // Seed inputs from the stored/auto-detected values whenever settings load or
+  // refresh, unless the user has started editing.
+  useEffect(() => {
+    if (dirty || !settings) return
+    setLabel(settings.topology_local_label ?? '')
+    setLat(settings.topology_local_lat ?? '')
+    setLon(settings.topology_local_lon ?? '')
+  }, [settings, dirty])
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault()
+    const latN = parseFloat(lat)
+    const lonN = parseFloat(lon)
+    if (Number.isNaN(latN) || latN < -90 || latN > 90) {
+      setResult({ ok: false, msg: 'Latitude must be a number between -90 and 90.' })
+      return
+    }
+    if (Number.isNaN(lonN) || lonN < -180 || lonN > 180) {
+      setResult({ ok: false, msg: 'Longitude must be a number between -180 and 180.' })
+      return
+    }
+    setSaving(true)
+    setResult(null)
+    try {
+      await apiFetch('/settings', { method: 'PUT', body: JSON.stringify({ key: 'topology_local_lat', value: String(latN) }) })
+      await apiFetch('/settings', { method: 'PUT', body: JSON.stringify({ key: 'topology_local_lon', value: String(lonN) }) })
+      await apiFetch('/settings', { method: 'PUT', body: JSON.stringify({ key: 'topology_local_label', value: label || 'Local' }) })
+      setResult({ ok: true, msg: 'Local pin location saved.' })
+      setDirty(false)
+      qc.invalidateQueries({ queryKey: ['settings'] })
+      qc.invalidateQueries({ queryKey: ['topology'] })
+    } catch (err) {
+      setResult({ ok: false, msg: err instanceof Error ? err.message : 'Failed to save location' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 border-b border-border px-5 py-3.5">
+        <MapPin className="size-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold">Topology — Local pin location</h2>
+      </div>
+      <form onSubmit={save} className="space-y-3 p-5">
+        <p className="text-xs text-muted-foreground">
+          Where the "Local" region (kind + Docker) sits on the Topology Map. Auto-detected
+          from this server's public IP; override it here for an exact spot.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">Label</label>
+            <input
+              value={label}
+              onChange={(e) => { setLabel(e.target.value); setDirty(true) }}
+              placeholder="Local (Nottingham, UK)"
+              className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/40"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">Latitude</label>
+            <input
+              value={lat}
+              onChange={(e) => { setLat(e.target.value); setDirty(true) }}
+              placeholder="52.95"
+              inputMode="decimal"
+              className="h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/40"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">Longitude</label>
+            <input
+              value={lon}
+              onChange={(e) => { setLon(e.target.value); setDirty(true) }}
+              placeholder="-1.15"
+              inputMode="decimal"
+              className="h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/40"
+            />
+          </div>
+        </div>
+        {result && <StatusMsg ok={result.ok} msg={result.msg} />}
+        <Button type="submit" size="sm" disabled={saving || isLoading} className="gap-1.5">
+          {saving ? <Loader2 className="size-3.5 animate-spin" /> : <MapPin className="size-3.5" />}
+          Save location
+        </Button>
+      </form>
+    </Card>
+  )
+}
+
 export function SettingsPage() {
   return (
     <div>
@@ -346,6 +453,7 @@ export function SettingsPage() {
         <ClusterSection />
         <CloudAccountSection />
         <SelfHealingSection />
+        <TopologyLocationSection />
       </div>
     </div>
   )
