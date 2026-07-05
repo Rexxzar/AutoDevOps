@@ -36,6 +36,8 @@ type topoApp struct {
 	TargetType   string `json:"target_type"` // k8s | container | vm | ecs | aci
 	Status       string `json:"status"`
 	DeploymentID string `json:"deployment_id"`
+	ImageRef     string `json:"image_ref,omitempty"`
+	Port         int    `json:"port,omitempty"`
 	PodsReady    int    `json:"pods_ready,omitempty"`
 	PodsTotal    int    `json:"pods_total,omitempty"`
 }
@@ -53,6 +55,7 @@ type topoNode struct {
 
 type topoEdge struct {
 	ID          string `json:"id"`
+	Kind        string `json:"kind"` // "dependency" (app link) | "registry" (ECS/ACI → ECR/ACR)
 	FromNode    string `json:"from_node"`
 	ToNode      string `json:"to_node"`
 	FromRegion  string `json:"from_region"`
@@ -140,7 +143,7 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	appRows, err := s.db.Query(ctx, `
 		SELECT id::text, name, kind, COALESCE(framework,''), target_kind,
 		       COALESCE(target_resource_id::text,''), status, COALESCE(namespace,''),
-		       deployment_id::text
+		       deployment_id::text, COALESCE(image_ref,''), COALESCE(port,0)
 		FROM deployment_apps
 		WHERE status <> 'destroyed'
 		ORDER BY created_at ASC
@@ -151,9 +154,10 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	}
 	defer appRows.Close()
 	for appRows.Next() {
-		var id, name, kind, framework, targetKind, targetResourceID, status, namespace, deploymentID string
+		var id, name, kind, framework, targetKind, targetResourceID, status, namespace, deploymentID, imageRef string
+		var port int
 		if err := appRows.Scan(&id, &name, &kind, &framework, &targetKind,
-			&targetResourceID, &status, &namespace, &deploymentID); err != nil {
+			&targetResourceID, &status, &namespace, &deploymentID, &imageRef, &port); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to scan app")
 			return
 		}
@@ -182,6 +186,8 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 			TargetType:   appTargetType(targetKind),
 			Status:       status,
 			DeploymentID: deploymentID,
+			ImageRef:     imageRef,
+			Port:         port,
 		}
 		if targetKind == "local_k8s" && namespace != "" {
 			app.PodsReady = podReady[namespace]
@@ -245,6 +251,7 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 		}
 		edges = append(edges, topoEdge{
 			ID:          linkID,
+			Kind:        "dependency",
 			FromNode:    fromNode,
 			ToNode:      toNode,
 			FromRegion:  fromN.RegionKey,
@@ -256,6 +263,47 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := linkRows.Err(); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed reading links")
+		return
+	}
+
+	// 4b) Registry links: an ECS/ACI resource's bundled registry
+	// (provisioned_resources.registry_resource_id, Phase 11) is a
+	// resource-to-resource relationship, not an app link — draw it so the
+	// ECS→ECR / ACI→ACR connection shows on the map.
+	regRows, err := s.db.Query(ctx, `
+		SELECT id::text, registry_resource_id::text
+		FROM provisioned_resources
+		WHERE dismissed_at IS NULL AND registry_resource_id IS NOT NULL
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list registry links")
+		return
+	}
+	defer regRows.Close()
+	for regRows.Next() {
+		var serviceID, registryID string
+		if err := regRows.Scan(&serviceID, &registryID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to scan registry link")
+			return
+		}
+		fromN, ok1 := nodes[serviceID]
+		toN, ok2 := nodes[registryID]
+		if !ok1 || !ok2 {
+			continue
+		}
+		edges = append(edges, topoEdge{
+			ID:          "reg:" + serviceID,
+			Kind:        "registry",
+			FromNode:    serviceID,
+			ToNode:      registryID,
+			FromRegion:  fromN.RegionKey,
+			ToRegion:    toN.RegionKey,
+			Alias:       "registry",
+			CrossRegion: fromN.RegionKey != toN.RegionKey,
+		})
+	}
+	if err := regRows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed reading registry links")
 		return
 	}
 

@@ -34,6 +34,8 @@ interface TopoApp {
   target_type: string
   status: string
   deployment_id: string
+  image_ref?: string
+  port?: number
   pods_ready?: number
   pods_total?: number
 }
@@ -49,6 +51,7 @@ interface TopoNode {
 }
 interface TopoEdge {
   id: string
+  kind: string // "dependency" | "registry"
   from_node: string
   to_node: string
   from_region: string
@@ -442,7 +445,11 @@ function WorldMap({
       if (rn.length <= 1) {
         if (rn[0]) p[rn[0].id] = { x: c.x, y: c.y, node: rn[0] }
       } else {
-        const radius = 9 + Math.min(rn.length, 10) * 1.3
+        // Tight cluster: same-region (and same-host, for local kind+docker)
+        // resources should read as a group sitting together, not flung to
+        // opposite sides of a wide ring. Radius grows gently with count so a
+        // 2-pin region stays snug while a busy region still separates.
+        const radius = 5 + Math.min(rn.length, 12) * 0.7
         rn.forEach((n, i) => {
           const a = (2 * Math.PI * i) / rn.length - Math.PI / 2
           p[n.id] = { x: c.x + radius * Math.cos(a), y: c.y + radius * Math.sin(a), node: n }
@@ -455,16 +462,25 @@ function WorldMap({
 
   // One arc per edge whose endpoints both resolved to pins.
   const arcs = useMemo(() => {
-    const out: { key: string; d: string; color: string; cross: boolean }[] = []
+    const out: {
+      key: string
+      d: string
+      color: string
+      cross: boolean
+      registry: boolean
+    }[] = []
     for (const e of edges) {
       const a = pins[e.from_node]
       const b = pins[e.to_node]
       if (!a || !b) continue
+      const registry = e.kind === 'registry'
       out.push({
         key: e.id,
         d: arcPath(a.x, a.y, b.x, b.y),
-        color: provColor(e.from_region.split(':')[0]),
+        // registry links get their own hue so ECS→ECR / ACI→ACR stands out
+        color: registry ? '#a78bfa' : provColor(e.from_region.split(':')[0]),
         cross: e.cross_region,
+        registry,
       })
     }
     return out
@@ -557,9 +573,10 @@ function WorldMap({
 
         <path d={WORLD_PATH} fill="#22405f" />
 
-        {/* arcs (under pins) */}
+        {/* arcs (under pins). Registry links are always drawn prominently so
+            the ECS→ECR / ACI→ACR connection is visible even within a region. */}
         {arcs.map((a) =>
-          a.cross ? (
+          a.cross || a.registry ? (
             <path
               key={a.key}
               d={a.d}
@@ -625,6 +642,9 @@ function WorldMap({
             >
               <title>
                 {node.name} · {node.resource_type || node.kind} · {node.status}
+                {node.apps.length > 0
+                  ? `\nrunning: ${node.apps.map((a) => a.name).join(', ')}`
+                  : ''}
               </title>
               <circle cx={x} cy={y} r={(isSel ? 11 : 9) * k} fill={c} opacity={0.16} />
               <circle
@@ -718,6 +738,10 @@ function MapLegend({ regions }: { regions: TopoRegion[] }) {
         <span className="inline-block w-5 border-t border-dashed border-foreground/60" />
         cross-cloud link
       </span>
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-block w-5 border-t border-dashed" style={{ borderColor: '#a78bfa' }} />
+        registry link
+      </span>
       {unlocated.length > 0 && (
         <span className="text-muted-foreground/70">
           {unlocated.length} region{unlocated.length !== 1 ? 's' : ''} without a
@@ -807,26 +831,43 @@ function NodeCard({ node, accent }: { node: TopoNode; accent: string }) {
   )
 }
 
+// shortImage strips the registry host from an image ref, keeping repo:tag so
+// the chip shows something readable (e.g. "shophun-backend:a1b2c3d").
+function shortImage(ref?: string): string {
+  if (!ref) return ''
+  const parts = ref.split('/')
+  return parts[parts.length - 1]
+}
+
 function AppChip({ app }: { app: TopoApp }) {
   const status = topoStatusToKind(app.status)
+  const img = shortImage(app.image_ref)
   return (
-    <div className="mt-2 flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
-      <StatusDot status={status} pulse={status === 'building'} />
-      <span className="truncate font-mono text-[0.7rem] font-medium">
-        {app.name}
-      </span>
-      {app.framework && (
-        <span className="rounded border border-border px-1.5 py-0.5 text-[0.6rem] text-foreground">
-          {app.framework}
+    <div className="mt-2 rounded-md bg-muted/40 px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <StatusDot status={status} pulse={status === 'building'} />
+        <span className="truncate font-mono text-[0.7rem] font-medium">
+          {app.name}
         </span>
-      )}
-      <span className="rounded border border-border px-1.5 py-0.5 text-[0.6rem] text-muted-foreground">
-        {app.target_type}
-      </span>
-      {app.target_type === 'k8s' && (app.pods_total ?? 0) > 0 && (
-        <span className="ml-auto font-mono text-[0.65rem] font-semibold text-success">
-          {app.pods_ready}/{app.pods_total}
+        {app.framework && (
+          <span className="rounded border border-border px-1.5 py-0.5 text-[0.6rem] text-foreground">
+            {app.framework}
+          </span>
+        )}
+        <span className="rounded border border-border px-1.5 py-0.5 text-[0.6rem] text-muted-foreground">
+          {app.target_type}
         </span>
+        {app.target_type === 'k8s' && (app.pods_total ?? 0) > 0 && (
+          <span className="ml-auto font-mono text-[0.65rem] font-semibold text-success">
+            {app.pods_ready}/{app.pods_total}
+          </span>
+        )}
+      </div>
+      {(img || app.port) && (
+        <div className="mt-1 flex items-center gap-2 pl-4 font-mono text-[0.6rem] text-muted-foreground">
+          {img && <span className="truncate">{img}</span>}
+          {app.port ? <span className="shrink-0">:{app.port}</span> : null}
+        </div>
       )}
     </div>
   )
