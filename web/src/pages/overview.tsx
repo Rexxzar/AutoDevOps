@@ -105,7 +105,7 @@ export function OverviewPage() {
     },
     {
       label: 'Compliance gate',
-      value: '—',
+      value: '-',
       icon: ShieldCheck,
       to: '/compliance',
       sub: 'see compliance page',
@@ -160,7 +160,7 @@ export function OverviewPage() {
               )}
               {deps.slice(0, 4).map((d) => {
                 const status = backendStatusToKind(d.status)
-                const commitSha = d.image_ref?.split(':').pop()?.slice(0, 7) ?? '—'
+                const commitSha = d.image_ref?.split(':').pop()?.slice(0, 7) ?? '-'
                 return (
                   <div key={d.id} className="flex items-center gap-3 px-5 py-3">
                     <StatusDot status={status} pulse={status === 'building'} />

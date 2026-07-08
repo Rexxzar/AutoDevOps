@@ -92,7 +92,7 @@ function podHealthKind(status: string): StatusKind {
 
 // EditResourceDialog lets the user change a local resource's settings (image,
 // container port, host port/network for Docker; expose-via-ingress for K8s)
-// after creation — reuses new-resource.tsx's LocalFields for the same fields
+// after creation, reuses new-resource.tsx's LocalFields for the same fields
 // shown at creation time, pre-filled from the resource's current outputs.
 // Docker edits recreate the container (brief restart); K8s edits patch the
 // Deployment/Service/Ingress in place (see internal/api's handleEditResource).
@@ -147,7 +147,7 @@ function EditResourceDialog({
         <LocalFields v={opts} set={set} resourceType={resourceType} />
         {resourceType === 'docker' && (
           <p className="text-xs text-muted-foreground">
-            Saving recreates the container with the new settings — it will be briefly unavailable.
+            Saving recreates the container with the new settings, it will be briefly unavailable.
           </p>
         )}
         {error && (
@@ -173,7 +173,7 @@ function EditResourceDialog({
 // RegistryLinkSection shows (and lets the user edit) the "ecr"/"acr" registry
 // resource linked to this ECS service / ACI container group via
 // provisioned_resources.registry_resource_id (migration
-// 020_registry_resource_link.sql) — required for git-app deploys onto this
+// 020_registry_resource_link.sql), required for git-app deploys onto this
 // resource to push images. Mirrors new-resource.tsx's RegistryPicker, but
 // saves immediately via PUT /resources/{id}/registry; the resulting "resource"
 // SSE event refreshes the parent page's `resource` state.
@@ -218,7 +218,7 @@ function RegistryLinkSection({
       </CardHeader>
       <CardContent className="space-y-2">
         <p className="text-xs text-muted-foreground">
-          Required for git-app deploys onto this resource — the built image is pushed here.
+          Required for git-app deploys onto this resource, the built image is pushed here.
         </p>
         {registries.length === 0 ? (
           <p className="text-xs text-muted-foreground">
@@ -492,7 +492,7 @@ export function ResourceDetailPage() {
         {!hasOutputs && (resource.status === 'applied' || resource.status === 'applying') && (
           <Card>
             <CardContent className="py-4 text-sm text-muted-foreground">
-              No connection details yet — they appear here once Apply finishes successfully.
+              No connection details yet, they appear here once Apply finishes successfully.
             </CardContent>
           </Card>
         )}
@@ -603,7 +603,7 @@ export function ResourceDetailPage() {
                 />
               )}
               <p className="text-xs text-muted-foreground">
-                The master password is managed by AWS Secrets Manager (auto-rotated, never stored by AutoDevOps) — find it in the
+                The master password is managed by AWS Secrets Manager (auto-rotated, never stored by AutoDevOps), find it in the
                 AWS console under Secrets Manager, secret name starting with <code className="font-mono">rds!db-</code>.
               </p>
             </CardContent>
@@ -639,7 +639,7 @@ export function ResourceDetailPage() {
                 <CopyField label="SSH command" value={`ssh ${outputs.vm_admin_username}@${outputs.vm_public_ip}`} />
               )}
               <p className="text-xs text-muted-foreground">
-                Connect using the private key downloaded when this VM was created — AutoDevOps never stores it.
+                Connect using the private key downloaded when this VM was created, AutoDevOps never stores it.
               </p>
             </CardContent>
           </Card>
@@ -661,7 +661,7 @@ export function ResourceDetailPage() {
                 />
               )}
               <p className="text-xs text-muted-foreground">
-                Authentication is Azure AD only — sign in as the AAD admin above using an access token, no password is stored.
+                Authentication is Azure AD only, sign in as the AAD admin above using an access token, no password is stored.
               </p>
             </CardContent>
           </Card>
@@ -682,7 +682,7 @@ export function ResourceDetailPage() {
           </Card>
         )}
 
-        {/* Linked container registry (ECS/ACI only) — migration 020 */}
+        {/* Linked container registry (ECS/ACI only), migration 020 */}
         {resource.provider === 'aws' && resource.resource_type === 'ecs' && (
           <RegistryLinkSection resourceId={id!} provider="aws" registryResourceId={resource.registry_resource_id} navigate={navigate} />
         )}

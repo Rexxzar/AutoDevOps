@@ -32,7 +32,7 @@ export function RepoDetailPage() {
   })
 
   // pullLatest fetches origin/<branch> and hard-resets the server clone to it,
-  // then forces the Code tab to reload — the fix for "I pushed to the repo but
+  // then forces the Code tab to reload, the fix for "I pushed to the repo but
   // AutoDevOps still shows the old files".
   async function pullLatest() {
     setRefreshing(true)
@@ -40,11 +40,11 @@ export function RepoDetailPage() {
     try {
       const res = await apiFetch<RefreshResult>(`/repos/${id}/refresh`, { method: 'POST' })
       if (res.updated) {
-        setPullMsg(res.commit ? `Pulled — now at ${res.commit.sha}: ${res.commit.message}` : 'Pulled latest changes')
+        setPullMsg(res.commit ? `Pulled, now at ${res.commit.sha}: ${res.commit.message}` : 'Pulled latest changes')
         setReloadKey((k) => k + 1)
         refetch()
       } else {
-        setPullMsg('Already up to date — no new changes')
+        setPullMsg('Already up to date, no new changes')
       }
     } catch (e) {
       setPullMsg(`Pull failed: ${e}`)
@@ -211,7 +211,7 @@ function CodeTab({ repoId, hasCredentials, reloadKey, initialFile, onFileConsume
     loadFiles()
   }, [loadFiles, reloadKey])
 
-  // Open a file requested from a compliance finding's "Open file" action — runs
+  // Open a file requested from a compliance finding's "Open file" action, runs
   // on mount when the Compliance tab handed us a path to jump to.
   useEffect(() => {
     if (!initialFile) return
@@ -349,7 +349,7 @@ function CodeTab({ repoId, hasCredentials, reloadKey, initialFile, onFileConsume
         </div>
       ) : (
         <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Read-only edits</span> — no git credentials stored. Add a token (remove & re-add the repo) to enable commit &amp; push.
+          <span className="font-medium text-foreground">Read-only edits</span>, no git credentials stored. Add a token (remove & re-add the repo) to enable commit &amp; push.
         </div>
       )}
     </div>
@@ -358,7 +358,7 @@ function CodeTab({ repoId, hasCredentials, reloadKey, initialFile, onFileConsume
 
 // ── Compliance tab ──────────────────────────────────────────────────────────
 
-// ScanningPanel is the animated "scan in progress" state — a spinning ring
+// ScanningPanel is the animated "scan in progress" state, a spinning ring
 // around a shield, with the source scanners listed as pulsing chips.
 function ScanningPanel() {
   const scanners = ['GitLeaks', 'Hadolint', 'tfsec']
@@ -404,7 +404,7 @@ function ComplianceTab({ repoId, detail, onScanned, onOpenFile }: { repoId: stri
       setError(String(e))
     } finally {
       // These scanners are near-instant on a small repo (gitleaks scans in ~10ms),
-      // so hold the scanning animation for a minimum beat — otherwise the spinner
+      // so hold the scanning animation for a minimum beat, otherwise the spinner
       // flashes by faster than the eye can register and it looks like nothing ran.
       const elapsed = Date.now() - start
       const minMs = 800
@@ -465,7 +465,7 @@ function ComplianceTab({ repoId, detail, onScanned, onOpenFile }: { repoId: stri
               <ShieldCheck className="size-4 text-muted-foreground" />
             </div>
             <p className="max-w-xs text-sm text-muted-foreground text-pretty">
-              {detail.repo.last_scanned_at ? 'No findings — this repo is clean.' : 'Run a compliance check to scan this repository.'}
+              {detail.repo.last_scanned_at ? 'No findings, this repo is clean.' : 'Run a compliance check to scan this repository.'}
             </p>
           </div>
         ) : (

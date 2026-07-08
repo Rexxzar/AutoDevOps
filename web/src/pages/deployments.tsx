@@ -61,7 +61,7 @@ function apiToDeployment(d: ApiDeployment): Deployment {
     branch: d.branch,
     commit: commitSha,
     commitMessage: d.branch,
-    author: '—',
+    author: '-',
     framework: d.framework || 'unknown',
     target: targetMap[d.target_type] ?? 'kubernetes',
     provider: 'kind' as Provider,

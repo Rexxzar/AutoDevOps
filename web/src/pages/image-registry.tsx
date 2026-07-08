@@ -20,7 +20,7 @@ interface ImageInfo {
 }
 
 function formatSize(bytes: number): string {
-  if (bytes <= 0) return '—'
+  if (bytes <= 0) return '-'
   const units = ['B', 'KB', 'MB', 'GB']
   let value = bytes
   let unit = 0
@@ -234,7 +234,7 @@ export function ImageRegistryPage() {
             </div>
           )}
           <p className="text-[0.7rem] text-muted-foreground">
-            Pulls the image and pushes it into the local registry — this can take a minute for large images.
+            Pulls the image and pushes it into the local registry, this can take a minute for large images.
           </p>
           <div className="flex justify-end gap-2">
             <Button type="button" size="sm" variant="outline" onClick={() => setImportOpen(false)} disabled={importLoading}>

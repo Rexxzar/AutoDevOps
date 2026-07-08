@@ -66,7 +66,7 @@ export function LogsPage() {
     <div>
       <PageHeader
         title="Logs"
-        description="System log — every event under the hood, streamed from the control plane with filters."
+        description="System log, every event under the hood, streamed from the control plane with filters."
       >
         <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setLive((v) => !v)}>
           {live ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}

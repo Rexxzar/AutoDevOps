@@ -1,4 +1,4 @@
-// Terraform Store — types + helpers for the workspace catalog and detail pages.
+// Terraform Store, types + helpers for the workspace catalog and detail pages.
 
 export interface TfWorkspace {
   id: string

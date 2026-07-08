@@ -192,7 +192,7 @@ function PodDetail({ pod, onClose }: { pod: Pod; onClose: () => void }) {
   const rows: [string, React.ReactNode][] = [
     ['App', pod.appName || extractAppName(pod.name)],
     ['Pod name', <span className="font-mono text-[0.7rem]">{pod.name}</span>],
-    ['Namespace', pod.namespace ? <span className="font-mono text-[0.7rem]">{pod.namespace}</span> : '—'],
+    ['Namespace', pod.namespace ? <span className="font-mono text-[0.7rem]">{pod.namespace}</span> : '-'],
     ['Status', label],
     ['Ready', pod.ready ? <span className="text-success">Yes</span> : <span className="text-critical">No</span>],
     ['Restarts', pod.restarts > 0 ? (
@@ -335,7 +335,7 @@ export function ClustersPage() {
       }))
     }
 
-    // Self-heal activity (pod or container) — refresh the episode-backed stream
+    // Self-heal activity (pod or container), refresh the episode-backed stream
     // so the one-row-per-crash timeline updates promptly without duplicating it
     // with a separate live feed.
     if (liveStream && (type === 'pod.heal.restart' || type === 'pod.heal.gaveup' ||
@@ -359,7 +359,7 @@ export function ClustersPage() {
     <div>
       <PageHeader
         title="Clusters"
-        description="Kubernetes self-healing controller — live pod health and autonomous recovery"
+        description="Kubernetes self-healing controller, live pod health and autonomous recovery"
       >
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5">
           <span className="text-xs text-muted-foreground">Pods tracked</span>
@@ -431,7 +431,7 @@ export function ClustersPage() {
                       <span className="font-mono text-xs text-muted-foreground">{pods.length} pods</span>
                     </div>
                     {sortedNamespaces.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No pod data yet — waiting for health events.</p>
+                      <p className="text-xs text-muted-foreground">No pod data yet, waiting for health events.</p>
                     ) : (
                       sortedNamespaces.map((ns) => (
                         <NamespaceGroup
@@ -490,8 +490,8 @@ function episodeToHealEvent(e: HealEpisode): HealEvent {
     action: recovered
       ? `Self-healed${e.mttr_seconds != null ? ` (${Math.round(e.mttr_seconds)}s)` : ''}`
       : e.gave_up
-        ? 'Gave up — restart budget exhausted'
-        : 'Detected — healing in progress',
+        ? 'Gave up, restart budget exhausted'
+        : 'Detected, healing in progress',
     detail: `${e.target_kind}${e.scope ? ` · ${e.scope}` : ''}${e.reason ? ` · ${e.reason}` : ''}`,
     tone: recovered ? 'success' : e.gave_up ? 'critical' : 'warning',
   }
@@ -509,7 +509,7 @@ interface HealMetrics {
 }
 
 function fmtHealSeconds(s?: number): string {
-  if (s == null) return '—'
+  if (s == null) return '-'
   if (s < 1) return '<1s'
   if (s < 60) return `${Math.round(s)}s`
   const m = Math.floor(s / 60)
@@ -517,8 +517,7 @@ function fmtHealSeconds(s?: number): string {
   return `${m}m ${rem}s`
 }
 
-// HealMetricsCard shows aggregate MTTD/MTTR/recovery rate from /heal/metrics —
-// the headline self-healing numbers for the evaluation (covers pods + containers).
+// HealMetricsCard shows aggregate MTTD/MTTR/recovery rate from /heal/metrics, // the headline self-healing numbers for the evaluation (covers pods + containers).
 function HealMetricsCard() {
   const { data } = useQuery({
     queryKey: ['heal-metrics'],
@@ -530,7 +529,7 @@ function HealMetricsCard() {
     <Card className="p-4">
       <h3 className="text-sm font-semibold">Self-healing metrics</h3>
       <div className="mt-3 grid grid-cols-3 gap-3">
-        <HealStat label="Recovery rate" value={o && o.total > 0 ? `${Math.round(o.recovery_rate * 100)}%` : '—'} />
+        <HealStat label="Recovery rate" value={o && o.total > 0 ? `${Math.round(o.recovery_rate * 100)}%` : '-'} />
         <HealStat label="Avg MTTD" value={fmtHealSeconds(o?.avg_mttd_seconds)} />
         <HealStat label="Avg MTTR" value={fmtHealSeconds(o?.avg_mttr_seconds)} />
       </div>

@@ -94,7 +94,7 @@ module.exports = {
   env: { API_URL: process.env.AUTODEVOPS_BACKEND_URL }
 }`
   }
-  return `# start.sh — generate config before serving
+  return `# start.sh, generate config before serving
 #!/bin/sh
 URL=$(printenv AUTODEVOPS_BACKEND_URL)
 echo "window.API_URL = '\${URL:-}';" > dist/config.js
@@ -244,7 +244,7 @@ function computeSteps(apps: AppInfo[]): SetupStep[] {
     steps.push({
       id: 'redeploy_pending',
       title: `Redeploying ${buildingApp?.name || 'app'}...`,
-      description: 'Applying connection changes. This usually takes 1–2 minutes.',
+      description: 'Applying connection changes. This usually takes 1-2 minutes.',
       completed: false,
       inProgress: true,
     })

@@ -36,7 +36,7 @@ export function TerraformPage() {
     <div>
       <PageHeader
         title="Terraform"
-        description="Every provisioned resource's Terraform workspace — view, edit, download, export, and manage state."
+        description="Every provisioned resource's Terraform workspace: view, edit, download, export, and manage state."
       >
         <Button variant="outline" size="sm" className="gap-1.5" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
@@ -61,7 +61,7 @@ export function TerraformPage() {
                 <FileCode2 className="size-4 text-muted-foreground" />
               </div>
               <p className="max-w-xs text-sm text-muted-foreground text-pretty">
-                No Terraform workspaces yet. Provision a cloud resource — its generated Terraform shows up here.
+                No Terraform workspaces yet. Provision a cloud resource, its generated Terraform shows up here.
               </p>
             </div>
           )}

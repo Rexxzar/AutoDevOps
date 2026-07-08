@@ -212,7 +212,7 @@ function VaultStatusCard({ status, onRotated, onRotateMaster }: {
     setRotating(true); setMsg(''); setErr('')
     try {
       const r = await apiFetch<{ version: number; reencrypted: number }>('/secrets/rotate', { method: 'POST' })
-      setMsg(`Rotated to key version ${r.version} — ${r.reencrypted} secret(s) re-encrypted.`)
+      setMsg(`Rotated to key version ${r.version}, ${r.reencrypted} secret(s) re-encrypted.`)
       onRotated()
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Rotation failed')
@@ -418,7 +418,7 @@ function RotateMasterDialog({ onClose }: { onClose: () => void }) {
           <div>
             <p className="text-sm font-semibold">Rotate master key</p>
             <p className="text-xs text-muted-foreground">
-              Re-wraps the data key under a new master key. Secrets are not re-encrypted, so this is fast — but you must
+              Re-wraps the data key under a new master key. Secrets are not re-encrypted, so this is fast, but you must
               update the <code className="rounded bg-muted px-1 font-mono">MASTER_KEY</code> env var afterwards.
             </p>
           </div>

@@ -20,7 +20,7 @@ const stateColor: Record<string, string> = {
 export function PodGrid({ pods, onSelect }: { pods: Pod[]; onSelect?: (pod: Pod) => void }) {
   if (!pods.length) {
     return (
-      <p className="text-xs text-muted-foreground">No pod data yet — waiting for health events.</p>
+      <p className="text-xs text-muted-foreground">No pod data yet, waiting for health events.</p>
     )
   }
   return (

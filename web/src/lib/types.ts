@@ -84,5 +84,5 @@ export type HealEvent = {
 }
 
 export const initialHealEvents: HealEvent[] = [
-  { id: 'h1', ts: '—', cluster: 'waiting', pod: '—', action: 'Waiting for heal events', detail: 'Self-healing controller will stream events here in real time', tone: 'info' },
+  { id: 'h1', ts: '-', cluster: 'waiting', pod: '-', action: 'Waiting for heal events', detail: 'Self-healing controller will stream events here in real time', tone: 'info' },
 ]

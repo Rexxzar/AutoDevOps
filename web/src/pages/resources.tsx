@@ -60,11 +60,11 @@ function stateColor(state: string): string {
 function stateLabel(state: string): string {
   try {
     const s = JSON.parse(state) as Record<string, string>
-    return s.state ?? s.status ?? s.power_state ?? s.provisioning_state ?? '—'
-  } catch { return '—' }
+    return s.state ?? s.status ?? s.power_state ?? s.provisioning_state ?? '-'
+  } catch { return '-' }
 }
 
-// isDismissable mirrors stateColor's classification — only resources that are
+// isDismissable mirrors stateColor's classification, only resources that are
 // no longer actively running (terminated/failed or stopped/deallocated) can
 // be dismissed from the Cloud Inventory.
 function isDismissable(state: string): boolean {
@@ -99,7 +99,7 @@ export function ResourcesPage() {
   useSSE(token, useCallback((type: string) => {
     if (type === 'cloud.resource') {
       // Poller payloads don't carry the DB row id, account name, or
-      // dedupe info that the table needs — just refetch the inventory.
+      // dedupe info that the table needs, just refetch the inventory.
       qc.invalidateQueries({ queryKey: ['cloud-resources'] })
     }
   }, [qc]))
@@ -227,7 +227,7 @@ export function ResourcesPage() {
                             </div>
                           </td>
                           <td className="px-4 py-3 overflow-hidden">
-                            <p className="truncate font-medium">{r.name || '—'}</p>
+                            <p className="truncate font-medium">{r.name || '-'}</p>
                             <p className="truncate font-mono text-xs text-muted-foreground" title={r.resource_id}>{r.resource_id}</p>
                           </td>
                           <td className="px-4 py-3 truncate font-mono text-xs text-muted-foreground">{r.region}</td>

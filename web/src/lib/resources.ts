@@ -1,4 +1,4 @@
-// Shared types and lookups for the standalone Resources feature — used by
+// Shared types and lookups for the standalone Resources feature, used by
 // both the Resources list page and the per-resource detail page.
 
 export interface ProvisionedResource {
@@ -10,13 +10,12 @@ export interface ProvisionedResource {
   resource_type: string
   template: string
   status: string
-  // JSON-encoded terraform outputs (vpc_id, public IP, db endpoint, etc. —
-  // see `output` blocks in internal/terraform/templates/*/stack.tf.tmpl),
+  // JSON-encoded terraform outputs (vpc_id, public IP, db endpoint, etc., // see `output` blocks in internal/terraform/templates/*/stack.tf.tmpl),
   // "{}" until the first successful Apply.
   outputs: string
   // Optional link (ecs/aci only) to an applied "ecr"/"acr" resource whose
   // outputs supply the registry connection info for git-app deploys onto
-  // this resource — see migration 020_registry_resource_link.sql.
+  // this resource, see migration 020_registry_resource_link.sql.
   registry_resource_id?: string
   created_at: string
   updated_at: string
@@ -61,11 +60,11 @@ export function formatRelativeTime(iso: string): string {
 }
 
 // Known transient/cloud-side terraform errors that confuse users if shown
-// raw — translated into plain-language guidance with the actual fix.
+// raw, translated into plain-language guidance with the actual fix.
 const KNOWN_TF_ERRORS: { pattern: RegExp; message: string }[] = [
   {
     pattern: /NicReservedForAnotherVm/i,
-    message: "Azure is still holding this VM's network interface from a failed creation attempt — it releases automatically after about 3 minutes. Wait a few minutes, then try Destroy again.",
+    message: "Azure is still holding this VM's network interface from a failed creation attempt, it releases automatically after about 3 minutes. Wait a few minutes, then try Destroy again.",
   },
   {
     pattern: /SkuNotAvailable/i,
@@ -82,7 +81,7 @@ export function friendlyTerraformError(output?: string): string | null {
 }
 
 // parseOutputs safely parses the outputs JSON string into a flat
-// string-keyed map — terraform output values are JSON-encoded scalars
+// string-keyed map, terraform output values are JSON-encoded scalars
 // (numbers/strings), so String() on the parsed value renders cleanly.
 export function parseOutputs(outputs: string): Record<string, string> {
   try {

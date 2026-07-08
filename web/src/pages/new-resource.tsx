@@ -18,7 +18,7 @@ type NetworkMode = 'new' | 'existing'
 
 const LOCAL_IMAGE_PRESETS = ['nginx:latest', 'redis:7-alpine', 'postgres:16', 'busybox']
 
-// CloudNetwork mirrors internal/cloud.Network — an existing VPC (AWS) or
+// CloudNetwork mirrors internal/cloud.Network, an existing VPC (AWS) or
 // VNet (Azure) returned by GET /cloud/accounts/{id}/networks for the
 // "use existing network" picker.
 type CloudNetwork = {
@@ -64,8 +64,7 @@ function ECSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
         </select>
       </FormField>
       <p className="text-xs text-muted-foreground">
-        The container port is fixed at <span className="font-mono">8080</span> (the Paketo <span className="font-mono">$PORT</span> contract
-        — git apps run as a non-root user that can't bind ports below 1024). The load balancer accepts public traffic on port 80 and forwards to 8080.
+        The container port is fixed at <span className="font-mono">8080</span> (the Paketo <span className="font-mono">$PORT</span> contract, git apps run as a non-root user that can't bind ports below 1024). The load balancer accepts public traffic on port 80 and forwards to 8080.
       </p>
     </>
   )
@@ -82,7 +81,7 @@ function EC2Fields({ v, set }: { v: Record<string,string>; set: (k: string, val:
         </select>
       </FormField>
       <p className="text-xs text-muted-foreground">
-        Runs the latest Amazon Linux 2023 (required for EC2 Instance Connect — the agent that lets AutoDevOps
+        Runs the latest Amazon Linux 2023 (required for EC2 Instance Connect, the agent that lets AutoDevOps
         SSH and open a browser console without storing a key pair). Docker, nginx and certbot are pre-installed on boot.
       </p>
     </>
@@ -110,7 +109,7 @@ function RDSFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
         <input value={v.username ?? ''} onChange={e => set('username', e.target.value)} placeholder="appadmin" className={inputCls} />
       </FormField>
       <p className="text-xs text-muted-foreground">
-        The master password is generated and managed by AWS (Secrets Manager) — AutoDevOps never sees it, and injects
+        The master password is generated and managed by AWS (Secrets Manager), AutoDevOps never sees it, and injects
         it into a linked app automatically. Apps connect to the default <span className="font-mono">postgres</span> database.
       </p>
     </>
@@ -151,7 +150,7 @@ function ACIFields({ v, set }: { v: Record<string,string>; set: (k: string, val:
 }
 
 // ─── AWS ECR sub-fields ───────────────────────────────────────────
-// No extra fields — the repository is named after this resource (see
+// No extra fields, the repository is named after this resource (see
 // generateACRName's AWS counterpart in buildTerraformConfig's "ecr" case).
 function ECRFields() {
   return (
@@ -166,7 +165,7 @@ function ECRFields() {
 }
 
 // ─── Azure ACR sub-fields ─────────────────────────────────────────
-// No extra fields — the registry name is auto-generated from this resource's
+// No extra fields, the registry name is auto-generated from this resource's
 // name (see generateACRName in internal/api/handlers.go).
 function ACRFields() {
   return (
@@ -183,7 +182,7 @@ function ACRFields() {
 
 // ─── Optional registry link (ECS/ACI) ─────────────────────────────
 // Lets the user optionally link this ECS service / ACI container group to an
-// already-applied standalone "ecr"/"acr" resource — see migration
+// already-applied standalone "ecr"/"acr" resource, see migration
 // 020_registry_resource_link.sql. The link is editable later from the
 // resource detail page, so this is intentionally not required.
 function RegistryPicker({
@@ -199,7 +198,7 @@ function RegistryPicker({
   const registries = allResources.filter(r => r.provider === provider && r.resource_type === wantType && r.status === 'applied')
 
   return (
-    <FormField label="Container registry" hint="optional — needed if you plan to deploy a git app onto this resource; can be linked later from the resource page">
+    <FormField label="Container registry" hint="optional, needed if you plan to deploy a git app onto this resource; can be linked later from the resource page">
       {registries.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           No applied {label} found.{' '}
@@ -230,7 +229,7 @@ function AzureVMFields({ v, set }: { v: Record<string,string>; set: (k: string, 
       setGeneratedKey({ publicKey: data.public_key, privateKey: data.private_key })
       setCopied(false)
     } catch {
-      // ignore — user can still paste their own key into the field above
+      // ignore, user can still paste their own key into the field above
     } finally {
       setGenerating(false)
     }
@@ -297,7 +296,7 @@ function AzureVMFields({ v, set }: { v: Record<string,string>; set: (k: string, 
         <div className="space-y-4 p-6">
           <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2.5 text-sm text-warning">
             <AlertTriangle className="size-4 shrink-0 mt-0.5" />
-            <span>Copy or download this key now — once you close this dialog, AutoDevOps does not keep a copy and you won't be able to see it again.</span>
+            <span>Copy or download this key now, once you close this dialog, AutoDevOps does not keep a copy and you won't be able to see it again.</span>
           </div>
           <pre className="max-h-48 overflow-auto rounded-lg border border-border bg-background p-3 text-xs font-mono leading-relaxed whitespace-pre-wrap break-all">
             {generatedKey?.privateKey}
@@ -309,7 +308,7 @@ function AzureVMFields({ v, set }: { v: Record<string,string>; set: (k: string, 
             <Button type="button" className="flex-1" onClick={handleDownload}>Download</Button>
           </div>
           <Button type="button" variant="ghost" className="w-full" onClick={() => setGeneratedKey(null)}>
-            I've saved it — done
+            I've saved it, done
           </Button>
         </div>
       </Dialog>
@@ -404,7 +403,7 @@ export function LocalFields({ v, set, resourceType }: { v: Record<string,string>
         />
       </FormField>
       {resourceType === 'docker' && (
-        <FormField label="Host port" hint="optional — leave blank for an auto-assigned port (8100-8999)">
+        <FormField label="Host port" hint="optional, leave blank for an auto-assigned port (8100-8999)">
           <input
             type="number" min={1} max={65535}
             value={v.host_port ?? ''} onChange={e => set('host_port', e.target.value)}
@@ -511,7 +510,7 @@ export function NewResourcePage() {
   function resetNetwork() { setNetworkMode('new'); setExistingNetworkID('') }
 
   // Merges the selected existing VPC/VNet (if any) into resource_opts for
-  // the API request — buildTerraformConfig (handlers.go) reads
+  // the API request, buildTerraformConfig (handlers.go) reads
   // existing_vpc_id / existing_vnet_name + existing_vnet_resource_group.
   function buildResourceOpts(): Record<string, string> {
     if (!showNetworkPicker || networkMode !== 'existing' || !existingNetworkID) {
@@ -532,7 +531,7 @@ export function NewResourcePage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setLoading(true); setError('')
 
-    // Local resources skip the Terraform preview step entirely — create =
+    // Local resources skip the Terraform preview step entirely, create =
     // immediate apply via the Docker SDK / client-go, no HCL involved.
     if (provider === 'local') {
       try {
@@ -694,7 +693,7 @@ export function NewResourcePage() {
                   </select>
                   {filteredAccounts.length === 0 && (
                     <p className="text-xs text-muted-foreground mt-1">
-                      No {provider.toUpperCase()} accounts — register one in{' '}
+                      No {provider.toUpperCase()} accounts, register one in{' '}
                       <button type="button" onClick={() => navigate('/settings')} className="underline">Settings</button>.
                     </p>
                   )}
@@ -870,7 +869,7 @@ export function NewResourcePage() {
             <p className="text-xs text-muted-foreground">
               {success.provider === 'local'
                 ? 'The resource is being created. Watch the Resources page for live status as it comes up.'
-                : 'The Terraform plan is running. Watch the Resources page for live status — apply it once the plan succeeds.'}
+                : 'The Terraform plan is running. Watch the Resources page for live status, apply it once the plan succeeds.'}
             </p>
             <div className="flex gap-3">
               <Button variant="outline" className="flex-1" onClick={() => { setStep('select'); setName(''); setRegion(''); setCloudAccountID(''); setPreviewConfig(''); clearOpts(); resetNetwork() }}>

@@ -168,11 +168,11 @@ function CloudAccountSection() {
         body: JSON.stringify({ provider, name, credentials: parsed }),
       })
       const v = res.validation
-      let msg = `Account "${name}" registered — credentials verified.`
+      let msg = `Account "${name}" registered, credentials verified.`
       if (v?.provider === 'aws') {
-        msg = `✓ AWS credentials valid — account ${v.account ?? '—'}, region ${v.region ?? '—'}. Poller will start within 60s.`
+        msg = `✓ AWS credentials valid, account ${v.account ?? '-'}, region ${v.region ?? '-'}. Poller will start within 60s.`
       } else if (v?.provider === 'azure') {
-        msg = `✓ Azure credentials valid — subscription "${v.subscription_name || v.subscription_id || '—'}" (${v.auth_mode === 'service-principal' ? 'service principal' : 'az CLI'}). Poller will start within 60s.`
+        msg = `✓ Azure credentials valid, subscription "${v.subscription_name || v.subscription_id || '-'}" (${v.auth_mode === 'service-principal' ? 'service principal' : 'az CLI'}). Poller will start within 60s.`
       }
       setResult({ ok: true, msg })
       setName('')
@@ -261,7 +261,7 @@ function CloudAccountSection() {
           {provider === 'azure' && (
             <p className="text-[0.7rem] text-muted-foreground">
               Add <code className="font-mono">tenant_id</code>, <code className="font-mono">client_id</code> and{' '}
-              <code className="font-mono">client_secret</code> for a service principal — omit all three to fall back to the
+              <code className="font-mono">client_secret</code> for a service principal, omit all three to fall back to the
               server's own <code className="font-mono">az login</code> session.
             </p>
           )}
@@ -325,7 +325,7 @@ function SelfHealingSection() {
               that were not created by AutoDevOps. Default: off.
             </p>
             <p className="text-xs text-warning mt-1">
-              Note: healer behaviour change ships in a future phase — the toggle is stored now but not yet acted on.
+              Note: healer behaviour change ships in a future phase, the toggle is stored now but not yet acted on.
             </p>
           </div>
         </label>
@@ -394,7 +394,7 @@ function TopologyLocationSection() {
     <Card>
       <div className="flex items-center gap-2 border-b border-border px-5 py-3.5">
         <MapPin className="size-4 text-muted-foreground" />
-        <h2 className="text-sm font-semibold">Topology — Local pin location</h2>
+        <h2 className="text-sm font-semibold">Topology, Local pin location</h2>
       </div>
       <form onSubmit={save} className="space-y-3 p-5">
         <p className="text-xs text-muted-foreground">

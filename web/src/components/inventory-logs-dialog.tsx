@@ -45,7 +45,7 @@ export function InventoryLogsDialog({ open, onClose, inventoryId, name, containe
   }, [inventoryId])
 
   return (
-    <Dialog open={open} onClose={onClose} title={`${name} — logs`} className="max-w-3xl">
+    <Dialog open={open} onClose={onClose} title={`${name}, logs`} className="max-w-3xl">
       <div className="p-4 space-y-3">
         <div className="flex items-center gap-2">
           {containers.length > 1 && (

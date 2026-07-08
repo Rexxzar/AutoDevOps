@@ -152,7 +152,7 @@ export function RepoEditor({ stackId, appId, appName, hasGitCredentials, open, o
       <div className="flex h-[70vh] flex-col">
         <div className="flex items-center justify-between border-b px-4 py-3">
           <div>
-            <p className="text-sm font-semibold">Edit files — {appName}</p>
+            <p className="text-sm font-semibold">Edit files, {appName}</p>
             <p className="text-xs text-muted-foreground">Changes are saved to the local workspace. Commit & push to send them to your repo.</p>
           </div>
         </div>
@@ -197,7 +197,7 @@ export function RepoEditor({ stackId, appId, appName, hasGitCredentials, open, o
                 <Loader2 className="size-3 animate-spin" /> Loading…
               </div>
             ) : files.length === 0 && !showNewFile ? (
-              <p className="px-3 py-2 text-muted-foreground">No cloned workspace yet — trigger a deploy first.</p>
+              <p className="px-3 py-2 text-muted-foreground">No cloned workspace yet, trigger a deploy first.</p>
             ) : (
               dirs.map((dir) => (
                 <div key={dir}>
@@ -283,7 +283,7 @@ export function RepoEditor({ stackId, appId, appName, hasGitCredentials, open, o
           </div>
         ) : (
           <div className="border-t px-4 py-3 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">Local edits only</span> — no git credentials stored for this app.
+            <span className="font-medium text-foreground">Local edits only</span>, no git credentials stored for this app.
             File saves persist in the workspace until the next deploy re-clones the repo.
             To enable commit &amp; push, delete this app and re-add it with a git token.
           </div>

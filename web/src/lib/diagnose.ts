@@ -1,4 +1,4 @@
-// Diagnosis engine — analyses app state + deploy logs and returns actionable hints.
+// Diagnosis engine, analyses app state + deploy logs and returns actionable hints.
 // Pure function: no side effects, no API calls.
 
 export type DiagAction = 'add_db' | 'edit_files' | 'add_link' | 'redeploy'
@@ -29,7 +29,7 @@ const LOG_RULES: Array<{ pattern: RegExp; hint: Omit<DiagHint, 'id'> }> = [
     hint: {
       level: 'error',
       message:
-        'App can\'t connect to a database — connection refused. Add a database to this deployment and link it so the host and port are injected automatically.',
+        'App can\'t connect to a database, connection refused. Add a database to this deployment and link it so the host and port are injected automatically.',
       action: 'add_db',
       actionLabel: 'Add database',
     },
@@ -41,7 +41,7 @@ const LOG_RULES: Array<{ pattern: RegExp; hint: Omit<DiagHint, 'id'> }> = [
     hint: {
       level: 'error',
       message:
-        'A database connection variable is undefined. Add a database and link it — AutoDevOps will inject the host, port, and credentials as env vars automatically.',
+        'A database connection variable is undefined. Add a database and link it, AutoDevOps will inject the host, port, and credentials as env vars automatically.',
       action: 'add_db',
       actionLabel: 'Add database',
     },
@@ -85,7 +85,7 @@ const LOG_RULES: Array<{ pattern: RegExp; hint: Omit<DiagHint, 'id'> }> = [
     hint: {
       level: 'error',
       message:
-        'Monorepo CLI tool not available at runtime — it\'s a devDependency that gets pruned after build. Add a Procfile that runs the compiled output directly, e.g. web: node dist/apps/api/main.js.',
+        'Monorepo CLI tool not available at runtime, it\'s a devDependency that gets pruned after build. Add a Procfile that runs the compiled output directly, e.g. web: node dist/apps/api/main.js.',
       action: 'edit_files',
       actionLabel: 'Edit files (add Procfile)',
     },
@@ -107,12 +107,12 @@ const LOG_RULES: Array<{ pattern: RegExp; hint: Omit<DiagHint, 'id'> }> = [
     hint: {
       level: 'error',
       message:
-        'Port already in use. This usually resolves itself — redeploy to get a fresh container.',
+        'Port already in use. This usually resolves itself, redeploy to get a fresh container.',
       action: 'redeploy',
       actionLabel: 'Redeploy',
     },
   },
-  // General module not found (lower priority — kept last among module rules)
+  // General module not found (lower priority, kept last among module rules)
   {
     pattern: /(?:cannot find module|module not found): ['"](?!.*(?:dist|build|out))[^'"]+['"]/i,
     hint: {
@@ -129,7 +129,7 @@ const LOG_RULES: Array<{ pattern: RegExp; hint: Omit<DiagHint, 'id'> }> = [
     hint: {
       level: 'error',
       message:
-        'App was killed — likely out of memory. Check for memory leaks or reduce the memory footprint. Node.js apps may need --max-old-space-size in the Procfile start command.',
+        'App was killed, likely out of memory. Check for memory leaks or reduce the memory footprint. Node.js apps may need --max-old-space-size in the Procfile start command.',
       action: 'edit_files',
       actionLabel: 'Edit Procfile',
     },
@@ -199,7 +199,7 @@ export function diagnoseApp(
       id: 'frontend_no_link',
       level: 'info',
       message:
-        'This frontend has no backend connection. Link it to your backend app — AutoDevOps will inject the backend URL as an env var (AUTODEVOPS_<ALIAS>_HOST).',
+        'This frontend has no backend connection. Link it to your backend app, AutoDevOps will inject the backend URL as an env var (AUTODEVOPS_<ALIAS>_HOST).',
       action: 'add_link',
       actionLabel: 'Add link',
     })
@@ -213,7 +213,7 @@ export function diagnoseApp(
       hints.push({
         id: `linked_failed_${dep.id}`,
         level: 'warning',
-        message: `Linked app "${dep.id === link.depends_on_app_id ? (link.depends_on_app_name ?? 'backend') : dep.id}" is in a failed state — API calls from this app will fail until it\'s fixed.`,
+        message: `Linked app "${dep.id === link.depends_on_app_id ? (link.depends_on_app_name ?? 'backend') : dep.id}" is in a failed state, API calls from this app will fail until it\'s fixed.`,
       })
     }
   }
@@ -237,7 +237,7 @@ export function diagnoseApp(
     }
   }
 
-  // React app with no VITE_/REACT_APP_ env hint — check if it links to backend
+  // React app with no VITE_/REACT_APP_ env hint, check if it links to backend
   // but logs show it calling a hardcoded URL or localhost
   if (
     app.kind === 'git' &&
@@ -248,7 +248,7 @@ export function diagnoseApp(
       id: 'react_hardcoded_url',
       level: 'warning',
       message:
-        'Hardcoded or localhost API URL detected in logs. React apps bake the API URL at build time — edit your API config file to use a relative path or your backend\'s real domain, then redeploy.',
+        'Hardcoded or localhost API URL detected in logs. React apps bake the API URL at build time, edit your API config file to use a relative path or your backend\'s real domain, then redeploy.',
       action: 'edit_files',
       actionLabel: 'Edit API config',
     })

@@ -63,8 +63,7 @@ type ImportStep = 'connect' | 'preview' | 'success'
 // ComposeImportForm is the "Import from docker-compose" entry point (Phase 9):
 // preview a repo's compose file, let the user confirm which services/links to
 // import, then orchestrate the existing create-deployment/add-app/create-link
-// endpoints with the confirmed plan. No dedicated "import commit" endpoint —
-// this is pure frontend orchestration over POST /deployments/import/preview's
+// endpoints with the confirmed plan. No dedicated "import commit" endpoint, // this is pure frontend orchestration over POST /deployments/import/preview's
 // ComposePlan.
 export function ComposeImportForm({ target }: { target: LocalTarget }) {
   const navigate = useNavigate()
@@ -216,7 +215,7 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
         const stack = await apiFetch<{ apps: { id: string; name: string }[] }>(`/deployments/${deploymentId}`)
         for (const app of stack.apps) nameToAppId[app.name] = app.id
       } catch {
-        errors.push('failed to resolve app ids — links were not created')
+        errors.push('failed to resolve app ids, links were not created')
       }
 
       // The first git service is created AS the stack, so the backend names it
@@ -310,7 +309,7 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
         {gitServiceCount === 0 && (
           <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
             <AlertCircle className="size-4 shrink-0" />
-            No build: services found — at least one is required to create a stack
+            No build: services found, at least one is required to create a stack
           </div>
         )}
 
@@ -383,7 +382,7 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
 
         {target === 'k8s' && (
           <>
-            <FormField label="Namespace override" hint="optional — defaults to autodevops-<stack>">
+            <FormField label="Namespace override" hint="optional, defaults to autodevops-<stack>">
               <input value={namespaceOverride} onChange={e => setNamespaceOverride(e.target.value)} placeholder="my-namespace" className={inputCls} />
             </FormField>
             <K8sOptions onChange={setK8sConfig} />

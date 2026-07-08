@@ -355,7 +355,7 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
                 {/* App name */}
                 <Field label="App name" value={name} onChange={setName} />
 
-                {/* Credentials — only for auth-enabled DBs */}
+                {/* Credentials, only for auth-enabled DBs */}
                 {cfg.hasAuth && (
                   <div className="space-y-3">
                     <p className="text-xs font-medium text-muted-foreground">Credentials</p>
@@ -379,7 +379,7 @@ export function AddDatabaseDialog({ stackId, allApps, open, onClose, onAdded }: 
               </>
             )}
 
-            {/* Link apps — shared by both local and cloud */}
+            {/* Link apps, shared by both local and cloud */}
             {linkableApps.length > 0 && (
               <div>
                 <p className="mb-2 text-xs font-medium text-muted-foreground">Auto-link (injects DB env vars into these apps)</p>
@@ -476,7 +476,7 @@ function SuccessScreen({ done, alias, dbType, onClose }: { done: DoneState; alia
 
       {/* Credentials */}
       <div>
-        <p className="mb-1.5 text-xs font-medium text-muted-foreground">Credentials — save the password now, it won't be shown again</p>
+        <p className="mb-1.5 text-xs font-medium text-muted-foreground">Credentials, save the password now, it won't be shown again</p>
         <div className="rounded-lg border divide-y text-xs">
           {done.credentials.map((c) => {
             const isHidden = c.secret && !revealed.has(c.label)
@@ -510,7 +510,7 @@ function SuccessScreen({ done, alias, dbType, onClose }: { done: DoneState; alia
       {/* Next steps */}
       {steps.length > 0 && (
         <div>
-          <p className="mb-2 text-xs font-medium text-muted-foreground">What to do next — edit these files in your repo</p>
+          <p className="mb-2 text-xs font-medium text-muted-foreground">What to do next, edit these files in your repo</p>
           <div className="space-y-2">
             {steps.map((s) => (
               <div key={s.file} className="rounded-lg border bg-muted/30 text-xs">

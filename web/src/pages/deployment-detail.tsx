@@ -74,7 +74,7 @@ interface AppDetail {
   has_git_credentials: boolean
   has_image_env: boolean
   links: AppLink[]
-  // Hydrates the deploy-progress pipeline on page load / SSE reconnect — see
+  // Hydrates the deploy-progress pipeline on page load / SSE reconnect, see
   // DeployStepEvent and internal/api/handlers.go's handleGetDeployment.
   steps?: DeployStepEvent[]
 }
@@ -101,7 +101,7 @@ interface ComplianceFinding {
   created_at: string
 }
 
-// deploy.status SSE payload (internal/deploy.Deployment) — id is the app id,
+// deploy.status SSE payload (internal/deploy.Deployment), id is the app id,
 // deployment_id is the stack id.
 interface DeployStatusEvent {
   id: string
@@ -126,7 +126,7 @@ interface DeployLogEvent {
 }
 
 // STEP_ORDER mirrors internal/deploy/progress.go's Step* consts, in the order
-// ProcessPush walks them — the deploy-progress Pipeline for "git"-kind apps.
+// ProcessPush walks them, the deploy-progress Pipeline for "git"-kind apps.
 const STEP_ORDER = ['clone', 'detect', 'build', 'push', 'compliance', 'deploy', 'tls'] as const
 const STEP_LABELS: Record<string, string> = {
   clone: 'Clone',
@@ -143,8 +143,7 @@ function initialPipelineStages(): PipelineStage[] {
 }
 
 // Builds pipeline stages from a snapshot of deploy.step events (AppDetail.steps),
-// applying the same per-step status mapping as the live deploy.step SSE handler —
-// used to hydrate stepsByApp when a page loads (or its SSE stream reconnects)
+// applying the same per-step status mapping as the live deploy.step SSE handler, // used to hydrate stepsByApp when a page loads (or its SSE stream reconnects)
 // mid-deploy, since deploy.step events aren't replayed on reconnect.
 function stagesFromStepEvents(events: DeployStepEvent[]): PipelineStage[] {
   const stages = initialPipelineStages()
@@ -156,7 +155,7 @@ function stagesFromStepEvents(events: DeployStepEvent[]): PipelineStage[] {
   return stages
 }
 
-// MAX_LOG_LINES caps the in-memory deploy.log buffer per app — enough for a
+// MAX_LOG_LINES caps the in-memory deploy.log buffer per app, enough for a
 // "show verbose" scrollback without unbounded growth on long builds.
 const MAX_LOG_LINES = 500
 
@@ -175,7 +174,7 @@ const targetMap: Record<string, Target> = {
   vm: 'vm',
 }
 
-// Presets for "image"-kind apps (Phase 4 — db containers etc.), mirroring
+// Presets for "image"-kind apps (Phase 4, db containers etc.), mirroring
 // new-resource.tsx's LOCAL_IMAGE_PRESETS pattern but paired with each image's
 // default port so picking a preset also fills in the Container port field.
 const IMAGE_APP_PRESETS: { image: string; port: number }[] = [
@@ -194,8 +193,7 @@ const severityStyle: Record<string, string> = {
 }
 
 // fileToBase64 reads a File's contents and resolves to its base64 encoding
-// (stripping the "data:...;base64," prefix from FileReader.readAsDataURL) —
-// used to build the secret_files payload for createApp/createImageApp and
+// (stripping the "data:...;base64," prefix from FileReader.readAsDataURL), // used to build the secret_files payload for createApp/createImageApp and
 // handleUpdateSecretFiles.
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -262,8 +260,8 @@ export function DeploymentDetailPage() {
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [actionError, setActionError] = useState('')
   const [guideDismissed, setGuideDismissed] = useState(() => localStorage.getItem(`autodevops_guide_dismissed_${id}`) === 'true')
-  // Per-app live deploy-progress state, keyed by deployment_app_id — fed by
-  // Live container health — overlays DB status with real-time Docker state.
+  // Per-app live deploy-progress state, keyed by deployment_app_id, fed by
+  // Live container health, overlays DB status with real-time Docker state.
   // Keyed by app id; values: "running" | "restarting" | "stopped" | "failed" | "missing".
   const [containerHealthByApp, setContainerHealthByApp] = useState<Record<string, string>>({})
 
@@ -277,7 +275,7 @@ export function DeploymentDetailPage() {
       const data = await apiFetch<StackDetail>(`/deployments/${id}`)
       setStack(data)
       // Hydrate the pipeline for apps with a recorded step snapshot, but only
-      // the first time — once live deploy.step SSE events start arriving for
+      // the first time, once live deploy.step SSE events start arriving for
       // an app, those take over and this snapshot must not overwrite them.
       setStepsByApp((prev) => {
         let next = prev
@@ -300,7 +298,7 @@ export function DeploymentDetailPage() {
     refetchInterval: 30_000,
   })
 
-  // ingress_domain is server config (INGRESS_DOMAIN) — fetched once and
+  // ingress_domain is server config (INGRESS_DOMAIN), fetched once and
   // reused to build app URLs below, so they match whatever domain the
   // backend actually generated Ingress hosts for. public_host is the
   // server's PUBLIC_IP (or request-derived address) for container-target
@@ -311,7 +309,7 @@ export function DeploymentDetailPage() {
     staleTime: Infinity,
   })
 
-  // Applied provisioned resources (Resources tab) — offered as link targets
+  // Applied provisioned resources (Resources tab), offered as link targets
   // alongside sibling apps in AddLinkDialog (Phase 5a).
   const { data: allResources = [] } = useQuery({
     queryKey: ['resources'],
@@ -319,11 +317,11 @@ export function DeploymentDetailPage() {
     refetchInterval: 30_000,
   })
   const linkableResources = allResources.filter((r) => r.status === 'applied')
-  // Applied EC2/Azure VM resources — offered as the cloud_vm target picker in
+  // Applied EC2/Azure VM resources, offered as the cloud_vm target picker in
   // AddAppDialog (Phase 5b). resource_type "vm" only exists for the aws/azure
   // providers (see provisionedTypeLabel), so no provider check is needed.
   const vmResources = linkableResources.filter((r) => r.resource_type === 'vm')
-  // Applied ECS Fargate / ACI container-group resources — offered as the
+  // Applied ECS Fargate / ACI container-group resources, offered as the
   // cloud_ecs/cloud_aci target pickers in AddAppDialog (Phase 8g). resource_type
   // "ecs"/"aci" are provider-specific (aws/azure respectively), so no provider
   // check is needed.
@@ -355,7 +353,7 @@ export function DeploymentDetailPage() {
       const e = data as DeployStepEvent
       const idx = STEP_ORDER.indexOf(e.step as (typeof STEP_ORDER)[number])
       if (idx === -1) return
-      // A new "clone: active" marks the start of a fresh pipeline run — reset
+      // A new "clone: active" marks the start of a fresh pipeline run, reset
       // this app's stages and log buffer so a redeploy doesn't show stale state.
       const isFreshRun = e.step === 'clone' && e.status === 'active'
       setStepsByApp((prev) => {
@@ -490,7 +488,7 @@ export function DeploymentDetailPage() {
           title: 'Delete deployment',
           message: apps.length === 0
             ? `Remove the empty "${stack.name}" deployment? This cannot be undone.`
-            : `Delete the entire "${stack.name}" deployment? This permanently removes all ${apps.length} app${apps.length === 1 ? '' : 's'} — including their running containers, pods, and namespaces. This cannot be undone.`,
+            : `Delete the entire "${stack.name}" deployment? This permanently removes all ${apps.length} app${apps.length === 1 ? '' : 's'}, including their running containers, pods, and namespaces. This cannot be undone.`,
           confirmLabel: 'Delete deployment',
         }
 
@@ -761,7 +759,7 @@ function AppCard({
   const hints = diagnoseApp(app, logs, allApps)
   const isTransitional = app.status === 'building' || app.status === 'deploying'
   // Show the live pipeline while a deploy is in flight, or after a failure so
-  // the user can see which step broke — hidden once a redeploy is started
+  // the user can see which step broke, hidden once a redeploy is started
   // (deploy.step resets the stages back to "pending" first).
   const showPipeline = app.kind === 'git' && !!steps?.some((s) => s.status !== 'pending') && (isTransitional || app.status === 'failed')
 
@@ -771,8 +769,7 @@ function AppCard({
     }
   }, [logs, showLogs])
 
-  // Loopback addresses aren't reachable from a browser on another machine —
-  // fall back to "localhost" (the historical default, still correct for
+  // Loopback addresses aren't reachable from a browser on another machine, // fall back to "localhost" (the historical default, still correct for
   // local dev) rather than showing a meaningless ::1/127.0.0.1 link.
   const containerHost = publicHost && publicHost !== '::1' && publicHost !== '127.0.0.1' ? publicHost : 'localhost'
 
@@ -945,7 +942,7 @@ function AppCard({
                 label="CPU"
                 value={
                   <span className="font-mono text-xs">
-                    {app.k8s_config.cpu_request || '–'} / {app.k8s_config.cpu_limit || '–'}
+                    {app.k8s_config.cpu_request || '-'} / {app.k8s_config.cpu_limit || '-'}
                     <span className="text-muted-foreground ml-1">(req / lim)</span>
                   </span>
                 }
@@ -956,7 +953,7 @@ function AppCard({
                 label="Memory"
                 value={
                   <span className="font-mono text-xs">
-                    {app.k8s_config.mem_request || '–'} / {app.k8s_config.mem_limit || '–'}
+                    {app.k8s_config.mem_request || '-'} / {app.k8s_config.mem_limit || '-'}
                     <span className="text-muted-foreground ml-1">(req / lim)</span>
                   </span>
                 }
@@ -967,7 +964,7 @@ function AppCard({
                 label="HPA"
                 value={
                   <span className="font-mono text-xs">
-                    {app.k8s_config.hpa.min}–{app.k8s_config.hpa.max} pods, target {app.k8s_config.hpa.target_cpu}% CPU
+                    {app.k8s_config.hpa.min}, {app.k8s_config.hpa.max} pods, target {app.k8s_config.hpa.target_cpu}% CPU
                   </span>
                 }
               />
@@ -1109,7 +1106,7 @@ function AppCard({
               >
                 {logs?.length
                   ? logs.join('\n')
-                  : 'No logs captured — logs are only kept while the server is running.\nRedeploy to see fresh output.'}
+                  : 'No logs captured, logs are only kept while the server is running.\nRedeploy to see fresh output.'}
               </pre>
             )}
           </div>
@@ -1226,7 +1223,7 @@ function AppCard({
               </div>
             ))}
             {findings.length > 5 && (
-              <p className="text-xs text-muted-foreground">+{findings.length - 5} more — see Compliance page</p>
+              <p className="text-xs text-muted-foreground">+{findings.length - 5} more, see Compliance page</p>
             )}
           </div>
         )}
@@ -1322,7 +1319,7 @@ function AppCard({
 }
 
 // AddSecretFileDialog is a single-row "path + file" form for
-// handleUpdateSecretFiles' {add: {path: base64Content}} request — adding one
+// handleUpdateSecretFiles' {add: {path: base64Content}} request, adding one
 // secret file to an existing app and triggering a redeploy so the mount
 // takes effect.
 function AddSecretFileDialog({
@@ -1405,7 +1402,7 @@ function AddSecretFileDialog({
 
 // PORTED_RESOURCE_TYPES are provisioned-resource types with no inherent
 // default port (a cloud VM, ECS service, or ACI container group could be
-// running anything) — AddLinkDialog offers an optional Port field for these,
+// running anything), AddLinkDialog offers an optional Port field for these,
 // matching resolveLinks's setHostPortURL (defaults to 80 if left blank).
 // RDS/Azure DB resources have a natural default port and aren't listed here.
 const PORTED_RESOURCE_TYPES = new Set(['vm', 'ecs', 'aci'])
@@ -1436,7 +1433,7 @@ function AddLinkDialog({
   const showPort = !!selectedResource && PORTED_RESOURCE_TYPES.has(selectedResource.resource_type)
 
   // A cloud-hosted consumer can only reach a LOCAL dependency (k8s/docker pod
-  // or container) through that dependency's public domain — without one the
+  // or container) through that dependency's public domain, without one the
   // backend silently drops the link. Warn at link-creation so it's fixed up
   // front (matches internal/deploy/links.go's cross-target resolution rule).
   const consumerIsCloud = consumerTarget === 'vm' || consumerTarget === 'ecs' || consumerTarget === 'aci'
@@ -1493,23 +1490,22 @@ function AddLinkDialog({
           />
         </FormField>
 
-        {/* Live preview — the alias you type becomes the middle of the
+        {/* Live preview, the alias you type becomes the middle of the
             AUTODEVOPS_<ALIAS>_* env vars injected into this app. The app's code
             must read these exact names to reach the connected target, so showing
             them live removes the guesswork (and the domain/db-creds gotchas). */}
         <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 space-y-2">
           <p className="text-[0.7rem] font-medium text-muted-foreground">
-            This app will receive these environment variables — read them in your code:
+            This app will receive these environment variables, read them in your code:
           </p>
           <div className="space-y-0.5 font-mono text-xs text-foreground">
-            <p>AUTODEVOPS_{aliasPreview}_URL <span className="font-sans text-muted-foreground/60">— full address</span></p>
-            <p>AUTODEVOPS_{aliasPreview}_HOST <span className="font-sans text-muted-foreground/60">— hostname</span></p>
-            <p>AUTODEVOPS_{aliasPreview}_PORT <span className="font-sans text-muted-foreground/60">— port</span></p>
+            <p>AUTODEVOPS_{aliasPreview}_URL <span className="font-sans text-muted-foreground/60">, full address</span></p>
+            <p>AUTODEVOPS_{aliasPreview}_HOST <span className="font-sans text-muted-foreground/60">, hostname</span></p>
+            <p>AUTODEVOPS_{aliasPreview}_PORT <span className="font-sans text-muted-foreground/60">, port</span></p>
           </div>
           <p className="text-[0.65rem] leading-relaxed text-muted-foreground/80">
             <span className="font-medium text-muted-foreground">Browser / frontend code</span> must use{' '}
-            <span className="font-mono text-foreground">AUTODEVOPS_{aliasPreview}_DOMAIN</span> (the public https URL) —
-            _HOST and _URL are internal and can&apos;t be reached from a browser.{' '}
+            <span className="font-mono text-foreground">AUTODEVOPS_{aliasPreview}_DOMAIN</span> (the public https URL), _HOST and _URL are internal and can&apos;t be reached from a browser.{' '}
             <span className="font-medium text-muted-foreground">Databases</span> also expose{' '}
             <span className="font-mono text-foreground">_USER</span>,{' '}
             <span className="font-mono text-foreground">_PASSWORD</span> and{' '}
@@ -1545,7 +1541,7 @@ function AddLinkDialog({
           <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400">
             <AlertCircle className="size-4 shrink-0 mt-0.5" />
             <span>
-              This app runs in the cloud, but <span className="font-medium">{selectedApp?.name}</span> is local with no public domain — the cloud can&apos;t reach it.
+              This app runs in the cloud, but <span className="font-medium">{selectedApp?.name}</span> is local with no public domain, the cloud can&apos;t reach it.
               Add a domain to <span className="font-medium">{selectedApp?.name}</span> first so this connection works.
             </span>
           </div>
@@ -1580,8 +1576,7 @@ function AddLinkDialog({
   )
 }
 
-// Empty-state shown when a chosen cloud target has no applied resource yet —
-// points the user to the Resources page (the "provision first" precondition).
+// Empty-state shown when a chosen cloud target has no applied resource yet, // points the user to the Resources page (the "provision first" precondition).
 function NoResourceHint({ label, onProvision }: { label: string; onProvision: () => void }) {
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-sm text-muted-foreground">
@@ -1605,7 +1600,7 @@ function AddAppDialog({
   onCreated: () => void
 }) {
   const navigate = useNavigate()
-  // Wizard navigation — mirrors the New Deployment flow: Local/Cloud first,
+  // Wizard navigation, mirrors the New Deployment flow: Local/Cloud first,
   // then the runtime/provider/target, then the form.
   type Step = 'location' | 'localTarget' | 'cloudProvider' | 'cloudTarget' | 'form'
   const [step, setStep] = useState<Step>('location')
@@ -1634,7 +1629,7 @@ function AddAppDialog({
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ webhookURL: string; webhookSecret: string } | null>(null)
 
-  // Stored repos (Git Repo Store) — pick one or add a new one inline, same as
+  // Stored repos (Git Repo Store), pick one or add a new one inline, same as
   // the New Deployment flow. Backend createApp accepts repo_id directly.
   const { data: storedRepos = [] } = useQuery({
     queryKey: ['repos'],
@@ -1843,7 +1838,7 @@ function AddAppDialog({
                   <select value={repoId} onChange={(e) => selectStoredRepo(e.target.value)} className={selectCls}>
                     <option value="">+ Add a new repository</option>
                     {storedRepos.map((r) => (
-                      <option key={r.id} value={r.id}>{r.name} — {r.repo_url} ({r.branch})</option>
+                      <option key={r.id} value={r.id}>{r.name}, {r.repo_url} ({r.branch})</option>
                     ))}
                   </select>
                 </FormField>
@@ -1911,7 +1906,7 @@ function AddAppDialog({
                   placeholder="5432" required className={inputCls}
                 />
               </FormField>
-              <FormField label="Environment variables" hint="optional — e.g. POSTGRES_PASSWORD">
+              <FormField label="Environment variables" hint="optional, e.g. POSTGRES_PASSWORD">
                 <div className="space-y-2">
                   {envRows.map((row, i) => (
                     <div key={i} className="flex gap-2">
@@ -1945,12 +1940,12 @@ function AddAppDialog({
                   </Button>
                 </div>
               </FormField>
-              <FormField label="Persistent storage path" hint="optional — e.g. /var/lib/postgresql/data">
+              <FormField label="Persistent storage path" hint="optional, e.g. /var/lib/postgresql/data">
                 <input value={volumePath} onChange={(e) => setVolumePath(e.target.value)} placeholder="/var/lib/postgresql/data" className={cn(inputCls, 'font-mono text-xs')} />
               </FormField>
             </>
           )}
-          <FormField label="Secret files" hint="optional — files mounted read-only into the container, e.g. /opt/secrets/firebase.json">
+          <FormField label="Secret files" hint="optional, files mounted read-only into the container, e.g. /opt/secrets/firebase.json">
             <div className="space-y-2">
               {secretFileRows.map((row, i) => (
                 <div key={i} className="flex gap-2">
@@ -2034,7 +2029,7 @@ function AddAppDialog({
                 <li>Provision a <strong>{target === 'ecs' ? 'ECR registry' : 'ACR registry'}</strong> from the Resources page</li>
                 <li>Provision an <strong>{target === 'ecs' ? 'ECS service' : 'ACI container group'}</strong> (any placeholder image is fine)</li>
                 <li>Link the registry to the {target === 'ecs' ? 'ECS service' : 'ACI container group'} on its detail page</li>
-                <li>Deploy here — AutoDevOps builds your app, pushes to the registry, and redeploys</li>
+                <li>Deploy here, AutoDevOps builds your app, pushes to the registry, and redeploys</li>
               </ol>
             </div>
           )}
@@ -2049,13 +2044,12 @@ function AddAppDialog({
           })()}
           {kind === 'git' && (target === 'aci' || target === 'ecs') && !domain && (
             <p className="text-xs text-muted-foreground -mt-1">
-              Optional — {target === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS via your own domain name.
+              Optional, {target === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS via your own domain name.
             </p>
           )}
           {kind === 'git' && (target === 'ecs' || target === 'aci') && serverIP && (
             <p className="text-xs text-muted-foreground -mt-1">
-              For HTTPS, point your domain to this server: <code className="rounded bg-muted px-1 font-mono">{serverIP}</code>{' '}
-              — TLS terminates here and proxies to {target === 'ecs' ? 'the ECS load balancer' : 'the ACI container'} (not the {target === 'ecs' ? 'ALB' : 'ACI'} IP directly).
+              For HTTPS, point your domain to this server: <code className="rounded bg-muted px-1 font-mono">{serverIP}</code>{' '}, TLS terminates here and proxies to {target === 'ecs' ? 'the ECS load balancer' : 'the ACI container'} (not the {target === 'ecs' ? 'ALB' : 'ACI'} IP directly).
             </p>
           )}
           {kind === 'git' && target === 'vm' && (() => {
@@ -2145,7 +2139,7 @@ function CICDSetupDialog({
   }
 
   return (
-    <Dialog open={open} onClose={handleClose} title={`Set up CI/CD — ${appName}`} className="max-w-lg">
+    <Dialog open={open} onClose={handleClose} title={`Set up CI/CD, ${appName}`} className="max-w-lg">
       {result ? (
         <div className="space-y-4 p-5">
           <div className="flex items-center gap-2">
@@ -2184,17 +2178,17 @@ function CICDSetupDialog({
         <form onSubmit={install} className="space-y-4 p-5">
           <p className="text-xs text-muted-foreground text-pretty">
             AutoDevOps will commit a GitHub Actions workflow to your repo and set the
-            two repository secrets it needs — no manual GitHub steps.
+            two repository secrets it needs, no manual GitHub steps.
           </p>
           <FormField label="AutoDevOps server URL" hint="how GitHub reaches this server">
             <input value={serverURL} onChange={(e) => setServerURL(e.target.value)} required className={inputCls} placeholder="https://autodevops.example.com" />
           </FormField>
-          <FormField label="GitHub token" hint={hasGitToken ? 'optional — uses the repo’s stored token if blank' : 'required'}>
+          <FormField label="GitHub token" hint={hasGitToken ? 'optional, uses the repo’s stored token if blank' : 'required'}>
             <input value={githubToken} onChange={(e) => setGithubToken(e.target.value)} type="password" placeholder="ghp_… (needs repo + workflow scope)" className={inputCls} />
           </FormField>
           <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/8 px-3 py-2.5 text-xs text-info">
             <AlertCircle className="size-4 shrink-0" />
-            <span>The token must have <strong>repo</strong> and <strong>workflow</strong> scope — writing workflow files and repo secrets both require it. A stored SSH key can&apos;t set secrets.</span>
+            <span>The token must have <strong>repo</strong> and <strong>workflow</strong> scope, writing workflow files and repo secrets both require it. A stored SSH key can&apos;t set secrets.</span>
           </div>
           {error && (
             <div className="flex items-start gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
@@ -2294,7 +2288,7 @@ function K8sManifestsDialog({
   }
 
   return (
-    <Dialog open={open} onClose={handleClose} title={`K8s Manifests — ${appName}`} className="max-w-3xl">
+    <Dialog open={open} onClose={handleClose} title={`K8s Manifests, ${appName}`} className="max-w-3xl">
       <div className="p-4 space-y-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">

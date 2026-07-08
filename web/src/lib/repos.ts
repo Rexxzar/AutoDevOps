@@ -1,4 +1,4 @@
-// Git Repo Store — shared types + helpers for the Repositories pages.
+// Git Repo Store, shared types + helpers for the Repositories pages.
 
 export type RepoSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info'
 

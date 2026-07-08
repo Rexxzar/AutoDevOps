@@ -76,7 +76,7 @@ interface TopologyResponse {
   edges: TopoEdge[]
 }
 
-// Provider identity colours — deliberately distinct from the semantic
+// Provider identity colours, deliberately distinct from the semantic
 // status palette (success/warning/critical). Used for pins, region accents
 // and cross-cloud arcs.
 const providerColor: Record<string, string> = {
@@ -288,7 +288,7 @@ export function TopologyPage() {
             />
             <MapLegend regions={regions} />
             {/* Region detail floats OVER the map (right side) rather than
-                shrinking it — selecting a pin must never resize/re-zoom the map. */}
+                shrinking it, selecting a pin must never resize/re-zoom the map. */}
             {selected && (
               <aside className="absolute right-3 top-3 z-20 max-h-[calc(100%-1.5rem)] w-[330px] max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-border bg-card/95 shadow-2xl backdrop-blur">
                 <div className="flex items-center justify-between border-b border-border px-3 py-2">
@@ -547,7 +547,7 @@ function WorldMap({
   }
 
   function onPointerDown(e: React.PointerEvent) {
-    // Don't capture the pointer here — doing so steals the click from a pin,
+    // Don't capture the pointer here, doing so steals the click from a pin,
     // so selecting a resource (and its region zone) never fires. We only
     // capture once an actual drag starts (see onPointerMove).
     dragRef.current = { cx: e.clientX, cy: e.clientY, vx: vb.x, vy: vb.y }
@@ -560,7 +560,7 @@ function WorldMap({
     if (!movedRef.current && dist <= 3) return // sub-threshold: keep it a click
     if (!movedRef.current) {
       movedRef.current = true
-      // real drag now — capture so panning survives the pointer briefly
+      // real drag now, capture so panning survives the pointer briefly
       // leaving the svg
       ;(e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId)
     }

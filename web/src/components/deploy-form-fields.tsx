@@ -160,7 +160,7 @@ export function DomainField({ value, onChange, targetIP }: { value: string; onCh
       {status === 'ok' && (
         <p className="flex items-center gap-1.5 text-xs text-success">
           <CheckCircle2 className="size-3 shrink-0" />
-          Domain resolves to this server — TLS cert will be issued automatically
+          Domain resolves to this server, TLS cert will be issued automatically
         </p>
       )}
       {status === 'fail' && info && (
@@ -186,8 +186,7 @@ export function DomainField({ value, onChange, targetIP }: { value: string; onCh
 }
 
 // ─── Kubernetes per-app options (local_k8s, git-kind) ────────────────
-// Serializes to deployment_apps.k8s_config (JSONB). Every field is optional —
-// onChange emits undefined when nothing differs from the platform defaults, so
+// Serializes to deployment_apps.k8s_config (JSONB). Every field is optional, // onChange emits undefined when nothing differs from the platform defaults, so
 // no k8s_config is stored and the app behaves exactly as before this feature.
 export type K8sConfigValue = {
   replicas?: number

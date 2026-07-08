@@ -52,7 +52,7 @@ export function LocalResourcesPage() {
     try {
       await apiFetch(`/local/inventory/${encodeURIComponent(id)}/restart`, { method: 'POST' })
     } catch {
-      // Silently ignore — the user can see state via the inventory refetch.
+      // Silently ignore, the user can see state via the inventory refetch.
     } finally {
       setRestarting((prev) => { const next = { ...prev }; delete next[id]; return next })
     }

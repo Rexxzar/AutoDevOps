@@ -96,7 +96,7 @@ export function TerraformDetailPage() {
     try {
       await apiFetch(`/resources/${id}/terraform/plan`, { method: 'POST', body: JSON.stringify({ config: content }) })
       setOriginal(content)
-      setNotice('Plan started — watch the run history below for the result.')
+      setNotice('Plan started, watch the run history below for the result.')
     } catch (e) { setError(String(e)) } finally { setPlanning(false) }
   }
 
@@ -104,7 +104,7 @@ export function TerraformDetailPage() {
     setApplying(true); setError(''); setNotice('')
     try {
       await apiFetch(`/resources/${id}/apply`, { method: 'POST' })
-      setNotice('Apply started — watch the run history below.')
+      setNotice('Apply started, watch the run history below.')
     } catch (e) { setError(String(e)) } finally { setApplying(false) }
   }
 
@@ -168,7 +168,7 @@ export function TerraformDetailPage() {
         {imported && (
           <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2.5 text-xs text-warning">
             <AlertCircle className="size-4 shrink-0" />
-            <span>Imported Terraform runs with your cloud credentials and can execute provisioners (e.g. <code>local-exec</code>). Review it before applying — you are running your own code.</span>
+            <span>Imported Terraform runs with your cloud credentials and can execute provisioners (e.g. <code>local-exec</code>). Review it before applying, you are running your own code.</span>
           </div>
         )}
         {error && (
@@ -185,7 +185,7 @@ export function TerraformDetailPage() {
           <Database className="size-4 text-muted-foreground" />
           <span className="text-muted-foreground">State:</span>
           <span className="font-medium capitalize">{resource.status === 'applied' ? 'provisioned' : resource.status}</span>
-          <span className="ml-auto text-xs text-muted-foreground">State contents are hidden — they can contain secrets.</span>
+          <span className="ml-auto text-xs text-muted-foreground">State contents are hidden, they can contain secrets.</span>
         </div>
 
         {/* Config editor */}
@@ -219,10 +219,10 @@ export function TerraformDetailPage() {
         <div className="overflow-hidden rounded-xl border border-border bg-card">
           <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
             <p className="text-sm font-medium">IaC security (tfsec)</p>
-            <span className="text-xs text-muted-foreground">report-only — scanned on plan</span>
+            <span className="text-xs text-muted-foreground">report-only, scanned on plan</span>
           </div>
           {findings.length === 0 ? (
-            <p className="px-4 py-6 text-center text-sm text-muted-foreground">No tfsec findings — this configuration looks clean.</p>
+            <p className="px-4 py-6 text-center text-sm text-muted-foreground">No tfsec findings, this configuration looks clean.</p>
           ) : (
             <div className="divide-y divide-border">
               {findings.map((f, i) => (

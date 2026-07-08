@@ -92,7 +92,7 @@ export function NewDeploymentPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ webhookURL: string; webhookSecret: string; name: string; targetType: string } | null>(null)
 
-  // Stored repos (Git Repo Store) — pick one or add a new one inline.
+  // Stored repos (Git Repo Store), pick one or add a new one inline.
   const { data: storedRepos = [] } = useQuery({
     queryKey: ['repos'],
     queryFn: () => apiFetch<GitRepo[]>('/repos'),
@@ -419,7 +419,7 @@ export function NewDeploymentPage() {
                       <select value={repoId} onChange={e => selectStoredRepo(e.target.value)} className={selectCls}>
                         <option value="">+ Add a new repository</option>
                         {storedRepos.map((r) => (
-                          <option key={r.id} value={r.id}>{r.name} — {r.repo_url} ({r.branch})</option>
+                          <option key={r.id} value={r.id}>{r.name}, {r.repo_url} ({r.branch})</option>
                         ))}
                       </select>
                     </FormField>
@@ -495,7 +495,7 @@ export function NewDeploymentPage() {
                         <li>Provision a <strong>{cloudTarget === 'ecs' ? 'ECR registry' : 'ACR registry'}</strong> from the <button type="button" onClick={() => navigate('/new-resource')} className="underline">Resources page</button></li>
                         <li>Provision an <strong>{cloudTarget === 'ecs' ? 'ECS service' : 'ACI container group'}</strong> (any placeholder image is fine)</li>
                         <li>Link the registry to the {cloudTarget === 'ecs' ? 'ECS service' : 'ACI container group'} on its detail page</li>
-                        <li>Deploy here — AutoDevOps builds your app, pushes to the registry, and redeploys</li>
+                        <li>Deploy here, AutoDevOps builds your app, pushes to the registry, and redeploys</li>
                       </ol>
                     </div>
                   )}
@@ -519,7 +519,7 @@ export function NewDeploymentPage() {
                         )}
                         {!localDomain && (cloudTarget === 'aci' || cloudTarget === 'ecs') && (
                           <p className="text-xs text-muted-foreground -mt-1">
-                            Optional — {cloudTarget === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS.
+                            Optional, {cloudTarget === 'aci' ? 'ACI' : 'ECS'} gets a public URL automatically. Add a domain above for HTTPS.
                           </p>
                         )}
                       </>
@@ -529,7 +529,7 @@ export function NewDeploymentPage() {
                   {/* Kubernetes-only: namespace override + per-app tuning */}
                   {location === 'local' && localTarget === 'k8s' && (
                     <>
-                      <FormField label="Namespace" hint="optional — defaults to autodevops-<stack>">
+                      <FormField label="Namespace" hint="optional, defaults to autodevops-<stack>">
                         <input value={namespaceOverride} onChange={e => setNamespaceOverride(e.target.value)} placeholder="autodevops-my-app" className={inputCls} />
                       </FormField>
                       <K8sOptions onChange={setK8sConfig} />

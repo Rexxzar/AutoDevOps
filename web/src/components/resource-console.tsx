@@ -27,7 +27,7 @@ export function ResourceConsole({ resourceId, resourceName, open, onClose }: Con
   const [tab, setTab] = useState<Tab>('terminal')
 
   return (
-    <Dialog open={open} onClose={onClose} title={`Console — ${resourceName}`} className="max-w-3xl">
+    <Dialog open={open} onClose={onClose} title={`Console, ${resourceName}`} className="max-w-3xl">
       <div className="flex items-center gap-1 border-b border-border px-4 pt-2">
         <TabButton active={tab === 'terminal'} onClick={() => setTab('terminal')} icon={<SquareTerminal className="size-3.5" />}>
           Terminal
@@ -149,7 +149,7 @@ function TerminalPanel({ resourceId }: { resourceId: string }) {
     }
     // Defer the session open by a tick so StrictMode's dev-mode double-invoke
     // (mount -> cleanup -> mount) clears this timer before it fires for the
-    // throwaway first invocation — otherwise both invocations would push a
+    // throwaway first invocation, otherwise both invocations would push a
     // separate ephemeral key via Azure Run Command / EC2 Instance Connect and
     // race each other, leaving one signer's key never written.
     const startTimer = setTimeout(start, 0)

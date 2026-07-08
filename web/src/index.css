@@ -49,7 +49,7 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* DARK (default) — Vercel/Linear-inspired near-black with emerald accent */
+/* DARK (default), Vercel/Linear-inspired near-black with emerald accent */
 :root {
   --background: oklch(0.16 0.004 240);
   --foreground: oklch(0.97 0.002 240);

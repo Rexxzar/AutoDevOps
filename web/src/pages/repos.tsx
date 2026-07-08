@@ -35,7 +35,7 @@ export function ReposPage() {
     <div>
       <PageHeader
         title="Repositories"
-        description="Reusable Git repositories — browse & edit files, commit, and run compliance checks on demand."
+        description="Reusable Git repositories: browse and edit files, commit, and run compliance checks on demand."
       >
         <Button variant="outline" size="sm" className="gap-1.5" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
@@ -60,7 +60,7 @@ export function ReposPage() {
                 <GitBranch className="size-4 text-muted-foreground" />
               </div>
               <p className="max-w-xs text-sm text-muted-foreground text-pretty">
-                No repositories yet. Add one here, or create a deployment — its repo is registered automatically.
+                No repositories yet. Add one here, or create a deployment, its repo is registered automatically.
               </p>
               <Button size="sm" className="gap-1.5" onClick={() => setShowNew(true)}>
                 <Plus className="size-3.5" /> New repository

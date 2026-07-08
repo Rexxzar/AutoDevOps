@@ -7,7 +7,7 @@ import { type ProvisionedResource, type TerraformRun } from '@/lib/resources'
 
 // useProvisionedResources centralizes the /resources + /terraform/runs
 // fetch/SSE/action logic shared by the Cloud Resources and Local Resources
-// pages — both render a ProvisionedTable filtered to a different `provider`.
+// pages, both render a ProvisionedTable filtered to a different `provider`.
 export function useProvisionedResources() {
   const { token } = useAuth()
   const [provisioned, setProvisioned] = useState<ProvisionedResource[]>([])
