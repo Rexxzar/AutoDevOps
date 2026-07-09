@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, Plus, Trash2, Loader2, RefreshCw, Download, AlertCircle, CheckCircle2, ExternalLink, X, FileText, Database, Eye, EyeOff, Copy, Check, Rocket,
-  Server, Cloud, Container, Box, GitBranch,
+  Server, Cloud, Container, Box, GitBranch, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
@@ -746,6 +746,7 @@ function AppCard({
   const [envData, setEnvData] = useState<Record<string, string> | null>(null)
   const [envLoading, setEnvLoading] = useState(false)
   const [envRevealed, setEnvRevealed] = useState<Set<string>>(new Set())
+  const [expanded, setExpanded] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
   const siblings = allApps.filter((a) => a.id !== app.id)
 
@@ -769,12 +770,36 @@ function AppCard({
     }
   }, [logs, showLogs])
 
+  // Auto-expand while a deploy is in flight so the live pipeline stays visible.
+  useEffect(() => {
+    if (showPipeline) setExpanded(true)
+  }, [showPipeline])
+
   // Loopback addresses aren't reachable from a browser on another machine, // fall back to "localhost" (the historical default, still correct for
   // local dev) rather than showing a meaningless ::1/127.0.0.1 link.
   const containerHost = publicHost && publicHost !== '::1' && publicHost !== '127.0.0.1' ? publicHost : 'localhost'
 
   const targetResource = app.target_resource_id ? resources.find((r) => r.id === app.target_resource_id) : undefined
   const targetOutputs: Record<string, string> = targetResource?.outputs ? (() => { try { return JSON.parse(targetResource.outputs) } catch { return {} } })() : {}
+
+  // Provider-aware deployment-type label for the summary (e.g. "Local
+  // Kubernetes", "AWS EC2", "Azure Container Instances") rather than the bare
+  // "k8s"/"vm". Derived from the target kind plus the linked resource's cloud.
+  const targetDisplay = (() => {
+    switch (app.target_type) {
+      case 'k8s': return 'Local Kubernetes'
+      case 'container': return 'Local Docker'
+      case 'vm': return targetResource?.provider === 'azure' ? 'Azure VM' : 'AWS EC2'
+      case 'ecs': return 'AWS ECS (Fargate)'
+      case 'aci': return 'Azure Container Instances'
+      default: return targetLabel[targetMap[app.target_type]] ?? app.target_type
+    }
+  })()
+  // Compact one-line summary of what the app is: framework for git apps, image
+  // for image apps.
+  const summaryMeta = app.kind === 'image'
+    ? (app.image_ref ? (app.image_ref.split('/').pop() ?? app.image_ref) : 'image')
+    : (app.framework ? (frameworkLabel[app.framework] ?? app.framework) : 'git app')
   const aciPortNum = targetOutputs.aci_port || '8080'
   const aciPort = aciPortNum !== '80' ? `:${aciPortNum}` : ''
   const aciUrl = targetOutputs.aci_fqdn ? `http://${targetOutputs.aci_fqdn}${aciPort}` : undefined
@@ -836,12 +861,22 @@ function AppCard({
 
   return (
     <Card id={`app-card-${app.id}`} className="transition-shadow">
-      <CardHeader>
-        <div className="min-w-0">
-          <CardTitle className="truncate">{app.name}</CardTitle>
-          {app.repo_url && (
-            <p className="mt-0.5 truncate text-xs text-muted-foreground">{app.repo_url}</p>
-          )}
+      <CardHeader
+        className={cn('cursor-pointer select-none', !expanded && 'border-b-0')}
+        onClick={() => setExpanded((v) => !v)}
+        role="button"
+        aria-expanded={expanded}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          {expanded
+            ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+            : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
+          <div className="min-w-0">
+            <CardTitle className="truncate">{app.name}</CardTitle>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {summaryMeta} · {targetDisplay}
+            </p>
+          </div>
         </div>
         <StatusBadge
           status={statusKind}
@@ -849,8 +884,9 @@ function AppCard({
           label={liveStatus === 'restarting' ? 'Restarting…' : undefined}
         />
       </CardHeader>
+      {expanded && (
       <CardContent className="space-y-1">
-        <InfoRow label="Target" value={targetLabel[targetMap[app.target_type]] ?? app.target_type} />
+        <InfoRow label="Target" value={targetDisplay} />
         {app.kind === 'image' ? (
           <>
             {app.image_ref && (
@@ -1263,6 +1299,7 @@ function AppCard({
           </Button>
         </div>
       </CardContent>
+      )}
 
       <AddLinkDialog
         stackId={stackId}
