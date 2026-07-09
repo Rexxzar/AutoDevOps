@@ -59,10 +59,10 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 
 	m := make(map[string]any, len(h.attrs)+r.NumAttrs())
 	for _, a := range h.attrs {
-		m[a.Key] = a.Value.Any()
+		m[a.Key] = attrValue(a.Value)
 	}
 	r.Attrs(func(a slog.Attr) bool {
-		m[a.Key] = a.Value.Any()
+		m[a.Key] = attrValue(a.Value)
 		return true
 	})
 
@@ -77,6 +77,17 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		// Buffer full — drop rather than block the caller.
 	}
 	return baseErr
+}
+
+// attrValue converts a slog attr value into something JSON-friendly. An error
+// carries no exported fields, so json.Marshal would render it as "{}" (which is
+// why TLS failures logged an empty "error": {} and hid the real cause); extract
+// its message instead.
+func attrValue(v slog.Value) any {
+	if err, ok := v.Any().(error); ok {
+		return err.Error()
+	}
+	return v.Any()
 }
 
 func (h *Handler) WithAttrs(as []slog.Attr) slog.Handler {

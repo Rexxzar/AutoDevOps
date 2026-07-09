@@ -494,7 +494,7 @@ export function DeploymentDetailPage() {
 
   return (
     <div>
-      <PageHeader title={stack.name} description={`${apps.length} app${apps.length === 1 ? '' : 's'}`}>
+      <PageHeader title={stack.name} description={apps.length === 1 ? '1 app' : `Stack · ${apps.length} apps`}>
         <Button size="sm" variant="outline" className="gap-1.5" onClick={() => navigate('/deployments')}>
           <ArrowLeft className="size-3.5" />
           Back
@@ -2141,6 +2141,7 @@ function CICDSetupDialog({
 }) {
   const [serverURL, setServerURL] = useState(window.location.origin)
   const [githubToken, setGithubToken] = useState('')
+  const [overrideToken, setOverrideToken] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<{
@@ -2155,7 +2156,7 @@ function CICDSetupDialog({
   const actionsURL = m ? `https://github.com/${m[1]}/${m[2]}/actions` : ''
 
   function handleClose() {
-    setError(''); setResult(null); setGithubToken(''); setInstalling(false)
+    setError(''); setResult(null); setGithubToken(''); setOverrideToken(false); setInstalling(false)
     onClose()
   }
 
@@ -2220,9 +2221,21 @@ function CICDSetupDialog({
           <FormField label="AutoDevOps server URL" hint="how GitHub reaches this server">
             <input value={serverURL} onChange={(e) => setServerURL(e.target.value)} required className={inputCls} placeholder="https://autodevops.example.com" />
           </FormField>
-          <FormField label="GitHub token" hint={hasGitToken ? 'optional, uses the repo’s stored token if blank' : 'required'}>
-            <input value={githubToken} onChange={(e) => setGithubToken(e.target.value)} type="password" placeholder="ghp_… (needs repo + workflow scope)" className={inputCls} />
-          </FormField>
+          {hasGitToken && !overrideToken ? (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <Check className="size-3.5 text-success" />
+                Using the repository&apos;s saved token.
+              </span>
+              <button type="button" className="text-primary hover:underline" onClick={() => setOverrideToken(true)}>
+                Use a different token
+              </button>
+            </div>
+          ) : (
+            <FormField label="GitHub token" hint={hasGitToken ? 'overrides the saved token' : 'required'}>
+              <input value={githubToken} onChange={(e) => setGithubToken(e.target.value)} type="password" placeholder="ghp_... (needs repo + workflow scope)" className={inputCls} />
+            </FormField>
+          )}
           <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/8 px-3 py-2.5 text-xs text-info">
             <AlertCircle className="size-4 shrink-0" />
             <span>The token must have <strong>repo</strong> and <strong>workflow</strong> scope, writing workflow files and repo secrets both require it. A stored SSH key can&apos;t set secrets.</span>

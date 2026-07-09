@@ -307,6 +307,9 @@ func (s *Server) storeSecretFiles(ctx context.Context, deploymentID, appName str
 // req.Kind == "image" delegates to createImageApp instead — those apps have
 // no webhook/git credentials, so webhookSecret is always "" for them.
 func (s *Server) createApp(ctx context.Context, deploymentID string, req appCreateRequest) (appID, webhookSecret string, err error) {
+	if err := validateDomain(req.Domain); err != nil {
+		return "", "", err
+	}
 	if req.Kind == "image" {
 		appID, err = s.createImageApp(ctx, deploymentID, req)
 		return appID, "", err
@@ -819,31 +822,31 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type appDetail struct {
-		ID                string    `json:"id"`
-		Name              string    `json:"name"`
-		Kind              string    `json:"kind"`
-		Role              string    `json:"role,omitempty"`
-		RepoURL           string    `json:"repo_url,omitempty"`
-		Branch            string    `json:"branch"`
-		Framework         string    `json:"framework,omitempty"`
-		DeclaredFramework string    `json:"declared_framework,omitempty"`
-		TargetType        string    `json:"target_type"`
-		Namespace         string    `json:"namespace,omitempty"`
-		ImageRef          string    `json:"image_ref,omitempty"`
-		Port              int       `json:"port,omitempty"`
-		Domain            string    `json:"domain,omitempty"`
-		HostPort          uint32    `json:"host_port,omitempty"`
-		Status            string    `json:"status"`
-		CreatedAt         time.Time `json:"created_at"`
-		UpdatedAt         time.Time `json:"updated_at"`
-		VolumePath        string    `json:"volume_path,omitempty"`
-		SecretFilePaths   []string  `json:"secret_file_paths,omitempty"`
-		TLSStatus            string    `json:"tls_status,omitempty"`
-		TLSError             string    `json:"tls_error,omitempty"`
-		HasGitCredentials    bool            `json:"has_git_credentials"`
-		HasImageEnv          bool            `json:"has_image_env"`
-		K8sConfig            json.RawMessage `json:"k8s_config,omitempty"`
-		Links                []appLink       `json:"links"`
+		ID                string          `json:"id"`
+		Name              string          `json:"name"`
+		Kind              string          `json:"kind"`
+		Role              string          `json:"role,omitempty"`
+		RepoURL           string          `json:"repo_url,omitempty"`
+		Branch            string          `json:"branch"`
+		Framework         string          `json:"framework,omitempty"`
+		DeclaredFramework string          `json:"declared_framework,omitempty"`
+		TargetType        string          `json:"target_type"`
+		Namespace         string          `json:"namespace,omitempty"`
+		ImageRef          string          `json:"image_ref,omitempty"`
+		Port              int             `json:"port,omitempty"`
+		Domain            string          `json:"domain,omitempty"`
+		HostPort          uint32          `json:"host_port,omitempty"`
+		Status            string          `json:"status"`
+		CreatedAt         time.Time       `json:"created_at"`
+		UpdatedAt         time.Time       `json:"updated_at"`
+		VolumePath        string          `json:"volume_path,omitempty"`
+		SecretFilePaths   []string        `json:"secret_file_paths,omitempty"`
+		TLSStatus         string          `json:"tls_status,omitempty"`
+		TLSError          string          `json:"tls_error,omitempty"`
+		HasGitCredentials bool            `json:"has_git_credentials"`
+		HasImageEnv       bool            `json:"has_image_env"`
+		K8sConfig         json.RawMessage `json:"k8s_config,omitempty"`
+		Links             []appLink       `json:"links"`
 		// Steps hydrates the deploy-progress pipeline for pages that load (or
 		// reconnect their SSE stream) mid-deploy — deploy.step events aren't
 		// replayed on reconnect, so the frontend seeds stepsByApp from here.
@@ -932,6 +935,25 @@ type appLink struct {
 // aliasPattern restricts link aliases to valid AUTODEVOPS_<ALIAS>_* env var
 // name fragments: must start with a letter, then letters/digits/underscores.
 var aliasPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// domainPattern matches a valid DNS hostname: dot-separated labels (each 1-63
+// chars of letters/digits/hyphens, no leading/trailing hyphen) with at least
+// two labels. It rejects the malformed inputs (empty labels / consecutive dots
+// like "a..b" / leading-or-trailing dot / spaces) that would otherwise be
+// written into an nginx vhost and break certbot and every later reload.
+var domainPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(\.([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))+$`)
+
+// validateDomain rejects malformed custom domains. An empty domain is valid
+// (the app simply isn't exposed on a custom host).
+func validateDomain(domain string) error {
+	if domain == "" {
+		return nil
+	}
+	if !domainPattern.MatchString(domain) {
+		return fmt.Errorf("invalid domain %q: use a hostname like app.example.com (no spaces, leading/trailing dots, or double dots)", domain)
+	}
+	return nil
+}
 
 // triggerAppIfGit re-runs ProcessPush for a "git" kind app in the background —
 // the same async path handleTriggerApp uses for manual rebuilds. Called after
@@ -1083,6 +1105,10 @@ func (s *Server) handleUpdateAppDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateDomain(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1901,14 +1927,14 @@ func (s *Server) handleListTerraformRuns(w http.ResponseWriter, r *http.Request)
 // plan/apply/destroy run; the run history itself is in terraform_runs,
 // grouped by resource_id (see GET /terraform/runs).
 type resourceRow struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Provider           string `json:"provider"`
-	CloudAccountID     string `json:"cloud_account_id,omitempty"`
-	Region             string `json:"region"`
-	ResourceType       string `json:"resource_type"`
-	Template           string `json:"template"`
-	Status             string `json:"status"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Provider       string `json:"provider"`
+	CloudAccountID string `json:"cloud_account_id,omitempty"`
+	Region         string `json:"region"`
+	ResourceType   string `json:"resource_type"`
+	Template       string `json:"template"`
+	Status         string `json:"status"`
 	// RegistryResourceID, for resource_type "ecs"/"aci", optionally links to
 	// an applied "ecr"/"acr" provisioned_resources row whose outputs supply
 	// the registry connection info for git-app deploys onto this resource
@@ -2996,7 +3022,7 @@ func (s *Server) buildTerraformConfig(provider, resourceType, name, region strin
 // stack namespace is shared by sibling apps and is removed separately once
 // the whole stack is torn down. A nil controller/manager (K8s or Docker
 // unavailable) is treated as a no-op so the DB row can still be soft-deleted.
-func (s *Server) teardownApp(ctx context.Context, stackName, appName, targetKind, namespace, domain string) error {
+func (s *Server) teardownApp(ctx context.Context, stackName, appName, targetKind, namespace, domain, targetResourceID string) error {
 	switch targetKind {
 	case "local_k8s":
 		if s.k8sCtrl == nil || namespace == "" {
@@ -3017,6 +3043,15 @@ func (s *Server) teardownApp(ctx context.Context, stackName, appName, targetKind
 		if domain != "" && s.deploy != nil {
 			if err := s.deploy.DeprovisionTLS(ctx, domain); err != nil {
 				slog.Warn("teardown: nginx vhost cleanup failed", "domain", domain, "error", err)
+			}
+		}
+	case "cloud_vm":
+		// VM apps terminate TLS on the VM itself, so clean the vhost + cert
+		// there over SSH. Without this a stale vhost is left on the VM and
+		// breaks the next deployment's nginx reload (and thus its TLS).
+		if domain != "" && s.deploy != nil {
+			if err := s.deploy.DeprovisionVMTLS(ctx, targetResourceID, domain); err != nil {
+				slog.Warn("teardown: vm nginx vhost cleanup failed", "domain", domain, "error", err)
 			}
 		}
 	}
@@ -3041,7 +3076,7 @@ func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request)
 	}
 
 	rows, err := s.db.Query(r.Context(), `
-		SELECT id, name, kind, target_kind, COALESCE(namespace, ''), COALESCE(domain, '')
+		SELECT id, name, kind, target_kind, COALESCE(namespace, ''), COALESCE(domain, ''), COALESCE(target_resource_id::text, '')
 		FROM deployment_apps WHERE deployment_id = $1 AND status != 'destroyed'
 	`, id)
 	if err != nil {
@@ -3052,13 +3087,13 @@ func (s *Server) handleDestroyDeployment(w http.ResponseWriter, r *http.Request)
 	hasDocker := false
 	var gitAppIDs []string
 	for rows.Next() {
-		var appID, appName, kind, targetKind, namespace, domain string
-		if err := rows.Scan(&appID, &appName, &kind, &targetKind, &namespace, &domain); err != nil {
+		var appID, appName, kind, targetKind, namespace, domain, targetResourceID string
+		if err := rows.Scan(&appID, &appName, &kind, &targetKind, &namespace, &domain, &targetResourceID); err != nil {
 			rows.Close()
 			writeError(w, http.StatusInternalServerError, "failed to read app row")
 			return
 		}
-		if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace, domain); err != nil {
+		if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace, domain, targetResourceID); err != nil {
 			slog.Error("deployments: teardown app failed", "stack", stackName, "app", appName, "error", err)
 		}
 		if kind == "git" {
@@ -3156,13 +3191,13 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	deploymentID := chi.URLParam(r, "id")
 	appID := chi.URLParam(r, "appId")
 
-	var stackName, appName, targetKind, namespace, domain string
+	var stackName, appName, targetKind, namespace, domain, targetResourceID string
 	err := s.db.QueryRow(r.Context(), `
-		SELECT d.name, da.name, da.target_kind, COALESCE(da.namespace, ''), COALESCE(da.domain, '')
+		SELECT d.name, da.name, da.target_kind, COALESCE(da.namespace, ''), COALESCE(da.domain, ''), COALESCE(da.target_resource_id::text, '')
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1 AND da.deployment_id = $2
-	`, appID, deploymentID).Scan(&stackName, &appName, &targetKind, &namespace, &domain)
+	`, appID, deploymentID).Scan(&stackName, &appName, &targetKind, &namespace, &domain, &targetResourceID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "app not found")
 		return
@@ -3170,7 +3205,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	s.teardownCICD(r.Context(), appID)
 
-	if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace, domain); err != nil {
+	if err := s.teardownApp(r.Context(), stackName, appName, targetKind, namespace, domain, targetResourceID); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to remove running resources: %v", err))
 		return
 	}

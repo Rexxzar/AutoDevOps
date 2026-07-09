@@ -16,6 +16,26 @@ import (
 // dockerAppHostPort would assign locally.
 const vmAppPort = 8080
 
+// DeprovisionVMTLS removes an app's nginx vhost and certbot cert from its cloud
+// VM when the app is deleted, so a stale vhost can never break a later
+// deployment's TLS reload on the same VM. Best-effort: a nil provisioner, an
+// empty domain/resource, or an unreachable VM is not fatal to the delete.
+func (o *Orchestrator) DeprovisionVMTLS(ctx context.Context, targetResourceID, domain string) error {
+	if o.tlsProvisioner == nil || domain == "" || targetResourceID == "" {
+		return nil
+	}
+	res, err := o.loadCloudVMResource(ctx, targetResourceID)
+	if err != nil {
+		return fmt.Errorf("deploy: load vm for tls cleanup: %w", err)
+	}
+	client, err := o.dialCloudVM(ctx, res)
+	if err != nil {
+		return fmt.Errorf("deploy: dial vm for tls cleanup: %w", err)
+	}
+	defer client.Close()
+	return o.tlsProvisioner.DeprovisionVMDirect(client, domain)
+}
+
 // loadCloudVMResource reads the provisioned_resources row identified by
 // resourceID — a deployment_apps.target_resource_id for a cloud_vm app —
 // and validates it is an applied "vm" resource before the SSH deployer

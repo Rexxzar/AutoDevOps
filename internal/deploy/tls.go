@@ -359,7 +359,7 @@ server {
 		}
 		if result, err := run("sudo nginx -s reload"); err != nil || result.ExitCode != 0 {
 			pub(StepFailed)
-			_ = p.persistTLSStatus(ctx, appID, "failed", "")
+			_ = p.persistTLSStatus(ctx, appID, "failed", reloadErrMsg(result, err))
 			return fmt.Errorf("tls: reload nginx on VM: exit %d: %s", result.ExitCode, result.Stderr)
 		}
 		slog.Info("tls: reused existing cert on VM", "domain", domain)
@@ -389,7 +389,7 @@ server {
 		}
 		if result, err := run("sudo nginx -s reload"); err != nil || result.ExitCode != 0 {
 			pub(StepFailed)
-			_ = p.persistTLSStatus(ctx, appID, "failed", "")
+			_ = p.persistTLSStatus(ctx, appID, "failed", reloadErrMsg(result, err))
 			return fmt.Errorf("tls: reload nginx on VM: exit %d: %s", result.ExitCode, result.Stderr)
 		}
 
@@ -414,6 +414,20 @@ server {
 	pub(StepDone)
 	slog.Info("tls: VM TLS active", "domain", domain)
 	return nil
+}
+
+// reloadErrMsg builds a human-readable tls_error from a failed
+// "nginx -s reload" so the UI can show why TLS failed (this path previously
+// saved an empty error, hiding a stale/invalid vhost as the cause).
+func reloadErrMsg(r sshutil.ExecResult, err error) string {
+	switch {
+	case strings.TrimSpace(r.Stderr) != "":
+		return "nginx reload failed on the VM: " + strings.TrimSpace(r.Stderr)
+	case err != nil:
+		return "nginx reload failed on the VM: " + err.Error()
+	default:
+		return "nginx reload failed on the VM"
+	}
 }
 
 // DeprovisionVMDirect removes the nginx vhost and certbot cert from a cloud VM
