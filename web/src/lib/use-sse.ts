@@ -1,64 +1,21 @@
 import { useEffect, useRef } from 'react'
+import { useSSESubscribe } from '@/lib/sse-provider'
 
-const API_BASE = '/api'
-
+// useSSE registers a handler on the single app-wide SSE connection owned by
+// SSEProvider. The `token` parameter is retained for call-site compatibility;
+// authentication and the connection itself are handled once by the provider,
+// so this hook only adds/removes a subscriber and never opens a socket.
 export function useSSE(
-  token: string | null,
+  _token: string | null,
   onEvent: (type: string, data: unknown) => void,
 ) {
+  const { subscribe } = useSSESubscribe()
   const cbRef = useRef(onEvent)
   useEffect(() => {
     cbRef.current = onEvent
   })
 
   useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    const ac = new AbortController()
-
-    async function connect() {
-      try {
-        const res = await fetch(`${API_BASE}/events`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: ac.signal,
-        })
-        if (!res.body) return
-        const reader = res.body.getReader()
-        const dec = new TextDecoder()
-        let buf = ''
-        let eventType = 'message'
-
-        while (!cancelled) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buf += dec.decode(value, { stream: true })
-          const lines = buf.split('\n')
-          buf = lines.pop()!
-          for (const line of lines) {
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7).trim()
-            } else if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6))
-                cbRef.current(eventType, data)
-              } catch {
-                // ignore malformed JSON
-              }
-              eventType = 'message'
-            }
-          }
-        }
-      } catch {
-        if (cancelled) return
-        // reconnect after 3s on error
-        setTimeout(connect, 3000)
-      }
-    }
-
-    connect()
-    return () => {
-      cancelled = true
-      ac.abort()
-    }
-  }, [token])
+    return subscribe((type, data) => cbRef.current(type, data))
+  }, [subscribe])
 }

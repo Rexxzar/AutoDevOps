@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App.tsx'
 import { ThemeProvider } from './lib/theme.tsx'
 import { AuthProvider } from './lib/auth.tsx'
+import { SSEProvider } from './lib/sse-provider.tsx'
 import './index.css'
 
 const queryClient = new QueryClient({
@@ -16,9 +17,11 @@ createRoot(document.getElementById('root')!).render(
     <ThemeProvider>
       <AuthProvider>
         <QueryClientProvider client={queryClient}>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
+          <SSEProvider>
+            <BrowserRouter>
+              <App />
+            </BrowserRouter>
+          </SSEProvider>
         </QueryClientProvider>
       </AuthProvider>
     </ThemeProvider>
