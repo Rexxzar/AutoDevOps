@@ -157,8 +157,12 @@ func (p *Poller) listAWSResources(ctx context.Context, cloudAccountID string, cr
 // awsRegions returns homeRegion plus every distinct region AutoDevOps has
 // provisioned an AWS resource into for cloudAccountID, deduplicated.
 func (p *Poller) awsRegions(ctx context.Context, cloudAccountID, homeRegion string) ([]string, error) {
+	// Only consider regions of resources that actually exist in the cloud
+	// (applied or mid-apply). Destroyed/failed rows can carry a bogus region
+	// (e.g. an old "ew-west-1" typo); polling that region fails DNS and, worse,
+	// aborts the whole AWS poll, so live regions never get listed.
 	rows, err := p.pool.Query(ctx,
-		"SELECT DISTINCT region FROM provisioned_resources WHERE cloud_account_id = $1 AND provider = 'aws'",
+		"SELECT DISTINCT region FROM provisioned_resources WHERE cloud_account_id = $1 AND provider = 'aws' AND status IN ('applied', 'applying')",
 		cloudAccountID,
 	)
 	if err != nil {

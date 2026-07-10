@@ -80,7 +80,9 @@ func (o *Orchestrator) deployToACI(ctx context.Context, appName, pushRef string,
 		return err
 	}
 
-	acrRef := loginServer + "/" + appName + ":" + imageTag(pushRef)
+	// The image repository path must be lowercase (Docker/OCI reference rule);
+	// an app name like "TriPulse-Backend" would otherwise fail to parse.
+	acrRef := loginServer + "/" + sanitizeDockerName(appName) + ":" + imageTag(pushRef)
 	slog.Info("deploy: copying image to ACR", "src", pushRef, "dst", acrRef)
 	if err := copyImage(pushRef, acrRef, &auth); err != nil {
 		return fmt.Errorf("deploy: copy to ACR: %w", err)
