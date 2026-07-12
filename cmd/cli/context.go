@@ -59,6 +59,10 @@ func requireClient() (*Client, error) {
 // machine-readable JSON instead of a human table.
 func jsonOutput() bool { return flagOutput == "json" }
 
+// csvOutput reports whether -o/--output csv was requested. Implemented by the
+// metrics commands, where CSV is the natural format for the Chapter 5 analysis.
+func csvOutput() bool { return flagOutput == "csv" }
+
 // printJSON writes v as indented JSON to stdout — the canonical scriptable output.
 func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)

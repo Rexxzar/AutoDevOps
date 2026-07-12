@@ -64,7 +64,7 @@ func namespaceName(stackName string) string {
 //   - target_kind="cloud_ecs":    ECR push + ECS task redeploy → status=running|failed
 //   - target_kind="cloud_aci":    ACR push + ACI terraform redeploy → status=running|failed
 //   - other / no deployer wired:  stays at status=deploying
-func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
+func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) (err error) {
 	var (
 		stackName         string
 		appName           string
@@ -79,16 +79,22 @@ func (o *Orchestrator) ProcessPush(ctx context.Context, appID string) error {
 		declaredFramework string
 		namespaceOverride string
 		k8sConfigJSON     []byte
+		deploymentID      string
 	)
-	err := o.pool.QueryRow(ctx, `
-		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text, COALESCE(da.domain, ''), COALESCE(da.declared_framework, ''), COALESCE(d.namespace_override, ''), da.k8s_config
+	err = o.pool.QueryRow(ctx, `
+		SELECT d.name, da.name, COALESCE(da.repo_url, ''), da.branch, da.target_kind, da.target_resource_id::text, da.git_credentials_secret_id::text, COALESCE(da.build_context, ''), da.secret_files_id::text, COALESCE(da.domain, ''), COALESCE(da.declared_framework, ''), COALESCE(d.namespace_override, ''), da.k8s_config, da.deployment_id::text
 		FROM deployment_apps da
 		JOIN deployments d ON d.id = da.deployment_id
 		WHERE da.id = $1
-	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID, &domain, &declaredFramework, &namespaceOverride, &k8sConfigJSON)
+	`, appID).Scan(&stackName, &appName, &repoURL, &branch, &targetKind, &targetResourceID, &gitCredsSecretID, &buildContext, &secretFilesID, &domain, &declaredFramework, &namespaceOverride, &k8sConfigJSON, &deploymentID)
 	if err != nil {
 		return fmt.Errorf("deploy: look up app %s: %w", appID, err)
 	}
+
+	// Record end-to-end deploy latency for the Chapter 5 evaluation (best-effort,
+	// never affects the deploy). The defer closes the row on every return path.
+	runID := o.startDeployRun(ctx, appID, deploymentID, appName, targetKind)
+	defer func() { o.finishDeployRun(ctx, runID, err) }()
 
 	var creds *gitCredentials
 	if gitCredsSecretID != nil {

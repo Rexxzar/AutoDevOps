@@ -24,8 +24,8 @@ in the UI you can script here. Configure the server and credentials once with
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-			if flagOutput != "table" && flagOutput != "json" {
-				return fmt.Errorf("invalid --output %q (use: table | json)", flagOutput)
+			if flagOutput != "table" && flagOutput != "json" && flagOutput != "csv" {
+				return fmt.Errorf("invalid --output %q (use: table | json | csv)", flagOutput)
 			}
 			return nil
 		},
@@ -37,7 +37,7 @@ in the UI you can script here. Configure the server and credentials once with
 	pf := root.PersistentFlags()
 	pf.StringVar(&flagServer, "server", "", "control-plane URL (overrides config)")
 	pf.StringVar(&flagToken, "token", "", "auth token (overrides config)")
-	pf.StringVarP(&flagOutput, "output", "o", "table", "output format: table | json")
+	pf.StringVarP(&flagOutput, "output", "o", "table", "output format: table | json | csv")
 	pf.BoolVar(&flagNoColor, "no-color", false, "disable colored output")
 
 	// Grouped help — commands list under these headings instead of one flat block.
@@ -63,6 +63,7 @@ in the UI you can script here. Configure the server and credentials once with
 		cloudCmd(),
 		clustersCmd(),
 		healCmd(),
+		metricsCmd(),
 		complianceCmd(),
 		logsCmd(),
 		secretsCmd(),
