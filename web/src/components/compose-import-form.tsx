@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, AlertCircle, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { FormField, DomainField, K8sOptions, type K8sConfigValue, inputCls } from '@/components/deploy-form-fields'
+import { FormField, DomainField, K8sOptions, type K8sConfigValue, inputCls, selectCls } from '@/components/deploy-form-fields'
+import { type GitRepo } from '@/lib/repos'
 
 type LocalTarget = 'k8s' | 'container'
 
@@ -71,6 +72,7 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
   const [step, setStep] = useState<ImportStep>('connect')
 
   const [repo, setRepo] = useState('')
+  const [repoId, setRepoId] = useState('') // when set, import from a stored repo
   const [branch, setBranch] = useState('main')
   const [token, setToken] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -88,12 +90,24 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
   const [createError, setCreateError] = useState('')
   const [result, setResult] = useState<ImportResult | null>(null)
 
+  // Stored repos (Git Repo Store): pick one — its URL, branch, and credentials
+  // resolve server-side, so private repos import without pasting a token.
+  const { data: storedRepos = [] } = useQuery({
+    queryKey: ['repos'],
+    queryFn: () => apiFetch<GitRepo[]>('/repos'),
+  })
+  function selectStoredRepo(id: string) {
+    setRepoId(id)
+    const r = storedRepos.find(x => x.id === id)
+    if (r) { setRepo(r.repo_url); setBranch(r.branch || 'main') }
+  }
+
   async function preview(e: React.FormEvent) {
     e.preventDefault()
     setPreviewLoading(true); setPreviewError('')
     try {
-      const body: Record<string, unknown> = { repo_url: repo, branch }
-      if (token) body.git_auth = { type: 'token', token }
+      const body: Record<string, unknown> = repoId ? { repo_id: repoId, branch } : { repo_url: repo, branch }
+      if (token && !repoId) body.git_auth = { type: 'token', token }
       const plan = await apiFetch<ComposePlanResponse>('/deployments/import/preview', {
         method: 'POST', body: JSON.stringify(body),
       })
@@ -167,9 +181,11 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
 
       const first = gitIncluded[0]
       const rest = included.filter(s => s !== first)
-      const gitAuth = token ? { type: 'token', token } : undefined
+      const gitAuth = token && !repoId ? { type: 'token', token } : undefined
 
-      const createBody: Record<string, unknown> = { name: stackName.trim(), repo_url: repo, branch, target_type: target }
+      const createBody: Record<string, unknown> = { name: stackName.trim(), branch, target_type: target }
+      if (repoId) createBody.repo_id = repoId
+      else createBody.repo_url = repo
       if (gitAuth) createBody.git_auth = gitAuth
       if (first.build_context) createBody.build_context = first.build_context
       if (first.domainInput) createBody.domain = first.domainInput
@@ -187,7 +203,9 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
       for (const svc of rest) {
         try {
           if (svc.kind === 'git') {
-            const body: Record<string, unknown> = { name: svc.name, kind: 'git', repo_url: repo, branch, target_type: target }
+            const body: Record<string, unknown> = { name: svc.name, kind: 'git', branch, target_type: target }
+            if (repoId) body.repo_id = repoId
+            else body.repo_url = repo
             if (gitAuth) body.git_auth = gitAuth
             if (svc.build_context) body.build_context = svc.build_context
             if (svc.domainInput) body.domain = svc.domainInput
@@ -263,17 +281,35 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
           <p className="text-sm text-muted-foreground">Connect a repo with a docker-compose file at its root</p>
         </div>
         <form onSubmit={preview} className="space-y-4">
-          <FormField label="Git repository URL">
-            <input value={repo} onChange={e => setRepo(e.target.value)} placeholder="https://github.com/you/my-app" required className={inputCls} />
-          </FormField>
-          <div className="grid grid-cols-2 gap-3">
-            <FormField label="Branch">
-              <input value={branch} onChange={e => setBranch(e.target.value)} placeholder="main" className={inputCls} />
+          {storedRepos.length > 0 && (
+            <FormField label="Repository" hint="reuse a stored repo, or paste a URL below">
+              <select value={repoId} onChange={e => selectStoredRepo(e.target.value)} className={selectCls}>
+                <option value="">Paste a URL manually</option>
+                {storedRepos.map(r => (
+                  <option key={r.id} value={r.id}>{r.name} ({r.branch})</option>
+                ))}
+              </select>
             </FormField>
-            <FormField label="Git token" hint="private repos">
-              <input value={token} onChange={e => setToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
-            </FormField>
-          </div>
+          )}
+          {repoId ? (
+            <p className="text-sm text-muted-foreground">
+              Importing from stored repo <span className="font-mono text-foreground">{repo}</span> ({branch})
+            </p>
+          ) : (
+            <>
+              <FormField label="Git repository URL">
+                <input value={repo} onChange={e => setRepo(e.target.value)} placeholder="https://github.com/you/my-app" required className={inputCls} />
+              </FormField>
+              <div className="grid grid-cols-2 gap-3">
+                <FormField label="Branch">
+                  <input value={branch} onChange={e => setBranch(e.target.value)} placeholder="main" className={inputCls} />
+                </FormField>
+                <FormField label="Git token" hint="private repos">
+                  <input value={token} onChange={e => setToken(e.target.value)} placeholder="ghp_…" type="password" className={inputCls} />
+                </FormField>
+              </div>
+            </>
+          )}
           {previewError && (
             <div className="flex items-center gap-2 rounded-lg border border-critical/25 bg-critical/8 px-3 py-2.5 text-sm text-critical">
               <AlertCircle className="size-4 shrink-0" />{previewError}

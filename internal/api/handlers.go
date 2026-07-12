@@ -621,6 +621,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 // handleCreateAppLink.
 func (s *Server) handleImportComposePreview(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		RepoID  string          `json:"repo_id,omitempty"`
 		RepoURL string          `json:"repo_url"`
 		Branch  string          `json:"branch"`
 		GitAuth *gitAuthRequest `json:"git_auth,omitempty"`
@@ -629,8 +630,23 @@ func (s *Server) handleImportComposePreview(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// A stored repo (Git Repo Store) resolves its URL, branch, and decrypted
+	// credentials server-side, so a private repo's compose can be previewed
+	// without the user pasting a token (mirrors createApp's repo_id handling).
+	if req.RepoID != "" {
+		ga, repoURL, branch, err := s.repoGitAuth(r.Context(), req.RepoID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "failed to load stored repo: "+err.Error())
+			return
+		}
+		req.RepoURL = repoURL
+		if req.Branch == "" {
+			req.Branch = branch
+		}
+		req.GitAuth = ga
+	}
 	if req.RepoURL == "" {
-		writeError(w, http.StatusBadRequest, "repo_url required")
+		writeError(w, http.StatusBadRequest, "repo_url or repo_id required")
 		return
 	}
 	if req.GitAuth != nil && req.GitAuth.Type != deploy.GitAuthToken && req.GitAuth.Type != deploy.GitAuthSSHKey {
