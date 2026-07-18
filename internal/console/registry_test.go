@@ -4,7 +4,7 @@ import "testing"
 
 // TestRegistryConnectorDispatch verifies the (provider, resource_type)
 // dispatch table. provisioned_resources.resource_type is "vm" for both AWS
-// EC2 and Azure VMs (see the design notes: Dev Notes: "Resource Console design"), so
+// EC2 and Azure VMs, so
 // provider must disambiguate. Connector() itself never touches the pool/vault
 // (only the connectors' Open/Exec do), so nil dependencies are safe here.
 func TestRegistryConnectorDispatch(t *testing.T) {

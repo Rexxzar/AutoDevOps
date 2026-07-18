@@ -1,6 +1,6 @@
 // Package sshutil provides ephemeral-ed25519-key SSH primitives shared by
-// internal/console (Resource Console EC2/Azure VM connectors, see the design notes)
-// Dev Notes "Resource Console design") and internal/deploy (cloud_vm SSH
+// internal/console (Resource Console EC2/Azure VM connectors) and
+// internal/deploy (cloud_vm SSH
 // deployer, see Phase 5b). Keeping these here avoids a fourth duplicate of
 // this logic across internal/ packages.
 package sshutil

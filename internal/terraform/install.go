@@ -13,7 +13,7 @@ import (
 )
 
 // pinnedVersion is the terraform CLI version this engine was built and golden-
-// tested against (matches design notes Dev Notes and the setup-terraform step in
+// tested against (matches the setup-terraform step in
 // CI). Keep these in sync when bumping.
 const pinnedVersion = "1.15.5"
 

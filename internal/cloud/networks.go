@@ -16,9 +16,8 @@ import (
 
 // Network is the provider-agnostic shape for an existing VPC (AWS) or VNet
 // (Azure) and its subnets, returned by ListNetworks for the New Resource
-// wizard's "use existing network" picker (see the design notes: Terraform engine
-// scope notes — existing-resource references are wired as `data` blocks
-// backed by these IDs, not remote state).
+// wizard's "use existing network" picker — existing-resource references
+// are wired as `data` blocks backed by these IDs, not remote state.
 type Network struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name,omitempty"`

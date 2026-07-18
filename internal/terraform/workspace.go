@@ -10,7 +10,7 @@ import (
 // overwritten on each Plan and re-applied against the SAME local-backend
 // state file — matching the "regenerate the full desired-state config, re-
 // apply to the same state" model locked for the combined-stack-per-deployment
-// engine (see terraform-engine-design memory / design notes Dev Notes).
+// engine.
 const (
 	configFileName = "main.tf"
 	planFileName   = "tfplan"

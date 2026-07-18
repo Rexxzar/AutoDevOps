@@ -26,7 +26,7 @@ type AWSStackParams struct {
 	VPCCIDR string
 	// ExistingVPCID, if set, reuses an existing VPC via a `data "aws_vpc"`
 	// block instead of creating a new one — the "use existing resource"
-	// picker (design notes Terraform engine scope notes), backed by the VPC IDs
+	// picker, backed by the VPC IDs
 	// returned from GET /cloud/accounts/{id}/networks. VPCCIDR is ignored
 	// when this is set.
 	ExistingVPCID string

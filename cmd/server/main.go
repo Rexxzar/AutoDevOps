@@ -224,7 +224,7 @@ func startK8sController(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 // on PATH (see terraform.EnsureBinary) — the locked "detect on PATH or
 // download a pinned version into a user-writable dir at engine startup"
 // approach for terraform's static binary (contrast Docker's privileged-daemon
-// detect-only path in T14b; see the design notes: Dev Notes). Logs a warning and
+// detect-only path in T14b). Logs a warning and
 // degrades gracefully on failure: provisioning stays unavailable rather than
 // blocking startup. The resolved path is what T14's k8s-manifest deploy step
 // will eventually pass to terraform.NewRunner via deploy.Orchestrator (T12) —

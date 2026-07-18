@@ -41,6 +41,3 @@ Thumbs.db
 
 # v0 design reference — not part of the app, ported into web/ during T17
 /react-dashboard-design/
-
-# Local development context (not for version control)
-.claude/

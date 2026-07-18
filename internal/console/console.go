@@ -1,8 +1,7 @@
 // Package console implements the Resource Console: browser-based interactive
 // shell + one-shot command execution for provisioned compute, mirroring AWS
 // EC2 Instance Connect / Azure Bastion "Connect" without AutoDevOps ever
-// storing a long-lived private key (see the design notes: Dev Notes: "Resource
-// Console design").
+// storing a long-lived private key.
 package console
 
 import (

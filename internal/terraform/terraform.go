@@ -23,8 +23,8 @@ type Params interface {
 
 // Definition registers an embedded HCL template under a stable ID, pairing it
 // with the provider it targets. The template file at Path must produce a
-// single combined stack for that provider — see Dev Notes in design notes for why
-// generated infrastructure is one file per deployment rather than fragments.
+// single combined stack for that provider: generated infrastructure is one
+// file per deployment rather than fragments.
 type Definition struct {
 	ID       TemplateID
 	Provider Provider

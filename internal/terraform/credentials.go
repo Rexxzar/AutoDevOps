@@ -10,7 +10,7 @@ import (
 
 // awsCredentials and azureCredentials mirror the unexported credential shapes
 // in internal/cloud (internal/terraform must not import internal/cloud per
-// design notes package-boundary rules) — both decode the same vault-encrypted
+// the package-boundary rules) — both decode the same vault-encrypted
 // cloud_accounts.credentials_secret_id JSON blob the cloud poller reads.
 type awsCredentials struct {
 	AccessKeyID     string `json:"access_key_id"`

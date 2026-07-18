@@ -22,7 +22,7 @@ type Tab = 'terminal' | 'exec'
 
 // ResourceConsole is the T25 "Connect" dialog: a Terminal tab (interactive
 // shell over the T24 SSE+POST PTY bridge) and a Run command tab (one-shot
-// POST /console/exec). See design notes Dev Notes: "Resource Console design".
+// POST /console/exec).
 export function ResourceConsole({ resourceId, resourceName, open, onClose }: ConsoleProps) {
   const [tab, setTab] = useState<Tab>('terminal')
 

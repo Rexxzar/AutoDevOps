@@ -34,7 +34,7 @@ type AzureStackParams struct {
 	// ExistingVNet, if set, reuses an existing virtual network — possibly in
 	// a different resource group — via a `data "azurerm_virtual_network"`
 	// block instead of creating a new one. The "use existing resource"
-	// picker (design notes Terraform engine scope notes), backed by the VNet
+	// picker, backed by the VNet
 	// name/resource group returned from GET /cloud/accounts/{id}/networks.
 	// VNetCIDR is ignored when this is set.
 	ExistingVNet *AzureExistingVNet

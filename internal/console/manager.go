@@ -24,8 +24,7 @@ const (
 
 // Manager owns the in-memory registry of open interactive console sessions.
 // Nothing here is persisted: every session is ephemeral and force-closed
-// after idleTimeout of inactivity or maxSessionDuration total lifetime (see
-// design notes Dev Notes: "Resource Console design").
+// after idleTimeout of inactivity or maxSessionDuration total lifetime.
 type Manager struct {
 	registry connectorLookup
 

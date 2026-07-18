@@ -1588,9 +1588,8 @@ func (s *Server) handleDeleteCloudAccount(w http.ResponseWriter, r *http.Request
 
 // handleListCloudAccountNetworks lists existing VPCs/VNets and their subnets
 // for a cloud account in the given region — backs the New Resource wizard's
-// "use existing network" picker (see the design notes: Terraform engine scope notes:
-// existing-resource references are wired as `data` blocks backed by these
-// IDs, not remote state).
+// "use existing network" picker: existing-resource references are wired
+// as `data` blocks backed by these IDs, not remote state.
 func (s *Server) handleListCloudAccountNetworks(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	region := r.URL.Query().Get("region")
