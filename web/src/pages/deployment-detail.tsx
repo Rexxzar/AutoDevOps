@@ -1247,22 +1247,36 @@ function AppCard({
           </div>
         )}
 
-        {findings.length > 0 && (
-          <div className="space-y-1.5 pt-2">
-            <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Compliance findings</p>
-            {findings.slice(0, 5).map((f) => (
-              <div key={f.id} className="flex items-start gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
-                <span className={cn('shrink-0 rounded border px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase', severityStyle[f.severity])}>
-                  {f.severity}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{f.message}</span>
-              </div>
-            ))}
-            {findings.length > 5 && (
-              <p className="text-xs text-muted-foreground">+{findings.length - 5} more, see Compliance page</p>
-            )}
-          </div>
-        )}
+        {findings.length > 0 && (() => {
+          // Split actionable, developer-owned findings (leaked secrets, Dockerfile,
+          // IaC) from base-image / dependency CVEs reported by trivy. The latter are
+          // informational and non-blocking (unless they are critical in your own
+          // deps), so collapse them into a single calm line instead of a wall of
+          // high-severity badges the developer can't act on.
+          const actionable = findings.filter((f) => f.scanner !== 'trivy')
+          const imageCves = findings.filter((f) => f.scanner === 'trivy')
+          return (
+            <div className="space-y-1.5 pt-2">
+              <p className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">Compliance findings</p>
+              {actionable.slice(0, 5).map((f) => (
+                <div key={f.id} className="flex items-start gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                  <span className={cn('shrink-0 rounded border px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase', severityStyle[f.severity])}>
+                    {f.severity}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{f.message}</span>
+                </div>
+              ))}
+              {actionable.length > 5 && (
+                <p className="text-xs text-muted-foreground">+{actionable.length - 5} more, see Compliance page</p>
+              )}
+              {imageCves.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {imageCves.length} base-image CVE{imageCves.length === 1 ? '' : 's'} from the image scan (informational, non-blocking)
+                </p>
+              )}
+            </div>
+          )
+        })()}
 
         <div className="flex justify-end gap-2 pt-2">
           {app.kind === 'git' && (
