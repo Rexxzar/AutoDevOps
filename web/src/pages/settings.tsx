@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plus, Server, Cloud, CheckCircle2, AlertCircle, Trash2, ShieldCheck, MapPin } from 'lucide-react'
+import { Loader2, Plus, Server, Cloud, CheckCircle2, AlertCircle, Trash2, ShieldCheck, MapPin, HelpCircle } from 'lucide-react'
 import { PageHeader } from '@/components/layout/page-header'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -123,6 +123,7 @@ function CloudAccountSection() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [showHelp, setShowHelp] = useState(false)
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['cloud-accounts'],
@@ -219,21 +220,75 @@ function CloudAccountSection() {
       <form onSubmit={submit} className="space-y-3 border-t border-border p-5">
         <p className="text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">Register account</p>
 
-        <div className="flex gap-2">
-          {(['aws', 'azure'] as const).map((p) => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => setProvider(p)}
-              className={cn(
-                'rounded-full border px-3 py-1 text-xs font-medium transition-colors uppercase',
-                provider === p ? 'border-ring/40 bg-accent text-foreground' : 'border-border text-muted-foreground hover:bg-accent/60',
-              )}
-            >
-              {p}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <div className="flex gap-2">
+            {(['aws', 'azure'] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setProvider(p)}
+                className={cn(
+                  'rounded-full border px-3 py-1 text-xs font-medium transition-colors uppercase',
+                  provider === p ? 'border-ring/40 bg-accent text-foreground' : 'border-border text-muted-foreground hover:bg-accent/60',
+                )}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowHelp((s) => !s)}
+            className="ml-auto flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <HelpCircle className="size-3.5" />
+            How to get these credentials
+          </button>
         </div>
+
+        {showHelp && (
+          <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+            {provider === 'aws' ? (
+              <>
+                <p className="font-medium text-foreground">AWS access key</p>
+                <ol className="list-decimal space-y-1 pl-4">
+                  <li>In the AWS Console open <span className="font-mono">IAM</span> and create a user (programmatic access).</li>
+                  <li>Create an access key for that user, you get an <span className="font-mono">access_key_id</span> and a <span className="font-mono">secret_access_key</span>.</li>
+                  <li>
+                    Attach permissions for the services you'll use: EC2, VPC, RDS, ECS, ECR, plus IAM for role
+                    creation. For the Resource Console also add <span className="font-mono">ec2-instance-connect:SendSSHPublicKey</span>,{' '}
+                    <span className="font-mono">ssm:StartSession</span>, <span className="font-mono">ssmmessages:*</span> and{' '}
+                    <span className="font-mono">ecs:ExecuteCommand</span>.
+                  </li>
+                  <li>Paste the key, secret and your <span className="font-mono">region</span> into the box below.</li>
+                </ol>
+              </>
+            ) : (
+              <>
+                <p className="font-medium text-foreground">Azure service principal</p>
+                <ol className="list-decimal space-y-1 pl-4">
+                  <li>Create a service principal (this returns client_id, client_secret and tenant):</li>
+                </ol>
+                <pre className="overflow-x-auto rounded bg-background/60 p-2 font-mono text-[0.7rem]">{`az ad sp create-for-rbac --name autodevops \\
+  --role Contributor \\
+  --scopes /subscriptions/<subscription-id>`}</pre>
+                <ol className="list-decimal space-y-1 pl-4" start={2}>
+                  <li>
+                    Map the output: <span className="font-mono">appId</span> to <span className="font-mono">client_id</span>,{' '}
+                    <span className="font-mono">password</span> to <span className="font-mono">client_secret</span>,{' '}
+                    <span className="font-mono">tenant</span> to <span className="font-mono">tenant_id</span>. Get{' '}
+                    <span className="font-mono">subscription_id</span> from <span className="font-mono">az account show</span>.
+                  </li>
+                  <li>
+                    The Contributor role covers provisioning and the Resource Console (VM <span className="font-mono">runCommand</span>{' '}
+                    and container exec). Paste all four values below, or omit the three service-principal fields to use the
+                    server's own <span className="font-mono">az login</span> session.
+                  </li>
+                </ol>
+              </>
+            )}
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <label className="text-xs text-muted-foreground">Account name</label>
