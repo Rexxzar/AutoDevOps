@@ -292,7 +292,7 @@ export function DeploymentDetailPage() {
     refetchInterval: 10_000,
   })
 
-  const { data: findings = [] } = useQuery({
+  const { data: findings = [], refetch: refetchFindings } = useQuery({
     queryKey: ['compliance-findings'],
     queryFn: () => apiFetch<ComplianceFinding[]>('/compliance/findings'),
     refetchInterval: 30_000,
@@ -364,6 +364,11 @@ export function DeploymentDetailPage() {
       if (isFreshRun) {
         setLogsByApp((prev) => ({ ...prev, [e.deployment_app_id]: [] }))
       }
+      // Findings are written during the compliance step, so refetch as soon as
+      // it settles (done or failed) rather than waiting for the 30s poll.
+      if (e.step === 'compliance' && (e.status === 'done' || e.status === 'failed')) {
+        refetchFindings()
+      }
       return
     }
 
@@ -384,7 +389,7 @@ export function DeploymentDetailPage() {
       }
       return
     }
-  }, [id]))
+  }, [id, refetchFindings]))
 
   async function handleRedeploy(appId: string) {
     if (!id) return
