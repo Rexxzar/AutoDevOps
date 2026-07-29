@@ -89,6 +89,7 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
   const [result, setResult] = useState<ImportResult | null>(null)
+  const [complianceEnforce, setComplianceEnforce] = useState(false)
 
   // Stored repos (Git Repo Store): pick one — its URL, branch, and credentials
   // resolve server-side, so private repos import without pasting a token.
@@ -191,6 +192,7 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
       if (first.domainInput) createBody.domain = first.domainInput
       if (namespaceOverride) createBody.namespace_override = namespaceOverride
       if (k8sConfig) createBody.k8s_config = k8sConfig
+      if (complianceEnforce) createBody.compliance_enforce = true
 
       const stackResp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>('/deployments', {
         method: 'POST', body: JSON.stringify(createBody),
@@ -210,6 +212,7 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
             if (svc.build_context) body.build_context = svc.build_context
             if (svc.domainInput) body.domain = svc.domainInput
             if (k8sConfig) body.k8s_config = k8sConfig
+            if (complianceEnforce) body.compliance_enforce = true
             const resp = await apiFetch<{ id: string; webhook_url: string; webhook_secret: string }>(`/deployments/${deploymentId}/apps`, {
               method: 'POST', body: JSON.stringify(body),
             })
@@ -415,6 +418,14 @@ export function ComposeImportForm({ target }: { target: LocalTarget }) {
         <FormField label="Stack name">
           <input value={stackName} onChange={e => setStackName(e.target.value)} placeholder="my-stack" required className={inputCls} />
         </FormField>
+
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={complianceEnforce} onChange={e => setComplianceEnforce(e.target.checked)} />
+          <span>
+            <span className="font-medium text-foreground">Enforce the compliance gate</span><br />
+            <span className="text-xs text-muted-foreground">Block the deploy when the scan finds actionable issues (leaked secrets, Dockerfile or IaC problems). Applies to build-from-source services. Off = report-only.</span>
+          </span>
+        </label>
 
         {target === 'k8s' && (
           <>
