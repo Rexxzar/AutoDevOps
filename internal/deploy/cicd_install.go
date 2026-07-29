@@ -109,7 +109,9 @@ func (o *Orchestrator) InstallCICD(ctx context.Context, p CICDInstallParams) (*C
 		// Workflow already present and identical — nothing to commit/push.
 		result.AlreadyUpToDate = true
 	} else {
-		commit, err := wt.Commit("ci: add AutoDevOps CI/CD workflow", &git.CommitOptions{
+		// [skip ci] so installing the workflow doesn't itself trigger a deploy —
+		// only the user's own subsequent pushes should fire the pipeline.
+		commit, err := wt.Commit("ci: add AutoDevOps CI/CD workflow [skip ci]", &git.CommitOptions{
 			Author: &object.Signature{Name: "AutoDevOps", Email: "autodevops@localhost", When: time.Now()},
 		})
 		if err != nil {
